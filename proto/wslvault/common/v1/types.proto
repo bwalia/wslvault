@@ -1,0 +1,18 @@
+syntax = "proto3";
+package wslvault.common.v1;
+
+message TenantId { string value = 1; }
+message SecretId { string value = 1; }
+message KeyId { string value = 1; }
+message LeaseId { string value = 1; }
+
+message ErrorDetail {
+  string code = 1;
+  string message = 2;
+  map<string, string> metadata = 3;
+}
+
+message Timestamp {
+  int64 seconds = 1;
+  int32 nanos = 2;
+}

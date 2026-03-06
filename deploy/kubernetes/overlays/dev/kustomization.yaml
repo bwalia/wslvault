@@ -1,0 +1,23 @@
+apiVersion: kustomize.build/v1beta1
+kind: Kustomization
+
+namespace: wslvault-dev
+
+bases:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+
+  - target:
+      kind: StatefulSet
+      name: postgres
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/resources/requests/storage
+        value: 10Gi

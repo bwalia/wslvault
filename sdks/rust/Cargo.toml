@@ -1,0 +1,19 @@
+[package]
+name = "wslvault-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "Rust client SDK for WSLVault secrets platform"
+license = "Apache-2.0"
+
+[dependencies]
+wslvault-core = { path = "../../crates/wslvault-core" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }

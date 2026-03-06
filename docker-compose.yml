@@ -1,0 +1,145 @@
+# WSLVault Local Development Environment
+# Usage: docker compose up -d
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: wslvault
+      POSTGRES_USER: wslvault
+      POSTGRES_PASSWORD: devpassword
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./storage/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wslvault"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  crypto-service:
+    build:
+      context: .
+      dockerfile: deploy/docker/crypto-service/Dockerfile
+    environment:
+      VAULT_ROOT_KEY: "dGVzdC1yb290LWtleS0zMi1ieXRlcy1sb25nISE="  # base64 test key
+      VAULT_LISTEN_ADDR: "0.0.0.0:8080"
+      RUST_LOG: "info,crypto_service=debug"
+    ports:
+      - "50051:50051"
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  secret-engine:
+    build:
+      context: .
+      dockerfile: deploy/docker/secret-engine/Dockerfile
+    environment:
+      VAULT_CRYPTO_ENDPOINT: "http://crypto-service:50051"
+      VAULT_LISTEN_ADDR: "0.0.0.0:8081"
+      RUST_LOG: "info,secret_engine=debug"
+    ports:
+      - "50052:50052"
+      - "8081:8081"
+    depends_on:
+      - crypto-service
+
+  identity-service:
+    build:
+      context: .
+      dockerfile: deploy/docker/identity-service/Dockerfile
+    environment:
+      VAULT_JWT_SECRET: "dev-jwt-secret-change-in-production"
+      VAULT_LISTEN_ADDR: "0.0.0.0:8082"
+      RUST_LOG: "info,identity_service=debug"
+    ports:
+      - "50054:50054"
+      - "8082:8082"
+
+  policy-engine:
+    build:
+      context: .
+      dockerfile: deploy/docker/policy-engine/Dockerfile
+    environment:
+      VAULT_LISTEN_ADDR: "0.0.0.0:8083"
+      RUST_LOG: "info,policy_engine=debug"
+    ports:
+      - "50053:50053"
+      - "8083:8083"
+
+  transit-engine:
+    build:
+      context: .
+      dockerfile: deploy/docker/transit-engine/Dockerfile
+    environment:
+      VAULT_LISTEN_ADDR: "0.0.0.0:8086"
+      RUST_LOG: "info,transit_engine=debug"
+    ports:
+      - "8086:8086"
+
+  lease-manager:
+    build:
+      context: .
+      dockerfile: deploy/docker/lease-manager/Dockerfile
+    environment:
+      VAULT_LISTEN_ADDR: "0.0.0.0:8084"
+      RUST_LOG: "info,lease_manager=debug"
+    ports:
+      - "50055:50055"
+      - "8084:8084"
+
+  audit-service:
+    build:
+      context: .
+      dockerfile: deploy/docker/audit-service/Dockerfile
+    environment:
+      VAULT_AUDIT_SIGNING_KEY: "dev-audit-signing-key-32bytes!"
+      VAULT_LISTEN_ADDR: "0.0.0.0:8085"
+      RUST_LOG: "info,audit_service=debug"
+    ports:
+      - "50056:50056"
+      - "8085:8085"
+
+  mcp-server:
+    build:
+      context: .
+      dockerfile: deploy/docker/mcp-server/Dockerfile
+    environment:
+      VAULT_SECRET_ENGINE_ADDR: "http://secret-engine:8081"
+      VAULT_LISTEN_ADDR: "0.0.0.0:8087"
+      RUST_LOG: "info,mcp_server=debug"
+    ports:
+      - "8087:8087"
+    depends_on:
+      - secret-engine
+
+  gateway:
+    image: openresty/openresty:1.25.3.2-alpine
+    ports:
+      - "8443:443"
+      - "8088:8080"
+    volumes:
+      - ./gateway/conf.d/main.conf:/usr/local/openresty/nginx/conf/nginx.conf:ro
+      - ./gateway/lua:/etc/openresty/lua:ro
+    depends_on:
+      - secret-engine
+      - identity-service
+      - policy-engine
+
+volumes:
+  pgdata:

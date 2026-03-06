@@ -1,0 +1,13 @@
+apiVersion: kustomize.build/v1beta1
+kind: Kustomization
+
+namespace: wslvault
+
+resources:
+  - storage/postgres.yaml
+  - crypto-service/deployment.yaml
+  - secret-engine/deployment.yaml
+  - gateway/deployment.yaml
+
+commonLabels:
+  platform: wslvault

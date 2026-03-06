@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crypto-service
+  labels:
+    app: crypto-service
+    component: core
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: crypto-service
+  template:
+    metadata:
+      labels:
+        app: crypto-service
+        component: core
+    spec:
+      serviceAccountName: crypto-service
+      containers:
+        - name: crypto-service
+          image: wslvault/crypto-service:latest
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: grpc
+              containerPort: 50051
+          env:
+            - name: VAULT_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-root-key
+                  key: key
+            - name: RUST_LOG
+              value: "info,crypto_service=debug"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "4000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: crypto-service
+spec:
+  selector:
+    app: crypto-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crypto-service

@@ -1,0 +1,33 @@
+[package]
+name = "policy-engine"
+version = "0.1.0"
+edition = "2021"
+description = "RBAC policy evaluation engine with compiled in-memory lookup"
+license = "Apache-2.0"
+
+[[bin]]
+name = "policy-engine"
+path = "src/main.rs"
+
+[dependencies]
+wslvault-core = { path = "../../crates/wslvault-core" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+config = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+
+[build-dependencies]
+tonic-build = { workspace = true }

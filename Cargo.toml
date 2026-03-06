@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wslvault-core",
+    "crates/wslvault-storage",
+    "services/secret-engine",
+    "services/crypto-service",
+    "services/identity-service",
+    "services/policy-engine",
+    "services/transit-engine",
+    "services/lease-manager",
+    "services/audit-service",
+    "services/mcp-server",
+    "sdks/rust",
+]
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+tonic = { version = "0.12", features = ["tls", "transport"] }
+prost = "0.13"
+tonic-build = "0.12"
+axum = { version = "0.7", features = ["macros", "ws"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace", "auth", "cors"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ring = "0.17"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+ed25519-dalek = { version = "2.0", features = ["rand_core"] }
+sha2 = "0.10"
+hkdf = "0.12"
+argon2 = "0.5"
+rsa = { version = "0.9", features = ["sha2"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
+jsonwebtoken = "9.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+opentelemetry = { version = "0.26", features = ["trace"] }
+opentelemetry-otlp = "0.26"
+config = "0.14"
+thiserror = "1.0"
+anyhow = "1.0"
+uuid = { version = "1.10", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+async-trait = "0.1"
+zeroize = { version = "1.8", features = ["derive"] }
+prometheus = { version = "0.13", features = ["process"] }
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"
+bytes = "1.7"
+futures = "0.3"
+pin-project-lite = "0.2"

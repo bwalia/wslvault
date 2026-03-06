@@ -1,0 +1,65 @@
+syntax = "proto3";
+package wslvault.crypto.v1;
+
+service CryptoService {
+  rpc Encrypt(EncryptRequest) returns (EncryptResponse);
+  rpc Decrypt(DecryptRequest) returns (DecryptResponse);
+  rpc GenerateDek(GenerateDekRequest) returns (GenerateDekResponse);
+  rpc RotateKey(RotateKeyRequest) returns (RotateKeyResponse);
+  rpc GetKeyDescriptor(GetKeyDescriptorRequest) returns (GetKeyDescriptorResponse);
+}
+
+message EncryptRequest {
+  string tenant_id = 1;
+  bytes plaintext = 2;
+  bytes aad = 3;
+}
+
+message EncryptResponse {
+  string ciphertext_b64 = 1;
+  string dek_id = 2;
+}
+
+message DecryptRequest {
+  string tenant_id = 1;
+  string ciphertext_b64 = 2;
+  bytes aad = 3;
+}
+
+message DecryptResponse {
+  bytes plaintext = 1;
+}
+
+message GenerateDekRequest {
+  string tenant_id = 1;
+  string context = 2;
+}
+
+message GenerateDekResponse {
+  string key_id = 1;
+  uint32 version = 2;
+  string algorithm = 3;
+  string wrapped_dek = 4;
+}
+
+message RotateKeyRequest {
+  string tenant_id = 1;
+  string key_id = 2;
+}
+
+message RotateKeyResponse {
+  string key_id = 1;
+  uint32 new_version = 2;
+}
+
+message GetKeyDescriptorRequest {
+  string key_id = 1;
+}
+
+message GetKeyDescriptorResponse {
+  string key_id = 1;
+  uint32 version = 2;
+  string algorithm = 3;
+  string purpose = 4;
+  string state = 5;
+}

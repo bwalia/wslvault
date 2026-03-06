@@ -1,0 +1,48 @@
+syntax = "proto3";
+package wslvault.audit.v1;
+
+service AuditService {
+  rpc EmitEvent(EmitEventRequest) returns (EmitEventResponse);
+  rpc QueryEvents(QueryEventsRequest) returns (QueryEventsResponse);
+}
+
+message EmitEventRequest {
+  string tenant_id = 1;
+  string principal_id = 2;
+  string action = 3;
+  string resource = 4;
+  string outcome = 5;
+  string outcome_detail = 6;
+  string details_json = 7;
+  string client_ip = 8;
+}
+
+message EmitEventResponse {
+  string event_id = 1;
+}
+
+message QueryEventsRequest {
+  string tenant_id = 1;
+  string start_time = 2;
+  string end_time = 3;
+  string action_filter = 4;
+  string principal_filter = 5;
+  int32 limit = 6;
+  int32 offset = 7;
+}
+
+message QueryEventsResponse {
+  repeated AuditEventInfo events = 1;
+  int64 total_count = 2;
+}
+
+message AuditEventInfo {
+  string event_id = 1;
+  string tenant_id = 2;
+  string principal_id = 3;
+  string action = 4;
+  string resource = 5;
+  string outcome = 6;
+  string timestamp = 7;
+  string client_ip = 8;
+}

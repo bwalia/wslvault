@@ -1,0 +1,59 @@
+syntax = "proto3";
+package wslvault.lease.v1;
+
+service LeaseService {
+  rpc GetLease(GetLeaseRequest) returns (GetLeaseResponse);
+  rpc RenewLease(RenewLeaseRequest) returns (RenewLeaseResponse);
+  rpc RevokeLease(RevokeLeaseRequest) returns (RevokeLeaseResponse);
+  rpc ListLeases(ListLeasesRequest) returns (ListLeasesResponse);
+}
+
+message GetLeaseRequest {
+  string lease_id = 1;
+}
+
+message GetLeaseResponse {
+  string lease_id = 1;
+  string tenant_id = 2;
+  string target_type = 3;
+  string state = 4;
+  int64 ttl_seconds = 5;
+  int64 remaining_seconds = 6;
+  bool renewable = 7;
+  string issued_at = 8;
+  string expires_at = 9;
+}
+
+message RenewLeaseRequest {
+  string lease_id = 1;
+  int64 increment_seconds = 2;
+}
+
+message RenewLeaseResponse {
+  string lease_id = 1;
+  int64 ttl_seconds = 2;
+  string expires_at = 3;
+}
+
+message RevokeLeaseRequest {
+  string lease_id = 1;
+}
+
+message RevokeLeaseResponse {}
+
+message ListLeasesRequest {
+  string tenant_id = 1;
+  string state_filter = 2;
+}
+
+message ListLeasesResponse {
+  repeated LeaseInfo leases = 1;
+}
+
+message LeaseInfo {
+  string lease_id = 1;
+  string target_type = 2;
+  string state = 3;
+  int64 remaining_seconds = 4;
+  bool renewable = 5;
+}

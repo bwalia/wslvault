@@ -1,0 +1,67 @@
+syntax = "proto3";
+package wslvault.policy.v1;
+
+service PolicyService {
+  rpc Authorize(AuthorizeRequest) returns (AuthorizeResponse);
+  rpc PutPolicy(PutPolicyRequest) returns (PutPolicyResponse);
+  rpc DeletePolicy(DeletePolicyRequest) returns (DeletePolicyResponse);
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+  rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+}
+
+message AuthorizeRequest {
+  string tenant_id = 1;
+  string principal_id = 2;
+  repeated string policies = 3;
+  string action = 4;
+  string resource = 5;
+}
+
+message AuthorizeResponse {
+  bool allowed = 1;
+  string matched_policy = 2;
+  string reason = 3;
+}
+
+message PolicyDocument {
+  string name = 1;
+  repeated PolicyRule rules = 2;
+}
+
+message PolicyRule {
+  repeated string paths = 1;
+  repeated string capabilities = 2;
+}
+
+message PutPolicyRequest {
+  string tenant_id = 1;
+  PolicyDocument policy = 2;
+}
+
+message PutPolicyResponse {
+  string policy_id = 1;
+}
+
+message DeletePolicyRequest {
+  string tenant_id = 1;
+  string name = 2;
+}
+
+message DeletePolicyResponse {}
+
+message ListPoliciesRequest {
+  string tenant_id = 1;
+}
+
+message ListPoliciesResponse {
+  repeated string names = 1;
+}
+
+message GetPolicyRequest {
+  string tenant_id = 1;
+  string name = 2;
+}
+
+message GetPolicyResponse {
+  PolicyDocument policy = 1;
+}

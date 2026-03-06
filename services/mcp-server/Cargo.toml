@@ -1,0 +1,30 @@
+[package]
+name = "mcp-server"
+version = "0.1.0"
+edition = "2021"
+description = "MCP server for AI agent integration with WSLVault"
+license = "Apache-2.0"
+
+[[bin]]
+name = "mcp-server"
+path = "src/main.rs"
+
+[dependencies]
+wslvault-core = { path = "../../crates/wslvault-core" }
+tokio = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+config = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }

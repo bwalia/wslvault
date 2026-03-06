@@ -1,0 +1,38 @@
+apiVersion: kustomize.build/v1beta1
+kind: Kustomization
+
+namespace: wslvault-prod
+
+bases:
+  - ../../base
+
+patches:
+  - target:
+      kind: Deployment
+      name: crypto-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/cpu
+        value: "1000m"
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: "512Mi"
+
+  - target:
+      kind: Deployment
+      name: secret-engine
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+
+  - target:
+      kind: Deployment
+      name: gateway
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3

@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: secret-engine
+  labels:
+    app: secret-engine
+    component: core
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: secret-engine
+  template:
+    metadata:
+      labels:
+        app: secret-engine
+        component: core
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      serviceAccountName: secret-engine
+      containers:
+        - name: secret-engine
+          image: wslvault/secret-engine:latest
+          ports:
+            - name: http
+              containerPort: 8081
+            - name: grpc
+              containerPort: 50052
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: VAULT__DATABASE__URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: VAULT_CRYPTO_ENDPOINT
+              value: "http://crypto-service:50051"
+            - name: RUST_LOG
+              value: "info,secret_engine=debug"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "2000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: secret-engine
+spec:
+  selector:
+    app: secret-engine
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
+    - name: grpc
+      port: 50052
+      targetPort: grpc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secret-engine

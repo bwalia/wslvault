@@ -1,0 +1,86 @@
+syntax = "proto3";
+package wslvault.identity.v1;
+
+service IdentityService {
+  rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+  rpc CreateServiceAccount(CreateServiceAccountRequest) returns (CreateServiceAccountResponse);
+  rpc ListServiceAccounts(ListServiceAccountsRequest) returns (ListServiceAccountsResponse);
+}
+
+message AuthenticateRequest {
+  string tenant_id = 1;
+  oneof method {
+    TokenAuth token = 2;
+    OidcAuth oidc = 3;
+    MtlsAuth mtls = 4;
+  }
+}
+
+message TokenAuth {
+  string token = 1;
+}
+
+message OidcAuth {
+  string provider = 1;
+  string id_token = 2;
+}
+
+message MtlsAuth {
+  string certificate_pem = 1;
+}
+
+message AuthenticateResponse {
+  string token = 1;
+  string principal_id = 2;
+  string tenant_id = 3;
+  repeated string policies = 4;
+  int64 expires_at = 5;
+  string lease_id = 6;
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  string principal_id = 2;
+  string tenant_id = 3;
+  repeated string policies = 4;
+}
+
+message RevokeTokenRequest {
+  string token = 1;
+}
+
+message RevokeTokenResponse {}
+
+message CreateServiceAccountRequest {
+  string tenant_id = 1;
+  string name = 2;
+  repeated string policies = 3;
+  int64 ttl_seconds = 4;
+}
+
+message CreateServiceAccountResponse {
+  string principal_id = 1;
+  string token = 2;
+  string lease_id = 3;
+}
+
+message ListServiceAccountsRequest {
+  string tenant_id = 1;
+}
+
+message ListServiceAccountsResponse {
+  repeated ServiceAccountInfo accounts = 1;
+}
+
+message ServiceAccountInfo {
+  string principal_id = 1;
+  string name = 2;
+  repeated string policies = 3;
+  string created_at = 4;
+}
