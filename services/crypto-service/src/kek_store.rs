@@ -71,6 +71,9 @@ struct KekStoreInner {
     deks: RwLock<HashMap<String, DekEntry>>,
 }
 
+// Zeroizing<[u8; N]> requires explicit deref (&*) to coerce to &[u8];
+// auto-deref does not bridge Deref<Target=[u8; N]> to the unsized slice.
+#[allow(clippy::explicit_auto_deref)]
 impl KekStore {
     /// Initialise the store by loading the root KEK from the `VAULT_ROOT_KEY` env var.
     ///
@@ -124,7 +127,7 @@ impl KekStore {
             let reader = self.inner.tenant_keks.read().await;
             if let Some(entry) = reader.get(tenant_id) {
                 let mut out = Zeroizing::new([0u8; 32]);
-                out.copy_from_slice(&entry.raw_kek);
+                out.copy_from_slice(&*entry.raw_kek);
                 return Ok(out);
             }
         }
@@ -135,7 +138,7 @@ impl KekStore {
         // Re-check after acquiring the write lock to avoid a double-insert race.
         if let Some(entry) = writer.get(tenant_id) {
             let mut out = Zeroizing::new([0u8; 32]);
-            out.copy_from_slice(&entry.raw_kek);
+            out.copy_from_slice(&*entry.raw_kek);
             return Ok(out);
         }
 
@@ -145,10 +148,10 @@ impl KekStore {
         // Wrap the new tenant KEK under the root KEK.
         // AAD binds the wrapped key to this tenant so it cannot be transplanted.
         let aad = format!("tenant-kek:{tenant_id}");
-        let envelope = encrypt_with_dek(&self.inner.root_kek, &raw_kek, aad.as_bytes())?;
+        let envelope = encrypt_with_dek(&self.inner.root_kek, &*raw_kek, aad.as_bytes())?;
 
         let mut raw_kek_stored = Zeroizing::new([0u8; 32]);
-        raw_kek_stored.copy_from_slice(&raw_kek);
+        raw_kek_stored.copy_from_slice(&*raw_kek);
 
         let entry = TenantKekEntry {
             raw_kek: raw_kek_stored,
@@ -160,7 +163,7 @@ impl KekStore {
         writer.insert(tenant_id.to_string(), entry);
 
         let mut out = Zeroizing::new([0u8; 32]);
-        out.copy_from_slice(&raw_kek);
+        out.copy_from_slice(&*raw_kek);
         Ok(out)
     }
 
@@ -178,12 +181,12 @@ impl KekStore {
 
         // Wrap the DEK under the tenant KEK. AAD binds the wrapped DEK to its context.
         let aad = format!("dek:{tenant_id}:{context}");
-        let envelope = encrypt_with_dek(&tenant_kek, &raw_dek, aad.as_bytes())?;
+        let envelope = encrypt_with_dek(&tenant_kek, &*raw_dek, aad.as_bytes())?;
 
         let key_id = Uuid::now_v7().to_string();
 
         let mut raw_dek_stored = Zeroizing::new([0u8; 32]);
-        raw_dek_stored.copy_from_slice(&raw_dek);
+        raw_dek_stored.copy_from_slice(&*raw_dek);
 
         let entry = DekEntry {
             raw_dek: raw_dek_stored,
@@ -209,7 +212,7 @@ impl KekStore {
         })?;
 
         let mut out = Zeroizing::new([0u8; 32]);
-        out.copy_from_slice(&entry.raw_dek);
+        out.copy_from_slice(&*entry.raw_dek);
         Ok(out)
     }
 
@@ -249,7 +252,7 @@ impl KekStore {
         let new_raw_dek = generate_random_32_bytes()?;
 
         let aad = format!("dek:{tenant_id}:rotation:{key_id}");
-        let envelope = encrypt_with_dek(&tenant_kek, &new_raw_dek, aad.as_bytes())?;
+        let envelope = encrypt_with_dek(&tenant_kek, &*new_raw_dek, aad.as_bytes())?;
 
         let new_version = {
             let mut writer = self.inner.deks.write().await;
@@ -262,7 +265,7 @@ impl KekStore {
             let new_version = entry.version + 1;
 
             let mut new_raw_stored = Zeroizing::new([0u8; 32]);
-            new_raw_stored.copy_from_slice(&new_raw_dek);
+            new_raw_stored.copy_from_slice(&*new_raw_dek);
 
             entry.raw_dek = new_raw_stored;
             entry.wrapped_dek_b64 = envelope.ciphertext_b64;
