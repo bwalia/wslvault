@@ -52,6 +52,7 @@ impl PolicyServiceImpl {
 ///
 /// Returns an error `Status` if a capabilities string is unrecognisable,
 /// allowing the caller to surface a clear `INVALID_ARGUMENT` to the client.
+#[allow(clippy::result_large_err)]
 fn proto_to_domain_document(proto: ProtoPolicyDocument) -> Result<PolicyDocument, Status> {
     let mut rules = Vec::with_capacity(proto.rules.len());
 
@@ -73,6 +74,7 @@ fn proto_to_domain_document(proto: ProtoPolicyDocument) -> Result<PolicyDocument
 ///
 /// Accepted strings (case-insensitive): read, write, delete, list, create,
 /// update, deny. Returns `INVALID_ARGUMENT` for unknown strings.
+#[allow(clippy::result_large_err)]
 fn parse_capabilities(raw: &[String]) -> Result<HashSet<Capability>, Status> {
     raw.iter()
         .map(|s| match s.to_lowercase().as_str() {

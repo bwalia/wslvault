@@ -145,6 +145,7 @@ pub async fn list_secret_paths(
 }
 
 /// Write a new secret version using the atomic upsert function.
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_secret_version(
     pool: &DbPool,
     tenant_id: &TenantId,

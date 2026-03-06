@@ -84,6 +84,7 @@ impl PolicyStore {
     /// Return all `PolicyDocument`s belonging to `tenant_id`.
     ///
     /// Used by the background compilation task to rebuild the evaluated snapshot.
+    #[allow(dead_code)]
     #[instrument(skip(self), fields(tenant_id))]
     pub async fn get_all_for_tenant(&self, tenant_id: &str) -> Vec<PolicyDocument> {
         let guard = self.inner.read().await;

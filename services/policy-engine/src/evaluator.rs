@@ -38,6 +38,7 @@ impl CompiledPolicies {
     }
 
     /// Remove a policy by name. Returns true if the policy existed.
+    #[allow(dead_code)]
     pub fn remove(&mut self, name: &str) -> bool {
         self.policies.remove(name).is_some()
     }

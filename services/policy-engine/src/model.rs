@@ -60,7 +60,7 @@ impl Capability {
     pub fn from_action(action: &str) -> Option<Self> {
         // Strip an optional namespace prefix so callers can pass either
         // "read" or "secret:read" and get the same result.
-        let verb = action.split(':').last().unwrap_or(action);
+        let verb = action.split(':').next_back().unwrap_or(action);
         match verb {
             "read" => Some(Capability::Read),
             "write" => Some(Capability::Write),

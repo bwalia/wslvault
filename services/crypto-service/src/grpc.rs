@@ -70,6 +70,7 @@ fn vault_error_to_status(err: VaultError) -> Status {
 
 /// Validate that a required string field is non-empty, returning an
 /// `INVALID_ARGUMENT` status if it is blank.
+#[allow(clippy::result_large_err)]
 fn require_non_empty<'a>(value: &'a str, field: &str) -> Result<&'a str, Status> {
     if value.trim().is_empty() {
         Err(Status::invalid_argument(format!(

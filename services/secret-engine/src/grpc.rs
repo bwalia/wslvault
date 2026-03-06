@@ -81,6 +81,7 @@ impl SecretServiceImpl {
     /// In a production system you would maintain a connection pool. For the
     /// initial in-memory implementation a lazily created client per-call is
     /// sufficient and avoids lifecycle complexity.
+    #[allow(clippy::result_large_err)]
     async fn crypto_client(
         &self,
     ) -> Result<CryptoServiceClient<tonic::transport::Channel>, Status> {

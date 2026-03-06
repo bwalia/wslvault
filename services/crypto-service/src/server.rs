@@ -44,8 +44,8 @@ pub fn build_http_router() -> Router {
 /// have shut down cleanly.
 ///
 /// Graceful shutdown is triggered by:
-///   - SIGTERM (Kubernetes pod termination)
-///   - SIGINT  (Ctrl-C in development)
+/// - SIGTERM (Kubernetes pod termination)
+/// - SIGINT  (Ctrl-C in development)
 ///
 /// Both servers honour the same shutdown signal; once the signal fires each
 /// server drains in-flight requests before exiting.
