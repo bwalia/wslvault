@@ -28,6 +28,7 @@ pub fn sign_event(record: &AuditRecord, key: &[u8]) -> String {
 ///
 /// Uses `ring::hmac::verify` which performs a constant-time comparison to
 /// prevent timing attacks that could leak information about the expected MAC.
+#[cfg(test)]
 pub fn verify_signature(record: &AuditRecord, key: &[u8], signature: &str) -> bool {
     let Ok(sig_bytes) = hex::decode(signature) else {
         return false;

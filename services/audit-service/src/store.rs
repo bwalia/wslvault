@@ -56,6 +56,7 @@ pub async fn insert_record(store: &SharedAuditStore, record: AuditRecord) {
 ///
 /// Filters are ANDed together; an empty/None filter for a field is treated as
 /// "match all".  `limit` 0 means "return all matching records".
+#[allow(clippy::too_many_arguments)]
 pub async fn query_events(
     store: &SharedAuditStore,
     tenant_id: &str,
@@ -71,8 +72,8 @@ pub async fn query_events(
     let matching: Vec<&AuditRecord> = guard
         .iter()
         .filter(|r| r.tenant_id == tenant_id)
-        .filter(|r| start_time.map_or(true, |t| r.timestamp >= t))
-        .filter(|r| end_time.map_or(true, |t| r.timestamp <= t))
+        .filter(|r| start_time.is_none_or(|t| r.timestamp >= t))
+        .filter(|r| end_time.is_none_or(|t| r.timestamp <= t))
         .filter(|r| {
             action_filter
                 .map(|f| f.is_empty() || r.action == f)

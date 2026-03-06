@@ -158,6 +158,7 @@ impl AuditService for AuditServiceImpl {
 }
 
 /// Parse an RFC-3339 timestamp string.  Empty strings return `Ok(None)`.
+#[allow(clippy::result_large_err)]
 fn parse_optional_timestamp(s: &str) -> Result<Option<DateTime<chrono::Utc>>, Status> {
     if s.is_empty() {
         return Ok(None);

@@ -62,6 +62,7 @@ impl LeaseState {
 
 /// Full lease record persisted in the in-memory store.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct LeaseRecord {
     pub id: LeaseId,
     pub tenant_id: String,
