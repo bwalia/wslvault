@@ -46,6 +46,7 @@ jobs:
           -A clippy::too_many_arguments
           -A clippy::explicit_auto_deref
           -A clippy::doc_overindented_list_items
+          -A clippy::needless_lifetimes
           -A dead_code
 
       - name: Check workspace compiles

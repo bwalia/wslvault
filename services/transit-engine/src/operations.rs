@@ -90,7 +90,7 @@ pub fn rewrap(key: &TransitKey, old_ciphertext: &str) -> Result<String, VaultErr
 /// Parse a versioned ciphertext string into `(version, base64_body)`.
 ///
 /// Expected format: `vault:v{N}:{BASE64}`
-fn parse_versioned_ciphertext<'a>(ciphertext: &'a str) -> Result<(u32, &'a str), VaultError> {
+fn parse_versioned_ciphertext(ciphertext: &str) -> Result<(u32, &str), VaultError> {
     // Strip the mandatory "vault:v" prefix.
     let after_prefix = ciphertext
         .strip_prefix(CIPHERTEXT_PREFIX)
