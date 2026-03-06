@@ -78,6 +78,7 @@ impl PrincipalStore {
     /// Returns `VaultError::TenantNotFound` if the principal does not exist
     /// so the caller does not need to distinguish between missing tenant and
     /// missing principal at this layer.
+    #[cfg(test)]
     pub fn get_principal(
         &self,
         tenant_id: &str,
@@ -115,6 +116,7 @@ impl PrincipalStore {
     ///
     /// This is a full replacement — callers that want additive updates must
     /// read the current policies first, merge them, and pass the merged list.
+    #[cfg(test)]
     pub fn update_policies(
         &self,
         tenant_id: &str,

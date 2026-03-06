@@ -120,7 +120,7 @@ mod tests {
         let envelope = encrypt_with_dek(&dek, plaintext, aad).unwrap();
         let decrypted = decrypt_with_dek(&dek, &envelope.ciphertext_b64, aad).unwrap();
 
-        assert_eq!(&*decrypted, plaintext);
+        assert_eq!(decrypted.as_slice(), plaintext);
     }
 
     #[test]

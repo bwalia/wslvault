@@ -4,6 +4,7 @@ mod commands;
 mod config;
 mod mcp;
 mod output;
+#[allow(dead_code)]
 mod secrets;
 
 use clap::Parser;

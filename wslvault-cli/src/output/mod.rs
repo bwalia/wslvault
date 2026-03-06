@@ -25,6 +25,7 @@ pub fn success(msg: &str) {
 }
 
 /// Print a warning.
+#[allow(dead_code)]
 pub fn warn(msg: &str) {
     eprintln!("{} {}", "⚠".yellow().bold(), msg);
 }
@@ -35,6 +36,7 @@ pub fn kv(key: &str, value: &str) {
 }
 
 /// Print a table header.
+#[allow(dead_code)]
 pub fn table_header(columns: &[&str]) {
     let header = columns
         .iter()
