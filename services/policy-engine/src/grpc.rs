@@ -34,11 +34,11 @@ pub struct PolicyServiceImpl {
 impl PolicyServiceImpl {
     /// Create a new service handler.
     ///
-    /// * `store`    – the mutable policy store; also held by the background
-    ///                compilation task.
+    /// * `store` – the mutable policy store; also held by the background
+    ///   compilation task.
     /// * `compiled` – the latest compiled snapshot, updated by the background
-    ///                task. The gRPC handler reads from this under a read lock
-    ///                to avoid blocking writers.
+    ///   task. The gRPC handler reads from this under a read lock
+    ///   to avoid blocking writers.
     pub fn new(store: PolicyStore, compiled: Arc<RwLock<CompiledPolicies>>) -> Self {
         Self { store, compiled }
     }

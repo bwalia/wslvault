@@ -14,7 +14,7 @@ use crate::error::VaultError;
 /// - `ikm`: Input key material (e.g. a raw KEK or master secret).
 /// - `salt`: Optional domain-specific salt; use `None` for default zero-salt.
 /// - `info`: Context string binding the derived key to its purpose
-///           (e.g. tenant_id + secret path).
+///   (e.g. tenant_id + secret path).
 pub fn derive_key(
     ikm: &[u8],
     salt: Option<&[u8]>,

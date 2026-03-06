@@ -1,0 +1,10 @@
+# Cargo audit configuration
+# https://docs.rs/cargo-audit/latest/cargo_audit/
+
+[advisories]
+ignore = [
+    # rsa 0.9.10 - Marvin Attack timing side-channel (RUSTSEC-2023-0071)
+    # Transitive dep via sqlx-mysql; we only use PostgreSQL and never exercise RSA decryption.
+    # No fixed version available upstream.
+    "RUSTSEC-2023-0071",
+]
