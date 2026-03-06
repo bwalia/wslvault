@@ -127,9 +127,11 @@ impl PrincipalStore {
             reason: format!("store lock poisoned: {e}"),
         })?;
 
-        let record = map.get_mut(&key).ok_or_else(|| VaultError::TenantNotFound {
-            tenant_id: format!("principal '{principal_id}' in tenant '{tenant_id}'"),
-        })?;
+        let record = map
+            .get_mut(&key)
+            .ok_or_else(|| VaultError::TenantNotFound {
+                tenant_id: format!("principal '{principal_id}' in tenant '{tenant_id}'"),
+            })?;
 
         record.policies = new_policies;
         Ok(())

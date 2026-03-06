@@ -29,7 +29,7 @@ use tracing_subscriber::EnvFilter;
 use wslvault_core::config::VaultConfig;
 
 use crate::kek_store::KekStore;
-use crate::server::{ServerConfig, run};
+use crate::server::{run, ServerConfig};
 
 #[tokio::main]
 async fn main() {
@@ -73,9 +73,8 @@ async fn run_service() -> Result<(), anyhow::Error> {
 
     // Load the root KEK from the VAULT_ROOT_KEY environment variable.
     // This is a hard requirement: the service cannot operate without a root KEK.
-    let kek_store = KekStore::from_env().map_err(|err| {
-        anyhow::anyhow!("Failed to initialise KekStore: {}", err)
-    })?;
+    let kek_store = KekStore::from_env()
+        .map_err(|err| anyhow::anyhow!("Failed to initialise KekStore: {}", err))?;
 
     // Bind gRPC on port 50051 and HTTP on port 8080.
     // These ports are intentionally independent of VaultConfig.listen_addr
@@ -94,8 +93,7 @@ async fn run_service() -> Result<(), anyhow::Error> {
 /// to `info` if not set.  Using JSON output ensures logs are machine-readable
 /// in Kubernetes environments with a log aggregation pipeline.
 fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt()
         .json()

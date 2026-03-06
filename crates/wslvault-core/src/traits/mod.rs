@@ -54,11 +54,7 @@ pub trait SecretBackend: Send + Sync {
     ) -> Result<(), VaultError>;
 
     /// List secret paths under a given prefix.
-    async fn list(
-        &self,
-        principal: &Principal,
-        prefix: &str,
-    ) -> Result<Vec<String>, VaultError>;
+    async fn list(&self, principal: &Principal, prefix: &str) -> Result<Vec<String>, VaultError>;
 }
 
 /// Interface for all cryptographic operations. Implemented by the crypto-service.
@@ -166,8 +162,6 @@ pub trait LeaseManager: Send + Sync {
     ) -> Result<Lease, VaultError>;
 
     /// Revoke a lease immediately.
-    async fn revoke_lease(
-        &self,
-        lease_id: &crate::types::lease::LeaseId,
-    ) -> Result<(), VaultError>;
+    async fn revoke_lease(&self, lease_id: &crate::types::lease::LeaseId)
+        -> Result<(), VaultError>;
 }

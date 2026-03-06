@@ -52,9 +52,7 @@ impl PolicyServiceImpl {
 ///
 /// Returns an error `Status` if a capabilities string is unrecognisable,
 /// allowing the caller to surface a clear `INVALID_ARGUMENT` to the client.
-fn proto_to_domain_document(
-    proto: ProtoPolicyDocument,
-) -> Result<PolicyDocument, Status> {
+fn proto_to_domain_document(proto: ProtoPolicyDocument) -> Result<PolicyDocument, Status> {
     let mut rules = Vec::with_capacity(proto.rules.len());
 
     for proto_rule in proto.rules {
@@ -160,12 +158,8 @@ impl PolicyService for PolicyServiceImpl {
         }
 
         let compiled_guard = self.compiled.read().await;
-        let decision = evaluator::evaluate(
-            &compiled_guard,
-            &req.policies,
-            &req.action,
-            &req.resource,
-        );
+        let decision =
+            evaluator::evaluate(&compiled_guard, &req.policies, &req.action, &req.resource);
 
         debug!(
             tenant_id = %req.tenant_id,
@@ -204,9 +198,9 @@ impl PolicyService for PolicyServiceImpl {
             return Err(Status::invalid_argument("tenant_id must not be empty"));
         }
 
-        let proto_doc = req.policy.ok_or_else(|| {
-            Status::invalid_argument("policy document must be provided")
-        })?;
+        let proto_doc = req
+            .policy
+            .ok_or_else(|| Status::invalid_argument("policy document must be provided"))?;
 
         if proto_doc.name.is_empty() {
             return Err(Status::invalid_argument("policy name must not be empty"));

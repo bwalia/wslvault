@@ -87,7 +87,9 @@ pub async fn get_key_descriptor(
         algorithm: parse_algorithm(row.get("algorithm")),
         purpose: parse_purpose(row.get("purpose")),
         state: parse_state(row.get("state")),
-        tenant_id: row.get::<Option<Uuid>, _>("tenant_id").map(|u| u.to_string()),
+        tenant_id: row
+            .get::<Option<Uuid>, _>("tenant_id")
+            .map(|u| u.to_string()),
         created_at: row.get("created_at"),
         rotated_at: row.get("rotated_at"),
         expires_at: row.get("expires_at"),
@@ -123,7 +125,9 @@ pub async fn get_active_key(
         algorithm: parse_algorithm(row.get("algorithm")),
         purpose: parse_purpose(row.get("purpose")),
         state: parse_state(row.get("state")),
-        tenant_id: row.get::<Option<Uuid>, _>("tenant_id").map(|u| u.to_string()),
+        tenant_id: row
+            .get::<Option<Uuid>, _>("tenant_id")
+            .map(|u| u.to_string()),
         created_at: row.get("created_at"),
         rotated_at: row.get("rotated_at"),
         expires_at: row.get("expires_at"),
@@ -147,7 +151,11 @@ pub async fn insert_key_descriptor(
     .bind(algorithm_str(&desc.algorithm))
     .bind(purpose_str(&desc.purpose))
     .bind(state_str(&desc.state))
-    .bind(desc.tenant_id.as_ref().and_then(|s| Uuid::parse_str(s).ok()))
+    .bind(
+        desc.tenant_id
+            .as_ref()
+            .and_then(|s| Uuid::parse_str(s).ok()),
+    )
     .bind(wrapped_key)
     .bind(parent_key_id)
     .bind(desc.expires_at)
@@ -166,16 +174,14 @@ pub async fn update_key_state(
     key_id: &KeyId,
     new_state: &KeyState,
 ) -> Result<(), VaultError> {
-    sqlx::query(
-        "UPDATE system.key_descriptors SET state = $2, rotated_at = now() WHERE id = $1",
-    )
-    .bind(key_id.0)
-    .bind(state_str(new_state))
-    .execute(pool.inner())
-    .await
-    .map_err(|e| VaultError::Database {
-        reason: e.to_string(),
-    })?;
+    sqlx::query("UPDATE system.key_descriptors SET state = $2, rotated_at = now() WHERE id = $1")
+        .bind(key_id.0)
+        .bind(state_str(new_state))
+        .execute(pool.inner())
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: e.to_string(),
+        })?;
 
     Ok(())
 }

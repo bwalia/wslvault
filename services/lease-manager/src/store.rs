@@ -148,8 +148,7 @@ pub async fn renew_lease(
         });
     }
 
-    let max_expires_at = record.issued_at
-        + chrono::Duration::seconds(record.max_ttl_seconds);
+    let max_expires_at = record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
 
     let proposed_expires_at = Utc::now() + chrono::Duration::seconds(increment_seconds);
 
@@ -163,10 +162,7 @@ pub async fn renew_lease(
 }
 
 /// Transition a lease to the Revoked state immediately.
-pub async fn revoke_lease(
-    store: &SharedLeaseStore,
-    lease_id: &LeaseId,
-) -> Result<(), VaultError> {
+pub async fn revoke_lease(store: &SharedLeaseStore, lease_id: &LeaseId) -> Result<(), VaultError> {
     let mut guard = store.write().await;
     let record = guard
         .get_mut(lease_id)

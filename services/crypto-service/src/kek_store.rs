@@ -81,9 +81,11 @@ impl KekStore {
             reason: "VAULT_ROOT_KEY environment variable is not set".into(),
         })?;
 
-        let raw_bytes = BASE64.decode(encoded.trim()).map_err(|e| VaultError::Internal {
-            reason: format!("VAULT_ROOT_KEY is not valid base64: {e}"),
-        })?;
+        let raw_bytes = BASE64
+            .decode(encoded.trim())
+            .map_err(|e| VaultError::Internal {
+                reason: format!("VAULT_ROOT_KEY is not valid base64: {e}"),
+            })?;
 
         if raw_bytes.len() != 32 {
             return Err(VaultError::Internal {
@@ -143,8 +145,7 @@ impl KekStore {
         // Wrap the new tenant KEK under the root KEK.
         // AAD binds the wrapped key to this tenant so it cannot be transplanted.
         let aad = format!("tenant-kek:{tenant_id}");
-        let envelope =
-            encrypt_with_dek(&self.inner.root_kek, &*raw_kek, aad.as_bytes())?;
+        let envelope = encrypt_with_dek(&self.inner.root_kek, &*raw_kek, aad.as_bytes())?;
 
         let mut raw_kek_stored = Zeroizing::new([0u8; 32]);
         raw_kek_stored.copy_from_slice(&*raw_kek);
@@ -214,10 +215,7 @@ impl KekStore {
 
     /// Return the wrapped DEK (base64 envelope) and version for a key_id.
     /// Used when returning `wrapped_dek` in `GenerateDekResponse`.
-    pub async fn get_dek_metadata(
-        &self,
-        key_id: &str,
-    ) -> Result<(String, u32), VaultError> {
+    pub async fn get_dek_metadata(&self, key_id: &str) -> Result<(String, u32), VaultError> {
         let reader = self.inner.deks.read().await;
         let entry = reader.get(key_id).ok_or_else(|| VaultError::KeyNotFound {
             key_id: key_id.to_string(),
@@ -232,11 +230,7 @@ impl KekStore {
     /// Data previously encrypted with the old DEK version remains decryptable during
     /// a re-encryption migration window (not implemented here — the old raw_dek is
     /// discarded from memory; in production it would be retained for a grace period).
-    pub async fn rotate_dek(
-        &self,
-        tenant_id: &str,
-        key_id: &str,
-    ) -> Result<u32, VaultError> {
+    pub async fn rotate_dek(&self, tenant_id: &str, key_id: &str) -> Result<u32, VaultError> {
         // Verify the key belongs to this tenant.
         {
             let reader = self.inner.deks.read().await;
@@ -259,9 +253,11 @@ impl KekStore {
 
         let new_version = {
             let mut writer = self.inner.deks.write().await;
-            let entry = writer.get_mut(key_id).ok_or_else(|| VaultError::KeyNotFound {
-                key_id: key_id.to_string(),
-            })?;
+            let entry = writer
+                .get_mut(key_id)
+                .ok_or_else(|| VaultError::KeyNotFound {
+                    key_id: key_id.to_string(),
+                })?;
 
             let new_version = entry.version + 1;
 

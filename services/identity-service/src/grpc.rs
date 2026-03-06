@@ -14,23 +14,17 @@ use chrono::Utc;
 use tonic::{Request, Response, Status};
 use tracing::{error, info, warn};
 use uuid::Uuid;
-use wslvault_core::{
-    types::principal::AuthMethod,
-    VaultError,
-};
+use wslvault_core::{types::principal::AuthMethod, VaultError};
 
 use crate::{
     // `include_proto!("wslvault.identity.v1")` inlines the generated file at
     // this module level — there are no nested sub-modules for the package path.
     proto::{
-        identity_service_server::IdentityService,
-        AuthenticateRequest, AuthenticateResponse,
-        CreateServiceAccountRequest, CreateServiceAccountResponse,
-        ListServiceAccountsRequest, ListServiceAccountsResponse,
-        RevokeTokenRequest, RevokeTokenResponse,
-        ServiceAccountInfo,
-        ValidateTokenRequest, ValidateTokenResponse,
-        authenticate_request::Method,
+        authenticate_request::Method, identity_service_server::IdentityService,
+        AuthenticateRequest, AuthenticateResponse, CreateServiceAccountRequest,
+        CreateServiceAccountResponse, ListServiceAccountsRequest, ListServiceAccountsResponse,
+        RevokeTokenRequest, RevokeTokenResponse, ServiceAccountInfo, ValidateTokenRequest,
+        ValidateTokenResponse,
     },
     store::{PrincipalRecord, PrincipalStore},
     token::TokenManager,
@@ -157,7 +151,12 @@ impl IdentityService for IdentityServiceImpl {
 
         let (new_token, expires_at) = self
             .token_manager
-            .issue_token(&principal_id, &req.tenant_id, policies.clone(), TOKEN_REISSUE_TTL_SECONDS)
+            .issue_token(
+                &principal_id,
+                &req.tenant_id,
+                policies.clone(),
+                TOKEN_REISSUE_TTL_SECONDS,
+            )
             .map_err(vault_err_to_status)?;
 
         info!(

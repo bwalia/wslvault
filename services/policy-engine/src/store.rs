@@ -53,11 +53,7 @@ impl PolicyStore {
     ///
     /// Returns `None` if the policy does not exist.
     #[instrument(skip(self), fields(tenant_id, name))]
-    pub async fn get_policy(
-        &self,
-        tenant_id: &str,
-        name: &str,
-    ) -> Option<PolicyDocument> {
+    pub async fn get_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument> {
         let key = (tenant_id.to_string(), name.to_string());
         let guard = self.inner.read().await;
         guard.get(&key).cloned()
@@ -67,11 +63,7 @@ impl PolicyStore {
     ///
     /// Returns the removed document, or `None` if it was not present.
     #[instrument(skip(self), fields(tenant_id, name))]
-    pub async fn delete_policy(
-        &self,
-        tenant_id: &str,
-        name: &str,
-    ) -> Option<PolicyDocument> {
+    pub async fn delete_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument> {
         let key = (tenant_id.to_string(), name.to_string());
         debug!(tenant_id, name, "deleting policy");
         let mut guard = self.inner.write().await;

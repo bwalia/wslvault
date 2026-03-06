@@ -101,7 +101,10 @@ pub async fn create_key(
     if guard.contains_key(&map_key) {
         return Err(VaultError::ValidationError {
             field: "key_name".into(),
-            reason: format!("key '{}' already exists for tenant '{}'", key_name, tenant_id),
+            reason: format!(
+                "key '{}' already exists for tenant '{}'",
+                key_name, tenant_id
+            ),
         });
     }
 

@@ -22,4 +22,6 @@ pub use types::principal::{AuthMethod, Principal, PrincipalId};
 pub use types::secret::{SecretEngine, SecretId, SecretMetadata, SecretVersion};
 pub use types::tenant::{Tenant, TenantId, TenantTier};
 
-pub use traits::{AuditEvent, AuditOutcome, AuditSink, CryptoBackend, PolicyEvaluator, SecretBackend};
+pub use traits::{
+    AuditEvent, AuditOutcome, AuditSink, CryptoBackend, PolicyEvaluator, SecretBackend,
+};

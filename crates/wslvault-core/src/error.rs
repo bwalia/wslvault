@@ -66,7 +66,10 @@ pub enum VaultError {
     LeaseExpired { lease_id: String },
 
     #[error("operation not supported by engine {engine_type}: {operation}")]
-    UnsupportedOperation { engine_type: String, operation: String },
+    UnsupportedOperation {
+        engine_type: String,
+        operation: String,
+    },
 
     // Internal errors
     #[error("internal error: {reason}")]
@@ -114,8 +117,7 @@ impl VaultError {
             | VaultError::LeaseNotFound { .. } => 404,
             VaultError::CasConflict { .. } => 409,
             VaultError::VersionDestroyed { .. } => 410,
-            VaultError::ValidationError { .. }
-            | VaultError::InvalidPath { .. } => 400,
+            VaultError::ValidationError { .. } | VaultError::InvalidPath { .. } => 400,
             VaultError::ServiceUnavailable { .. } => 503,
             VaultError::LeaseExpired { .. } => 403,
             _ => 500,

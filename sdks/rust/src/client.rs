@@ -76,10 +76,7 @@ impl VaultClient {
 
     /// List secret paths under the given prefix.
     pub async fn list_secrets(&self, prefix: &str) -> Result<ListResponse, VaultClientError> {
-        let url = format!(
-            "{}/v1/secret/list?prefix={}",
-            self.config.endpoint, prefix
-        );
+        let url = format!("{}/v1/secret/list?prefix={}", self.config.endpoint, prefix);
         let resp = self.request(reqwest::Method::GET, &url).send().await?;
         self.handle_response(resp).await
     }
@@ -114,10 +111,7 @@ impl VaultClient {
         key_name: &str,
         plaintext: &str,
     ) -> Result<Value, VaultClientError> {
-        let url = format!(
-            "{}/v1/transit/encrypt/{}",
-            self.config.endpoint, key_name
-        );
+        let url = format!("{}/v1/transit/encrypt/{}", self.config.endpoint, key_name);
         let body = serde_json::json!({ "plaintext": plaintext });
         let resp = self
             .request(reqwest::Method::POST, &url)
@@ -133,10 +127,7 @@ impl VaultClient {
         key_name: &str,
         ciphertext: &str,
     ) -> Result<Value, VaultClientError> {
-        let url = format!(
-            "{}/v1/transit/decrypt/{}",
-            self.config.endpoint, key_name
-        );
+        let url = format!("{}/v1/transit/decrypt/{}", self.config.endpoint, key_name);
         let body = serde_json::json!({ "ciphertext": ciphertext });
         let resp = self
             .request(reqwest::Method::POST, &url)

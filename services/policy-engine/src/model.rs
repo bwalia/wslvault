@@ -91,8 +91,14 @@ mod tests {
 
     #[test]
     fn capability_from_namespaced_action() {
-        assert_eq!(Capability::from_action("secret:read"), Some(Capability::Read));
-        assert_eq!(Capability::from_action("secret:write"), Some(Capability::Write));
+        assert_eq!(
+            Capability::from_action("secret:read"),
+            Some(Capability::Read)
+        );
+        assert_eq!(
+            Capability::from_action("secret:write"),
+            Some(Capability::Write)
+        );
         assert_eq!(Capability::from_action("read"), Some(Capability::Read));
         assert_eq!(Capability::from_action("unknown"), None);
     }

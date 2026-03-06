@@ -34,9 +34,7 @@ pub fn encrypt(key: &TransitKey, plaintext: &[u8]) -> Result<String, VaultError>
 
     Ok(format!(
         "{}{}:{}",
-        CIPHERTEXT_PREFIX,
-        key.current_version,
-        envelope.ciphertext_b64
+        CIPHERTEXT_PREFIX, key.current_version, envelope.ciphertext_b64
     ))
 }
 
@@ -92,18 +90,14 @@ pub fn rewrap(key: &TransitKey, old_ciphertext: &str) -> Result<String, VaultErr
 /// Parse a versioned ciphertext string into `(version, base64_body)`.
 ///
 /// Expected format: `vault:v{N}:{BASE64}`
-fn parse_versioned_ciphertext<'a>(
-    ciphertext: &'a str,
-) -> Result<(u32, &'a str), VaultError> {
+fn parse_versioned_ciphertext<'a>(ciphertext: &'a str) -> Result<(u32, &'a str), VaultError> {
     // Strip the mandatory "vault:v" prefix.
     let after_prefix = ciphertext
         .strip_prefix(CIPHERTEXT_PREFIX)
         .ok_or_else(|| VaultError::DecryptionFailed)?;
 
     // Split into version and b64 body at the first `:`.
-    let colon_pos = after_prefix
-        .find(':')
-        .ok_or(VaultError::DecryptionFailed)?;
+    let colon_pos = after_prefix.find(':').ok_or(VaultError::DecryptionFailed)?;
 
     let version_str = &after_prefix[..colon_pos];
     let b64_body = &after_prefix[colon_pos + 1..];

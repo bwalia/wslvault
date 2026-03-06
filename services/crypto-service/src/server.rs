@@ -62,8 +62,8 @@ pub async fn run(kek_store: KekStore, config: ServerConfig) -> Result<(), anyhow
     let http_addr = config.http_addr;
     let http_router = build_http_router();
     let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
-    let http_server = axum::serve(http_listener, http_router)
-        .with_graceful_shutdown(shutdown_signal());
+    let http_server =
+        axum::serve(http_listener, http_router).with_graceful_shutdown(shutdown_signal());
 
     info!(
         grpc_addr = %grpc_addr,

@@ -131,12 +131,13 @@ impl KvStore {
             });
         }
 
-        let ver_entry = entry.get_version(target_version).ok_or_else(|| {
-            VaultError::SecretNotFound {
-                path: path.to_string(),
-                version: Some(target_version),
-            }
-        })?;
+        let ver_entry =
+            entry
+                .get_version(target_version)
+                .ok_or_else(|| VaultError::SecretNotFound {
+                    path: path.to_string(),
+                    version: Some(target_version),
+                })?;
 
         if ver_entry.destroyed {
             return Err(VaultError::VersionDestroyed {
@@ -226,8 +227,11 @@ impl KvStore {
 
         if live_versions.len() as u32 > effective_max {
             let excess = live_versions.len() as u32 - effective_max;
-            let to_remove: std::collections::HashSet<u32> =
-                live_versions.iter().take(excess as usize).copied().collect();
+            let to_remove: std::collections::HashSet<u32> = live_versions
+                .iter()
+                .take(excess as usize)
+                .copied()
+                .collect();
 
             // Remove pruned versions entirely from the list.
             entry.versions.retain(|v| !to_remove.contains(&v.version));
@@ -253,10 +257,12 @@ impl KvStore {
             path: path.to_string(),
         };
 
-        let entry = store.get_mut(&key).ok_or_else(|| VaultError::SecretNotFound {
-            path: path.to_string(),
-            version: None,
-        })?;
+        let entry = store
+            .get_mut(&key)
+            .ok_or_else(|| VaultError::SecretNotFound {
+                path: path.to_string(),
+                version: None,
+            })?;
 
         let now = Utc::now();
         let mut deleted_count: u32 = 0;
@@ -300,10 +306,12 @@ impl KvStore {
             path: path.to_string(),
         };
 
-        let entry = store.get_mut(&key).ok_or_else(|| VaultError::SecretNotFound {
-            path: path.to_string(),
-            version: None,
-        })?;
+        let entry = store
+            .get_mut(&key)
+            .ok_or_else(|| VaultError::SecretNotFound {
+                path: path.to_string(),
+                version: None,
+            })?;
 
         let now = Utc::now();
         let mut destroyed_count: u32 = 0;

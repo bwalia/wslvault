@@ -102,9 +102,7 @@ pub fn evaluate(
             if rule.capabilities.contains(&Capability::Deny) {
                 debug!(
                     policy = policy_name.as_str(),
-                    resource,
-                    action,
-                    "explicit deny rule matched"
+                    resource, action, "explicit deny rule matched"
                 );
                 return PolicyDecision::Deny {
                     reason: format!(
@@ -116,9 +114,7 @@ pub fn evaluate(
             if rule.capabilities.contains(&required_capability) {
                 debug!(
                     policy = policy_name.as_str(),
-                    resource,
-                    action,
-                    "allow rule matched"
+                    resource, action, "allow rule matched"
                 );
                 any_allow = true;
                 // Continue scanning remaining rules – a later deny still wins.
@@ -130,9 +126,7 @@ pub fn evaluate(
         PolicyDecision::Allow
     } else {
         PolicyDecision::Deny {
-            reason: format!(
-                "no policy grants '{action}' on resource '{resource}'"
-            ),
+            reason: format!("no policy grants '{action}' on resource '{resource}'"),
         }
     }
 }
@@ -255,12 +249,10 @@ fn segment_match(pattern: &str, segment: &str) -> bool {
                 }
                 return false;
             }
-            literal => {
-                match seg_chars.next() {
-                    Some(s) if s == literal => {}
-                    _ => return false,
-                }
-            }
+            literal => match seg_chars.next() {
+                Some(s) if s == literal => {}
+                _ => return false,
+            },
         }
     }
 
@@ -275,9 +267,7 @@ mod tests {
     use super::*;
     use crate::model::{Capability, PolicyRule};
 
-    fn make_compiled(
-        policies: Vec<(&str, Vec<PolicyRule>)>,
-    ) -> CompiledPolicies {
+    fn make_compiled(policies: Vec<(&str, Vec<PolicyRule>)>) -> CompiledPolicies {
         let mut c = CompiledPolicies::new();
         for (name, rules) in policies {
             c.upsert(name.to_string(), rules);
@@ -335,8 +325,12 @@ mod tests {
             "read-policy",
             vec![rule(&["secret/*"], &[Capability::Read])],
         )]);
-        let decision =
-            evaluate(&compiled, &["read-policy".to_string()], "secret:read", "secret/db");
+        let decision = evaluate(
+            &compiled,
+            &["read-policy".to_string()],
+            "secret:read",
+            "secret/db",
+        );
         assert_eq!(decision, PolicyDecision::Allow);
     }
 
@@ -346,8 +340,12 @@ mod tests {
             "read-policy",
             vec![rule(&["secret/*"], &[Capability::Read])],
         )]);
-        let decision =
-            evaluate(&compiled, &["read-policy".to_string()], "secret:write", "secret/db");
+        let decision = evaluate(
+            &compiled,
+            &["read-policy".to_string()],
+            "secret:write",
+            "secret/db",
+        );
         assert!(matches!(decision, PolicyDecision::Deny { .. }));
     }
 

@@ -78,9 +78,11 @@ impl TokenManager {
             exp,
         };
 
-        let token = encode(&Header::new(Algorithm::HS256), &claims, &self.encoding_key)
-            .map_err(|e| VaultError::Internal {
-                reason: format!("JWT encoding failed: {e}"),
+        let token =
+            encode(&Header::new(Algorithm::HS256), &claims, &self.encoding_key).map_err(|e| {
+                VaultError::Internal {
+                    reason: format!("JWT encoding failed: {e}"),
+                }
             })?;
 
         Ok((token, expires_at))
@@ -91,11 +93,9 @@ impl TokenManager {
     /// Returns `VaultError::Unauthenticated` for any invalid, expired, or
     /// malformed token so callers receive a consistent error variant.
     pub fn validate_token(&self, token: &str) -> Result<TokenClaims, VaultError> {
-        let token_data =
-            decode::<TokenClaims>(token, &self.decoding_key, &self.validation).map_err(|e| {
-                VaultError::Unauthenticated {
-                    reason: format!("invalid token: {e}"),
-                }
+        let token_data = decode::<TokenClaims>(token, &self.decoding_key, &self.validation)
+            .map_err(|e| VaultError::Unauthenticated {
+                reason: format!("invalid token: {e}"),
             })?;
 
         Ok(token_data.claims)

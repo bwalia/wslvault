@@ -49,8 +49,8 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 2. Initialise structured tracing ────────────────────────────────────
     // Respects the RUST_LOG environment variable; falls back to the config value.
-    let log_level = std::env::var("RUST_LOG")
-        .unwrap_or_else(|_| config.observability.log_level.clone());
+    let log_level =
+        std::env::var("RUST_LOG").unwrap_or_else(|_| config.observability.log_level.clone());
 
     tracing_subscriber::registry()
         .with(fmt::layer().json())
@@ -87,15 +87,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 4. Resolve crypto-service endpoint ──────────────────────────────────
     // Precedence: CRYPTO_SERVICE_ENDPOINT env var > VaultConfig > compiled default.
-    let crypto_endpoint = std::env::var("CRYPTO_SERVICE_ENDPOINT")
-        .unwrap_or_else(|_| {
-            let ep = config.crypto_service.endpoint.clone();
-            if ep.is_empty() {
-                DEFAULT_CRYPTO_ENDPOINT.to_string()
-            } else {
-                ep
-            }
-        });
+    let crypto_endpoint = std::env::var("CRYPTO_SERVICE_ENDPOINT").unwrap_or_else(|_| {
+        let ep = config.crypto_service.endpoint.clone();
+        if ep.is_empty() {
+            DEFAULT_CRYPTO_ENDPOINT.to_string()
+        } else {
+            ep
+        }
+    });
 
     info!(
         grpc_addr = %grpc_addr,

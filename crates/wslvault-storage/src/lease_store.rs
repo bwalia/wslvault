@@ -132,15 +132,13 @@ pub async fn renew_lease(
 
 /// Revoke a lease.
 pub async fn revoke_lease(pool: &DbPool, lease_id: &LeaseId) -> Result<(), VaultError> {
-    sqlx::query(
-        "UPDATE shared.leases SET state = 'revoked', revoked_at = now() WHERE id = $1",
-    )
-    .bind(lease_id.0)
-    .execute(pool.inner())
-    .await
-    .map_err(|e| VaultError::Database {
-        reason: e.to_string(),
-    })?;
+    sqlx::query("UPDATE shared.leases SET state = 'revoked', revoked_at = now() WHERE id = $1")
+        .bind(lease_id.0)
+        .execute(pool.inner())
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: e.to_string(),
+        })?;
 
     Ok(())
 }

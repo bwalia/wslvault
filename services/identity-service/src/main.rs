@@ -52,22 +52,18 @@ impl Config {
     /// - `VAULT_LISTEN_ADDR`: gRPC listen address (default: `0.0.0.0:50054`).
     /// - `VAULT_HTTP_ADDR`: HTTP health listen address (default: `0.0.0.0:8080`).
     fn from_env() -> Result<Self, anyhow::Error> {
-        let grpc_addr_str = std::env::var("VAULT_LISTEN_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:50054".to_string());
-        let grpc_addr = SocketAddr::from_str(&grpc_addr_str).map_err(|e| {
-            anyhow::anyhow!("invalid VAULT_LISTEN_ADDR '{grpc_addr_str}': {e}")
-        })?;
+        let grpc_addr_str =
+            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:50054".to_string());
+        let grpc_addr = SocketAddr::from_str(&grpc_addr_str)
+            .map_err(|e| anyhow::anyhow!("invalid VAULT_LISTEN_ADDR '{grpc_addr_str}': {e}"))?;
 
-        let http_addr_str = std::env::var("VAULT_HTTP_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:8080".to_string());
-        let http_addr = SocketAddr::from_str(&http_addr_str).map_err(|e| {
-            anyhow::anyhow!("invalid VAULT_HTTP_ADDR '{http_addr_str}': {e}")
-        })?;
+        let http_addr_str =
+            std::env::var("VAULT_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+        let http_addr = SocketAddr::from_str(&http_addr_str)
+            .map_err(|e| anyhow::anyhow!("invalid VAULT_HTTP_ADDR '{http_addr_str}': {e}"))?;
 
         let jwt_secret_str = std::env::var("VAULT_JWT_SECRET").map_err(|_| {
-            anyhow::anyhow!(
-                "VAULT_JWT_SECRET environment variable is required but not set"
-            )
+            anyhow::anyhow!("VAULT_JWT_SECRET environment variable is required but not set")
         })?;
 
         if jwt_secret_str.is_empty() {
@@ -91,7 +87,10 @@ async fn main() -> Result<(), anyhow::Error> {
         .with(fmt::layer().json())
         .init();
 
-    info!(version = env!("CARGO_PKG_VERSION"), "identity-service starting");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "identity-service starting"
+    );
 
     let config = Config::from_env().map_err(|e| {
         error!(error = %e, "failed to load configuration");

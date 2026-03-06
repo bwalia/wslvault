@@ -156,30 +156,29 @@ pub async fn upsert_secret_version(
     max_versions: u32,
     cas_required: bool,
 ) -> Result<(wslvault_core::SecretId, u32), VaultError> {
-    let row = sqlx::query(
-        "SELECT * FROM shared.vault_upsert_secret($1, $2, $3, $4, $5, $6, $7, $8)",
-    )
-    .bind(tenant_id.as_uuid())
-    .bind(path)
-    .bind(engine_str(engine))
-    .bind(ciphertext)
-    .bind(dek_id)
-    .bind(cas_version.map(|v| v as i32))
-    .bind(max_versions as i32)
-    .bind(cas_required)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("CAS conflict") {
-            VaultError::CasConflict {
-                expected: cas_version.unwrap_or(0),
-                actual: 0,
-            }
-        } else {
-            VaultError::Database { reason: msg }
-        }
-    })?;
+    let row =
+        sqlx::query("SELECT * FROM shared.vault_upsert_secret($1, $2, $3, $4, $5, $6, $7, $8)")
+            .bind(tenant_id.as_uuid())
+            .bind(path)
+            .bind(engine_str(engine))
+            .bind(ciphertext)
+            .bind(dek_id)
+            .bind(cas_version.map(|v| v as i32))
+            .bind(max_versions as i32)
+            .bind(cas_required)
+            .fetch_one(pool.inner())
+            .await
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("CAS conflict") {
+                    VaultError::CasConflict {
+                        expected: cas_version.unwrap_or(0),
+                        actual: 0,
+                    }
+                } else {
+                    VaultError::Database { reason: msg }
+                }
+            })?;
 
     let secret_id = wslvault_core::SecretId(row.get::<Uuid, _>("secret_id"));
     let new_version = row.get::<i32, _>("new_version") as u32;

@@ -200,7 +200,13 @@ pub async fn decrypt_handler(
     match decrypt(&key, &body.ciphertext) {
         Ok(plaintext_bytes) => {
             let plaintext_b64 = BASE64.encode(&plaintext_bytes);
-            (StatusCode::OK, Json(DecryptResponse { plaintext: plaintext_b64 })).into_response()
+            (
+                StatusCode::OK,
+                Json(DecryptResponse {
+                    plaintext: plaintext_b64,
+                }),
+            )
+                .into_response()
         }
         Err(e) => vault_error_response(e).into_response(),
     }

@@ -11,9 +11,10 @@ pub const AES_GCM_NONCE_LEN: usize = 12;
 pub fn generate_aes_gcm_nonce() -> Result<[u8; AES_GCM_NONCE_LEN], VaultError> {
     let rng = SystemRandom::new();
     let mut nonce = [0u8; AES_GCM_NONCE_LEN];
-    rng.fill(&mut nonce).map_err(|_| VaultError::EncryptionFailed {
-        reason: "CSPRNG nonce generation failed".into(),
-    })?;
+    rng.fill(&mut nonce)
+        .map_err(|_| VaultError::EncryptionFailed {
+            reason: "CSPRNG nonce generation failed".into(),
+        })?;
     Ok(nonce)
 }
 

@@ -37,9 +37,7 @@ use proto::{
 /// - Validation errors -> `INVALID_ARGUMENT`
 fn vault_error_to_status(err: VaultError) -> Status {
     match &err {
-        VaultError::KeyNotFound { key_id } => {
-            Status::not_found(format!("key not found: {key_id}"))
-        }
+        VaultError::KeyNotFound { key_id } => Status::not_found(format!("key not found: {key_id}")),
         VaultError::TenantNotFound { tenant_id } => {
             Status::not_found(format!("tenant not found: {tenant_id}"))
         }
@@ -134,8 +132,8 @@ impl CryptoService for CryptoServiceImpl {
             .await
             .map_err(vault_error_to_status)?;
 
-        let envelope = encrypt_with_dek(&dek, &req.plaintext, &req.aad)
-            .map_err(vault_error_to_status)?;
+        let envelope =
+            encrypt_with_dek(&dek, &req.plaintext, &req.aad).map_err(vault_error_to_status)?;
 
         info!(tenant_id, key_id, "Encrypt completed");
 
@@ -170,17 +168,17 @@ impl CryptoService for CryptoServiceImpl {
         // Parse "<dek_id>:<ciphertext_b64>" from the combined field.
         // The dek_id is a UUID which never contains ':', so splitting on the first ':'
         // is safe and unambiguous.
-        let (dek_id, ciphertext_b64) = req
-            .ciphertext_b64
-            .split_once(':')
-            .ok_or_else(|| {
-                Status::invalid_argument(
-                    "ciphertext_b64 must be in the format '<dek_id>:<base64_ciphertext>'",
-                )
-            })?;
+        let (dek_id, ciphertext_b64) = req.ciphertext_b64.split_once(':').ok_or_else(|| {
+            Status::invalid_argument(
+                "ciphertext_b64 must be in the format '<dek_id>:<base64_ciphertext>'",
+            )
+        })?;
 
         require_non_empty(dek_id, "dek_id (embedded in ciphertext_b64)")?;
-        require_non_empty(ciphertext_b64, "base64 ciphertext (embedded in ciphertext_b64)")?;
+        require_non_empty(
+            ciphertext_b64,
+            "base64 ciphertext (embedded in ciphertext_b64)",
+        )?;
 
         let dek = self
             .kek_store
@@ -188,8 +186,8 @@ impl CryptoService for CryptoServiceImpl {
             .await
             .map_err(vault_error_to_status)?;
 
-        let plaintext = decrypt_with_dek(&dek, ciphertext_b64, &req.aad)
-            .map_err(vault_error_to_status)?;
+        let plaintext =
+            decrypt_with_dek(&dek, ciphertext_b64, &req.aad).map_err(vault_error_to_status)?;
 
         info!(tenant_id, dek_id, "Decrypt completed");
 

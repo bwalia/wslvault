@@ -53,7 +53,8 @@ struct ApiError {
 
 /// Convert a `VaultError` to an HTTP response with the appropriate status code.
 fn vault_err_to_response(err: VaultError) -> Response {
-    let status = StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(err.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let body = ApiError {
         code: err.code(),
         message: err.to_string(),
@@ -173,7 +174,11 @@ pub async fn get_secret(
     tracing::Span::current().record("tenant_id", &tenant_id.as_str());
     info!("http get_secret");
 
-    let ver_entry = match state.store.get(&tenant_id, &normalized_path, query.version).await {
+    let ver_entry = match state
+        .store
+        .get(&tenant_id, &normalized_path, query.version)
+        .await
+    {
         Ok(v) => v,
         Err(e) => return vault_err_to_response(e),
     };
@@ -181,25 +186,24 @@ pub async fn get_secret(
     // Decrypt the stored ciphertext via the crypto-service.
     let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
 
-    let mut crypto_client =
-        match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-            state.crypto_endpoint.clone(),
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                error!(error = %e, "crypto-service connect failed");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ApiError {
-                        code: "service_unavailable",
-                        message: format!("crypto-service unavailable: {}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
+        state.crypto_endpoint.clone(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "crypto-service connect failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    code: "service_unavailable",
+                    message: format!("crypto-service unavailable: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let decrypt_resp = match crypto_client
         .decrypt(crypto_proto::DecryptRequest {
@@ -290,25 +294,24 @@ pub async fn put_secret(
 
     let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
 
-    let mut crypto_client =
-        match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-            state.crypto_endpoint.clone(),
-        )
-        .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                error!(error = %e, "crypto-service connect failed");
-                return (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    Json(ApiError {
-                        code: "service_unavailable",
-                        message: format!("crypto-service unavailable: {}", e),
-                    }),
-                )
-                    .into_response();
-            }
-        };
+    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
+        state.crypto_endpoint.clone(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "crypto-service connect failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    code: "service_unavailable",
+                    message: format!("crypto-service unavailable: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let encrypt_resp = match crypto_client
         .encrypt(crypto_proto::EncryptRequest {
