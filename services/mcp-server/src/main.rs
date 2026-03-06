@@ -12,12 +12,11 @@ mod tools;
 use std::net::SocketAddr;
 
 use axum::{
-    extract::State,
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use serde::Serialize;
+use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Shared application state for all MCP tool handlers.
