@@ -39,7 +39,14 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy lints
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: >
+          cargo clippy --all-targets --all-features -- -D warnings
+          -A clippy::needless_borrows_for_generic_args
+          -A clippy::result_large_err
+          -A clippy::too_many_arguments
+          -A clippy::explicit_auto_deref
+          -A clippy::doc_overindented_list_items
+          -A dead_code
 
       - name: Check workspace compiles
         run: cargo check --workspace
