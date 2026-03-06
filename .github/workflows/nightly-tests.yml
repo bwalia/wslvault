@@ -1,0 +1,232 @@
+# =============================================================================
+# WSLVault Nightly End-to-End Test Workflow
+# =============================================================================
+# Spins up the full WSLVault platform via Docker Compose, builds the CLI,
+# and runs comprehensive end-to-end tests covering all features:
+#   - KV secrets (read/write/list/delete/destroy)
+#   - Transit encryption (encrypt/decrypt/sign/verify/rotate)
+#   - Lease management (create/renew/revoke/expiration)
+#   - Identity & auth (service accounts, token validation)
+#   - MCP client operations (tool listing, secret retrieval)
+#   - Server health & connectivity
+#
+# Results are reported as JUnit XML and uploaded as artifacts for CI dashboards.
+# =============================================================================
+
+name: Nightly E2E Tests
+
+on:
+  # Run nightly at 02:00 UTC
+  schedule:
+    - cron: "0 2 * * *"
+  # Allow manual trigger for debugging
+  workflow_dispatch:
+  # Also run on PRs that touch test infrastructure
+  pull_request:
+    paths:
+      - ".github/workflows/nightly-tests.yml"
+      - "scripts/e2e-tests.sh"
+      - "docker-compose.yml"
+      - "wslvault-cli/**"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_LOG: info
+  # Test configuration
+  WSLVAULT_ADDR: "http://localhost:8081"
+  WSLVAULT_MCP_ADDR: "http://localhost:8087"
+  WSLVAULT_TRANSIT_ADDR: "http://localhost:8086"
+  WSLVAULT_TENANT_ID: "test-tenant"
+
+jobs:
+  e2e-tests:
+    name: End-to-End Feature Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install Rust toolchain ────────────────────────────────────────
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      # ── 3. Cache Cargo dependencies ──────────────────────────────────────
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-e2e-
+
+      # ── 4. Build wslvault-cli ────────────────────────────────────────────
+      - name: Build wslvault-cli
+        run: cargo build --release -p wslvault-cli
+
+      - name: Verify CLI binary exists
+        run: |
+          ./target/release/wslvault --version
+          echo "CLI binary built successfully"
+
+      # ── 5. Start WSLVault platform via Docker Compose ────────────────────
+      - name: Start WSLVault services
+        run: |
+          # Build all service images
+          docker compose build --parallel
+
+          # Start infrastructure first (postgres, redis)
+          docker compose up -d postgres redis
+          echo "Waiting for PostgreSQL to be ready..."
+          for i in $(seq 1 30); do
+            if docker compose exec -T postgres pg_isready -U wslvault 2>/dev/null; then
+              echo "PostgreSQL is ready"
+              break
+            fi
+            echo "  waiting... ($i/30)"
+            sleep 2
+          done
+
+          # Start all application services
+          docker compose up -d
+          echo "All services starting..."
+
+      # ── 6. Wait for services to be healthy ───────────────────────────────
+      - name: Wait for services to be healthy
+        run: |
+          echo "Polling service health endpoints..."
+
+          # Define services and their health endpoints
+          declare -A SERVICES=(
+            ["secret-engine"]="http://localhost:8081/health"
+            ["crypto-service"]="http://localhost:8080/health"
+            ["transit-engine"]="http://localhost:8086/health"
+            ["mcp-server"]="http://localhost:8087/health"
+            ["identity-service"]="http://localhost:8082/health"
+            ["policy-engine"]="http://localhost:8083/health"
+            ["lease-manager"]="http://localhost:8084/health"
+            ["audit-service"]="http://localhost:8085/health"
+          )
+
+          MAX_ATTEMPTS=60
+          for SERVICE in "${!SERVICES[@]}"; do
+            URL="${SERVICES[$SERVICE]}"
+            echo -n "  $SERVICE ($URL): "
+            for i in $(seq 1 $MAX_ATTEMPTS); do
+              if curl -sf "$URL" > /dev/null 2>&1; then
+                echo "ready ✓"
+                break
+              fi
+              if [ $i -eq $MAX_ATTEMPTS ]; then
+                echo "TIMEOUT ✗"
+                echo "::error::Service $SERVICE failed to become healthy within $(($MAX_ATTEMPTS * 2))s"
+                docker compose logs "$SERVICE" --tail 50
+                exit 1
+              fi
+              sleep 2
+            done
+          done
+          echo ""
+          echo "All services are healthy!"
+
+      # ── 7. Run E2E test suite ────────────────────────────────────────────
+      - name: Run end-to-end tests
+        id: e2e_tests
+        run: |
+          chmod +x scripts/e2e-tests.sh
+          bash scripts/e2e-tests.sh 2>&1 | tee /tmp/wslvault-e2e.log
+        continue-on-error: true
+
+      # ── 8. Run CLI unit + integration tests ──────────────────────────────
+      - name: Run wslvault-cli cargo tests
+        id: cli_tests
+        run: cargo test -p wslvault-cli --release 2>&1 | tee -a /tmp/wslvault-e2e.log
+        continue-on-error: true
+
+      # ── 9. Run core crate tests ──────────────────────────────────────────
+      - name: Run wslvault-core tests
+        id: core_tests
+        run: cargo test -p wslvault-core --release 2>&1 | tee -a /tmp/wslvault-e2e.log
+        continue-on-error: true
+
+      # ── 10. Collect Docker logs on failure ───────────────────────────────
+      - name: Collect service logs
+        if: always()
+        run: |
+          mkdir -p /tmp/artifacts
+          docker compose logs --no-color > /tmp/artifacts/docker-compose-logs.txt 2>&1
+          cp /tmp/wslvault-e2e.log /tmp/artifacts/wslvault-e2e.log
+
+      # ── 11. Generate JUnit XML test report ───────────────────────────────
+      - name: Generate JUnit test report
+        if: always()
+        run: |
+          cat > /tmp/artifacts/wslvault-e2e-report.xml << 'XMLEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <testsuites name="WSLVault E2E Tests" time="0">
+          XMLEOF
+
+          # Parse test results from the log
+          PASS=0
+          FAIL=0
+          while IFS= read -r line; do
+            if [[ "$line" == *"[PASS]"* ]]; then
+              TEST_NAME=$(echo "$line" | sed 's/.*\[PASS\] //')
+              echo "  <testsuite name=\"e2e\" tests=\"1\"><testcase name=\"$TEST_NAME\" classname=\"e2e\"/></testsuite>" >> /tmp/artifacts/wslvault-e2e-report.xml
+              PASS=$((PASS + 1))
+            elif [[ "$line" == *"[FAIL]"* ]]; then
+              TEST_NAME=$(echo "$line" | sed 's/.*\[FAIL\] //')
+              echo "  <testsuite name=\"e2e\" tests=\"1\" failures=\"1\"><testcase name=\"$TEST_NAME\" classname=\"e2e\"><failure message=\"Test failed\">See logs for details</failure></testcase></testsuite>" >> /tmp/artifacts/wslvault-e2e-report.xml
+              FAIL=$((FAIL + 1))
+            fi
+          done < /tmp/wslvault-e2e.log
+
+          echo "</testsuites>" >> /tmp/artifacts/wslvault-e2e-report.xml
+          echo "Test Results: $PASS passed, $FAIL failed"
+
+      # ── 12. Upload test artifacts ────────────────────────────────────────
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wslvault-e2e-results
+          path: /tmp/artifacts/
+          retention-days: 30
+
+      # ── 13. Clean up Docker environment ──────────────────────────────────
+      - name: Tear down Docker Compose
+        if: always()
+        run: |
+          docker compose down -v --remove-orphans
+          docker system prune -f
+
+      # ── 14. Fail workflow if any tests failed ────────────────────────────
+      - name: Check test results
+        if: always()
+        run: |
+          FAILED=0
+          if [ "${{ steps.e2e_tests.outcome }}" == "failure" ]; then
+            echo "::error::E2E tests failed"
+            FAILED=1
+          fi
+          if [ "${{ steps.cli_tests.outcome }}" == "failure" ]; then
+            echo "::error::CLI tests failed"
+            FAILED=1
+          fi
+          if [ "${{ steps.core_tests.outcome }}" == "failure" ]; then
+            echo "::error::Core tests failed"
+            FAILED=1
+          fi
+          if [ $FAILED -eq 1 ]; then
+            echo "One or more test suites failed. See artifacts for details."
+            exit 1
+          fi
+          echo "All test suites passed!"
