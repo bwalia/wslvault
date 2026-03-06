@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 //! CLI integration tests for wslvault-cli.
 //!
 //! These tests verify that the CLI binary starts correctly, parses arguments,
