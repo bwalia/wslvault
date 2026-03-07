@@ -5,7 +5,9 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo/ .cargo/
 COPY crates/ crates/
-COPY services/lease-manager/ services/lease-manager/
+COPY services/ services/
+COPY sdks/ sdks/
+COPY wslvault-cli/ wslvault-cli/
 COPY proto/ proto/
 RUN cargo build --release --target x86_64-unknown-linux-musl -p lease-manager
 
