@@ -31,6 +31,7 @@ use crate::grpc::crypto_proto;
 use crate::kv_store::KvStore;
 use crate::path::normalize_and_validate;
 
+use wslvault_core::metrics::collector::{SECRET_OPERATIONS_TOTAL, SECRETS_MANAGED};
 use wslvault_core::VaultError;
 
 // ─── Shared app state ────────────────────────────────────────────────────────
@@ -229,6 +230,10 @@ pub async fn get_secret(
 
     let data_b64 = base64_encode(&decrypt_resp.plaintext);
 
+    SECRET_OPERATIONS_TOTAL
+        .with_label_values(&["read", &tenant_id, "success"])
+        .inc();
+
     (
         StatusCode::OK,
         Json(GetSecretResponseBody {
@@ -352,6 +357,13 @@ pub async fn put_secret(
         Err(e) => return vault_err_to_response(e),
     };
 
+    SECRET_OPERATIONS_TOTAL
+        .with_label_values(&["write", &tenant_id, "success"])
+        .inc();
+    SECRETS_MANAGED
+        .with_label_values(&[&tenant_id, "kv-v2"])
+        .inc();
+
     (
         StatusCode::OK,
         Json(PutSecretResponseBody { secret_id, version }),
@@ -393,6 +405,10 @@ pub async fn delete_secret(
         Err(e) => return vault_err_to_response(e),
     };
 
+    SECRET_OPERATIONS_TOTAL
+        .with_label_values(&["delete", &tenant_id, "success"])
+        .inc();
+
     (StatusCode::OK, Json(DeleteResponseBody { count })).into_response()
 }
 
@@ -429,6 +445,10 @@ pub async fn destroy_secret(
         Ok(c) => c,
         Err(e) => return vault_err_to_response(e),
     };
+
+    SECRET_OPERATIONS_TOTAL
+        .with_label_values(&["destroy", &tenant_id, "success"])
+        .inc();
 
     (StatusCode::OK, Json(DeleteResponseBody { count })).into_response()
 }

@@ -1,0 +1,77 @@
+groups:
+  - name: wslvault_ha
+    rules:
+      - alert: WSLVaultNoLeader
+        expr: sum(wslvault_ha_is_leader) == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "No HA leader elected"
+          description: "No WSLVault node is reporting as the cluster leader for 30 seconds."
+
+      - alert: WSLVaultHighReplicationLag
+        expr: max(wslvault_ha_replication_lag_ms) > 5000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High replication lag detected"
+          description: "Replication lag is {{ $value }}ms, exceeding 5s threshold."
+
+      - alert: WSLVaultFailoverOccurred
+        expr: increase(wslvault_ha_failover_total[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Failover event detected"
+          description: "A failover from {{ $labels.from_region }} to {{ $labels.to_region }} was triggered."
+
+      - alert: WSLVaultClusterDegraded
+        expr: sum(wslvault_ha_cluster_nodes{state=~"suspect|dead"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cluster has unhealthy nodes"
+          description: "{{ $value }} nodes are in suspect or dead state."
+
+  - name: wslvault_latency
+    rules:
+      - alert: WSLVaultHighLatency
+        expr: histogram_quantile(0.99, sum(rate(wslvault_http_request_duration_seconds_bucket[5m])) by (le, service)) > 1.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP latency on {{ $labels.service }}"
+          description: "p99 latency is {{ $value }}s for {{ $labels.service }}."
+
+      - alert: WSLVaultHighErrorRate
+        expr: sum(rate(wslvault_http_requests_total{status=~"5.."}[5m])) / sum(rate(wslvault_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High error rate detected"
+          description: "More than 5% of requests are returning 5xx errors."
+
+  - name: wslvault_security
+    rules:
+      - alert: WSLVaultHighDeniedRate
+        expr: sum(rate(wslvault_audit_events_by_action{outcome="denied"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High rate of denied operations"
+          description: "{{ $value }} denied operations per second detected."
+
+      - alert: WSLVaultAuthFailures
+        expr: sum(rate(wslvault_auth_attempts_total{outcome="failure"}[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High authentication failure rate"
+          description: "{{ $value }} failed auth attempts per second."

@@ -10,6 +10,8 @@
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod ha;
+pub mod metrics;
 pub mod traits;
 pub mod types;
 

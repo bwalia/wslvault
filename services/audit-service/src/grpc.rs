@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::integrity::sign_event;
 use crate::store::{insert_record, query_events, AuditRecord, SharedAuditStore};
+use wslvault_core::metrics::collector::{AUDIT_EVENTS_TOTAL, AUDIT_EVENTS_BY_ACTION};
 
 use proto::audit_service_server::AuditService;
 use proto::{
@@ -89,6 +90,15 @@ impl AuditService for AuditServiceImpl {
         record.signature = sign_event(&record, &self.signing_key);
 
         let event_id = record.id.to_string();
+
+        // Track metrics for the audit event.
+        AUDIT_EVENTS_TOTAL
+            .with_label_values(&[&record.outcome])
+            .inc();
+        AUDIT_EVENTS_BY_ACTION
+            .with_label_values(&[&record.action, &record.outcome, &record.tenant_id])
+            .inc();
+
         insert_record(&self.store, record).await;
 
         Ok(Response::new(EmitEventResponse { event_id }))

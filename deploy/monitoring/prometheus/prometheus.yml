@@ -1,0 +1,72 @@
+# Prometheus configuration for WSLVault monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+# Alerting rules (optional, can be extended)
+rule_files:
+  - "alerts/*.yml"
+
+scrape_configs:
+  # ── WSLVault Services ──────────────────────────────────────────────────
+  - job_name: "wslvault-crypto-service"
+    static_configs:
+      - targets: ["crypto-service:9090"]
+        labels:
+          service: "crypto-service"
+          region: "us-east-1"
+
+  - job_name: "wslvault-secret-engine"
+    static_configs:
+      - targets: ["secret-engine:9090"]
+        labels:
+          service: "secret-engine"
+          region: "us-east-1"
+
+  - job_name: "wslvault-identity-service"
+    static_configs:
+      - targets: ["identity-service:9090"]
+        labels:
+          service: "identity-service"
+          region: "us-east-1"
+
+  - job_name: "wslvault-policy-engine"
+    static_configs:
+      - targets: ["policy-engine:9090"]
+        labels:
+          service: "policy-engine"
+          region: "us-east-1"
+
+  - job_name: "wslvault-transit-engine"
+    static_configs:
+      - targets: ["transit-engine:9090"]
+        labels:
+          service: "transit-engine"
+          region: "us-east-1"
+
+  - job_name: "wslvault-lease-manager"
+    static_configs:
+      - targets: ["lease-manager:9090"]
+        labels:
+          service: "lease-manager"
+          region: "us-east-1"
+
+  - job_name: "wslvault-audit-service"
+    static_configs:
+      - targets: ["audit-service:9090"]
+        labels:
+          service: "audit-service"
+          region: "us-east-1"
+
+  - job_name: "wslvault-mcp-server"
+    static_configs:
+      - targets: ["mcp-server:9090"]
+        labels:
+          service: "mcp-server"
+          region: "us-east-1"
+
+  # ── Prometheus self-monitoring ─────────────────────────────────────────
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

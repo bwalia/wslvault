@@ -25,3 +25,6 @@ hex = { workspace = true }
 anyhow = { workspace = true }
 config = { workspace = true }
 tokio = { workspace = true }
+prometheus = { workspace = true }
+axum = { workspace = true }
+once_cell = "1.19"

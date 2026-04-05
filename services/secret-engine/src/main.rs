@@ -14,6 +14,7 @@
 //! be overridden with `VAULT__CRYPTO_SERVICE__ENDPOINT`.
 
 mod grpc;
+mod ha_status;
 mod health;
 mod http;
 mod kv_store;
@@ -103,7 +104,18 @@ async fn main() -> anyhow::Result<()> {
         "resolved service configuration"
     );
 
-    // ── 5. Start servers ─────────────────────────────────────────────────────
+    // ── 5. Start metrics server ──────────────────────────────────────────────
+    let metrics_addr = config.observability.metrics_addr;
+    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
+
+    // ── 6. Start HA heartbeat if enabled ──────────��─────────────────────────
+    if config.ha.enabled {
+        let cluster_state = wslvault_core::ha::cluster::new_cluster_state(config.ha.clone());
+        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(cluster_state));
+        info!("HA mode enabled, heartbeat loop started");
+    }
+
+    // ── 7. Start servers ───────────────────────────────────────────────��────
     server::run(grpc_addr, http_addr, crypto_endpoint).await?;
 
     Ok(())

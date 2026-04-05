@@ -76,6 +76,17 @@ async fn run_service() -> Result<(), anyhow::Error> {
     let kek_store = KekStore::from_env()
         .map_err(|err| anyhow::anyhow!("Failed to initialise KekStore: {}", err))?;
 
+    // Start metrics server on the configured address.
+    let metrics_addr = vault_config.observability.metrics_addr;
+    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
+
+    // Start HA heartbeat if enabled.
+    if vault_config.ha.enabled {
+        let cluster_state = wslvault_core::ha::cluster::new_cluster_state(vault_config.ha.clone());
+        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(cluster_state));
+        info!("HA mode enabled, heartbeat loop started");
+    }
+
     // Bind gRPC on port 50051 and HTTP on port 8080.
     // These ports are intentionally independent of VaultConfig.listen_addr
     // so that the HTTP config address does not conflict with the gRPC listener.

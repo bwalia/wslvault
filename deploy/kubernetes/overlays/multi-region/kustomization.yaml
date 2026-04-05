@@ -1,0 +1,146 @@
+apiVersion: kustomize.build/v1beta1
+kind: Kustomization
+
+# Multi-region HA deployment for WSLVault.
+# This overlay extends the production overlay with:
+# - HA configuration environment variables
+# - Multi-region node affinity and topology spread
+# - PostgreSQL streaming replication (primary + standby)
+# - Prometheus monitoring stack
+
+namespace: wslvault-prod
+
+bases:
+  - ../production
+
+# ── ConfigMap for HA settings ───────────────────────────────────────────────
+configMapGenerator:
+  - name: wslvault-ha-config
+    literals:
+      - VAULT__HA__ENABLED=true
+      - VAULT__HA__HEARTBEAT_INTERVAL_MS=1000
+      - VAULT__HA__FAILURE_THRESHOLD=3
+      - VAULT__HA__ELECTION_TIMEOUT_MS=5000
+      - VAULT__HA__REPLICATION__MODE=semi_sync
+      - VAULT__HA__REPLICATION__MAX_LAG_MS=5000
+      - VAULT__HA__REPLICATION__ACK_QUORUM=2
+      - VAULT__HA__FAILOVER__AUTO_FAILOVER=true
+      - VAULT__HA__FAILOVER__FAILOVER_COOLDOWN_MS=30000
+      - VAULT__HA__FAILOVER__AUTO_FAILBACK=false
+
+patches:
+  # ── Crypto-service: HA + multi-region ────────────────────────────────────
+  - target:
+      kind: Deployment
+      name: crypto-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app: crypto-service
+          - maxSkew: 2
+            topologyKey: topology.kubernetes.io/region
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app: crypto-service
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom
+        value:
+          - configMapRef:
+              name: wslvault-ha-config
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: VAULT__HA__NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: VAULT__HA__REGION
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['topology.kubernetes.io/region']
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: VAULT__HA__AVAILABILITY_ZONE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['topology.kubernetes.io/zone']
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          containerPort: 9090
+          name: metrics
+          protocol: TCP
+
+  # ── Secret-engine: HA + multi-region ─────────────────────────────────────
+  - target:
+      kind: Deployment
+      name: secret-engine
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 5
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app: secret-engine
+          - maxSkew: 2
+            topologyKey: topology.kubernetes.io/region
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app: secret-engine
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom
+        value:
+          - configMapRef:
+              name: wslvault-ha-config
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: VAULT__HA__NODE_ID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          containerPort: 9090
+          name: metrics
+          protocol: TCP
+
+  # ── Gateway: multi-region spread ─────────────────────────────────────────
+  - target:
+      kind: Deployment
+      name: gateway
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app: gateway

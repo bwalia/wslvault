@@ -7,11 +7,13 @@
 
 use std::net::SocketAddr;
 
+use axum::middleware;
 use axum::routing::get;
 use axum::Router;
 use tokio::signal;
 use tonic::transport::Server as TonicServer;
 use tracing::{error, info};
+use wslvault_core::metrics::middleware::metrics_middleware;
 
 use crate::grpc::proto::crypto_service_server::CryptoServiceServer;
 use crate::grpc::CryptoServiceImpl;
@@ -38,6 +40,7 @@ pub fn build_http_router() -> Router {
     Router::new()
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
+        .layer(middleware::from_fn(metrics_middleware))
 }
 
 /// Run both the gRPC and HTTP servers concurrently, returning only when both

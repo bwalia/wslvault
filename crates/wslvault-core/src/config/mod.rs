@@ -13,6 +13,8 @@ use std::time::Duration;
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 
+use crate::ha::config::HaConfig;
+
 /// Database connection pool settings.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DatabaseConfig {
@@ -96,6 +98,8 @@ pub struct VaultConfig {
     pub database: DatabaseConfig,
     pub crypto_service: CryptoServiceConfig,
     pub observability: ObservabilityConfig,
+    /// High-availability and multi-region failover configuration.
+    pub ha: HaConfig,
     /// Name of the service instance; used in log context and metrics labels.
     pub service_name: String,
     /// "dev" | "staging" | "production"
@@ -109,6 +113,7 @@ impl Default for VaultConfig {
             database: DatabaseConfig::default(),
             crypto_service: CryptoServiceConfig::default(),
             observability: ObservabilityConfig::default(),
+            ha: HaConfig::default(),
             service_name: "wslvault".into(),
             environment: "dev".into(),
         }

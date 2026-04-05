@@ -1,0 +1,560 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "WSLVault - Secrets Management Platform Overview",
+  "editable": true,
+  "gnetId": null,
+  "graphTooltip": 1,
+  "id": null,
+  "iteration": 1700000000000,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "HA Cluster Status",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "options": { "0": { "text": "STANDBY" } }, "type": "value" },
+            { "options": { "1": { "text": "LEADER" } }, "type": "value" }
+          ]
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "expr": "wslvault_ha_is_leader",
+          "legendFormat": "Leader Status"
+        }
+      ],
+      "title": "Leader Status",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": 0 },
+              { "color": "yellow", "value": 1 },
+              { "color": "green", "value": 3 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "sum(wslvault_ha_cluster_nodes{state=~\"active|leader|standby\"})",
+          "legendFormat": "Active Nodes"
+        }
+      ],
+      "title": "Active Cluster Nodes",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "wslvault_ha_election_term",
+          "legendFormat": "Election Term"
+        }
+      ],
+      "title": "Election Term",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": 0 },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red", "value": 5000 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "max(wslvault_ha_replication_lag_ms)",
+          "legendFormat": "Max Lag"
+        }
+      ],
+      "title": "Replication Lag",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "sum(wslvault_ha_failover_total)",
+          "legendFormat": "Total Failovers"
+        }
+      ],
+      "title": "Failover Events",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 5 },
+      "id": 6,
+      "targets": [
+        {
+          "expr": "wslvault_ha_cluster_nodes",
+          "legendFormat": "{{region}} - {{state}}"
+        }
+      ],
+      "title": "Cluster Nodes by Region & State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 5 },
+      "id": 7,
+      "targets": [
+        {
+          "expr": "wslvault_ha_replication_lag_ms",
+          "legendFormat": "{{region}}"
+        }
+      ],
+      "title": "Replication Lag by Region",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "ms" }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "id": 101,
+      "title": "Request Latency",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "id": 10,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(wslvault_http_request_duration_seconds_bucket[5m])) by (le, service))",
+          "legendFormat": "p50 - {{service}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(wslvault_http_request_duration_seconds_bucket[5m])) by (le, service))",
+          "legendFormat": "p95 - {{service}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(wslvault_http_request_duration_seconds_bucket[5m])) by (le, service))",
+          "legendFormat": "p99 - {{service}}"
+        }
+      ],
+      "title": "HTTP Request Latency (p50/p95/p99)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "id": 11,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_http_requests_total[5m])) by (service)",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "title": "HTTP Request Rate (req/s)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "reqps" }
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "id": 12,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(wslvault_grpc_request_duration_seconds_bucket[5m])) by (le, method))",
+          "legendFormat": "p95 - {{method}}"
+        }
+      ],
+      "title": "gRPC Request Latency p95 by Method",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "id": 13,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_http_requests_total[5m])) by (status)",
+          "legendFormat": "HTTP {{status}}"
+        }
+      ],
+      "title": "HTTP Response Status Codes",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 },
+      "id": 102,
+      "title": "Secrets Management",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": 0 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 31 },
+      "id": 20,
+      "targets": [
+        {
+          "expr": "sum(wslvault_secrets_managed)",
+          "legendFormat": "Total Secrets"
+        }
+      ],
+      "title": "Total Secrets Managed",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 31 },
+      "id": 21,
+      "targets": [
+        {
+          "expr": "wslvault_secret_versions_total",
+          "legendFormat": "Total Versions"
+        }
+      ],
+      "title": "Total Secret Versions",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 31 },
+      "id": 22,
+      "targets": [
+        {
+          "expr": "sum(wslvault_active_leases)",
+          "legendFormat": "Active Leases"
+        }
+      ],
+      "title": "Active Leases",
+      "type": "stat"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 35 },
+      "id": 23,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_secret_operations_total[5m])) by (operation)",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "title": "Secret Operations Rate",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "ops" }
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "id": 24,
+      "targets": [
+        {
+          "expr": "wslvault_secrets_managed",
+          "legendFormat": "{{tenant_id}} - {{engine}}"
+        }
+      ],
+      "title": "Secrets by Tenant & Engine",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "id": 25,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_encryption_operations_total[5m])) by (operation)",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "title": "Encryption Operations Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "id": 26,
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(wslvault_encryption_duration_seconds_bucket[5m])) by (le, operation))",
+          "legendFormat": "p95 - {{operation}}"
+        }
+      ],
+      "title": "Encryption Latency p95",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "s" }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "id": 103,
+      "title": "System Resources",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "id": 30,
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{job=~\"wslvault.*\"}[5m]) * 100",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "title": "CPU Usage (%)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "percent" }
+      }
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "id": 31,
+      "targets": [
+        {
+          "expr": "process_resident_memory_bytes{job=~\"wslvault.*\"}",
+          "legendFormat": "{{job}}"
+        }
+      ],
+      "title": "Memory Usage (RSS)",
+      "type": "timeseries",
+      "fieldConfig": {
+        "defaults": { "unit": "bytes" }
+      }
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
+      "id": 104,
+      "title": "Audit Log & Access Patterns",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 61 },
+      "id": 40,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_audit_events_total[5m])) by (outcome)",
+          "legendFormat": "{{outcome}}"
+        }
+      ],
+      "title": "Audit Events Rate by Outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 61 },
+      "id": 41,
+      "targets": [
+        {
+          "expr": "topk(10, sum(rate(wslvault_audit_events_by_action[5m])) by (action))",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "title": "Top Audit Actions",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 61 },
+      "id": 42,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_audit_events_by_action{outcome=\"denied\"}[5m])) by (action)",
+          "legendFormat": "{{action}}"
+        }
+      ],
+      "title": "Denied Operations by Action",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 69 },
+      "id": 43,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_auth_attempts_total[5m])) by (method, outcome)",
+          "legendFormat": "{{method}} - {{outcome}}"
+        }
+      ],
+      "title": "Authentication Attempts",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 69 },
+      "id": 44,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_policy_evaluations_total[5m])) by (action, outcome)",
+          "legendFormat": "{{action}} - {{outcome}}"
+        }
+      ],
+      "title": "Policy Evaluations",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
+      "id": 105,
+      "title": "Lease Management",
+      "type": "row"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 78 },
+      "id": 50,
+      "targets": [
+        {
+          "expr": "wslvault_active_leases",
+          "legendFormat": "{{tenant_id}}"
+        }
+      ],
+      "title": "Active Leases by Tenant",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 78 },
+      "id": 51,
+      "targets": [
+        {
+          "expr": "sum(rate(wslvault_lease_operations_total[5m])) by (operation)",
+          "legendFormat": "{{operation}}"
+        }
+      ],
+      "title": "Lease Operations Rate",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 30,
+  "style": "dark",
+  "tags": ["wslvault", "secrets", "ha", "monitoring"],
+  "templating": {
+    "list": [
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "Prometheus",
+        "definition": "label_values(wslvault_http_requests_total, service)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Service",
+        "multi": true,
+        "name": "service",
+        "query": "label_values(wslvault_http_requests_total, service)",
+        "refresh": 2,
+        "type": "query"
+      },
+      {
+        "allValue": null,
+        "current": {},
+        "datasource": "Prometheus",
+        "definition": "label_values(wslvault_secrets_managed, tenant_id)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Tenant",
+        "multi": true,
+        "name": "tenant_id",
+        "query": "label_values(wslvault_secrets_managed, tenant_id)",
+        "refresh": 2,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "WSLVault Overview",
+  "uid": "wslvault-overview",
+  "version": 1
+}

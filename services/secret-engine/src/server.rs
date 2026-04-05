@@ -11,6 +11,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use axum::middleware;
 use tonic::transport::Server as TonicServer;
 use tracing::{error, info};
 
@@ -19,6 +20,7 @@ use crate::grpc::SecretServiceImpl;
 use crate::health::{liveness, readiness};
 use crate::http::build_router;
 use crate::kv_store::KvStore;
+use wslvault_core::metrics::middleware::metrics_middleware;
 
 /// Run both servers concurrently.
 ///
@@ -88,10 +90,11 @@ async fn run_http(
     // Build the secret API router.
     let secret_router = build_router(store, crypto_endpoint);
 
-    // Mount health probes alongside the secret API routes.
+    // Mount health probes alongside the secret API routes, with metrics middleware.
     let app = secret_router
         .route("/healthz", axum::routing::get(liveness))
-        .route("/readyz", axum::routing::get(readiness));
+        .route("/readyz", axum::routing::get(readiness))
+        .layer(middleware::from_fn(metrics_middleware));
 
     info!(addr = %addr, "starting HTTP server");
 
