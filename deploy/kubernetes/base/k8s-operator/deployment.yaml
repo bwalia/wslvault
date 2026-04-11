@@ -1,0 +1,221 @@
+---
+# ClusterRole grants the operator the permissions it needs to:
+#   - watch and list VaultSecrets across all namespaces
+#   - read, create, update, and patch Kubernetes Secrets
+#   - update VaultSecret status subresources
+#   - read CRDs (to check if VaultSecret CRD is present)
+#   - create CRDs (so the operator can self-install the CRD on first run)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-operator
+  labels:
+    app: k8s-operator
+    component: operator
+    platform: wslvault
+rules:
+  # VaultSecret custom resources — the operator must be able to watch events
+  # and write back status subresource patches.
+  - apiGroups:
+      - wslvault.io
+    resources:
+      - vaultsecrets
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - wslvault.io
+    resources:
+      - vaultsecrets/status
+    verbs:
+      - get
+      - patch
+      - update
+
+  # Kubernetes Secrets — the operator creates/patches target secrets and reads
+  # token secrets referenced by spec.auth.tokenSecretRef.
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+
+  # CRDs — allows the operator to check and self-install the VaultSecret CRD.
+  - apiGroups:
+      - apiextensions.k8s.io
+    resources:
+      - customresourcedefinitions
+    verbs:
+      - get
+      - list
+      - create
+      - patch
+      - update
+
+  # Events — the operator may emit events for significant lifecycle changes.
+  - apiGroups:
+      - ""
+    resources:
+      - events
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-operator
+  labels:
+    app: k8s-operator
+    component: operator
+    platform: wslvault
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8s-operator
+subjects:
+  - kind: ServiceAccount
+    name: k8s-operator
+    namespace: wslvault
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-operator
+  labels:
+    app: k8s-operator
+    component: operator
+    platform: wslvault
+---
+# Single-replica Deployment.
+#
+# Leader election is intentionally omitted for v1 simplicity. If multiple
+# replicas are needed in the future, add leader election via the
+# kube-rs `LeaderElection` feature to prevent split-brain reconciles.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-operator
+  labels:
+    app: k8s-operator
+    component: operator
+    platform: wslvault
+spec:
+  # Single replica — no leader election in v1.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-operator
+  template:
+    metadata:
+      labels:
+        app: k8s-operator
+        component: operator
+        platform: wslvault
+      annotations:
+        prometheus.io/scrape: "false"
+    spec:
+      serviceAccountName: k8s-operator
+      # Ensure the pod is not scheduled onto a node that already runs an
+      # operator instance (anti-affinity for future multi-replica use).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: k8s-operator
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: k8s-operator
+          image: wslvault/k8s-operator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: health
+              containerPort: 8090
+              protocol: TCP
+          env:
+            # wslvault secret-engine endpoint. Update this if the secret-engine
+            # is running on a non-default port or outside the cluster.
+            - name: VAULT_ENDPOINT
+              value: "http://secret-engine:8081"
+
+            # Optional static vault token. In production, prefer
+            # spec.auth.tokenSecretRef on individual VaultSecret resources.
+            # - name: VAULT_TOKEN
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: k8s-operator-vault-token
+            #       key: token
+
+            # Health server listen address.
+            - name: HEALTH_ADDR
+              value: "0.0.0.0:8090"
+
+            # Log filter. Set to "debug,k8s_operator=trace" for verbose output.
+            - name: RUST_LOG
+              value: "info,k8s_operator=debug"
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "32Mi"
+            limits:
+              cpu: "500m"
+              memory: "128Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            failureThreshold: 3
+
+          securityContext:
+            runAsNonRoot: true
+            # UID 65534 matches the nobody user used in the Dockerfile.
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL
+---
+# Service exposes the health port so that kube-proxy traffic and monitoring
+# can reach the operator pod by name.
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-operator
+  labels:
+    app: k8s-operator
+    component: operator
+    platform: wslvault
+spec:
+  selector:
+    app: k8s-operator
+  ports:
+    - name: health
+      port: 8090
+      targetPort: health
+      protocol: TCP

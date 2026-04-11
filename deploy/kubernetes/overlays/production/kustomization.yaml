@@ -36,3 +36,51 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 3
+
+  - target:
+      kind: Deployment
+      name: policy-engine
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+  - target:
+      kind: Deployment
+      name: identity-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+  - target:
+      kind: Deployment
+      name: lease-manager
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2
+
+  - target:
+      kind: Deployment
+      name: audit-service
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+  - target:
+      kind: Deployment
+      name: transit-engine
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 3
+
+  - target:
+      kind: Deployment
+      name: mcp-server
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 2

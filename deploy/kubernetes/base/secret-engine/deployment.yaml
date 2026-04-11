@@ -31,13 +31,19 @@ spec:
             - name: metrics
               containerPort: 9090
           env:
-            - name: VAULT__DATABASE__URL
+            - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
                   name: wslvault-db-credentials
                   key: url
-            - name: VAULT_CRYPTO_ENDPOINT
+            - name: CRYPTO_SERVICE_ENDPOINT
               value: "http://crypto-service:50051"
+            - name: POLICY_ENGINE_ENDPOINT
+              value: "http://policy-engine:50053"
+            - name: AUDIT_SERVICE_ENDPOINT
+              value: "http://audit-service:50056"
+            - name: LEASE_MANAGER_ENDPOINT
+              value: "http://lease-manager:50055"
             - name: RUST_LOG
               value: "info,secret_engine=debug"
           resources:

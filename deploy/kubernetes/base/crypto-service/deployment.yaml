@@ -31,6 +31,11 @@ spec:
                 secretKeyRef:
                   name: wslvault-root-key
                   key: key
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
             - name: RUST_LOG
               value: "info,crypto_service=debug"
           resources:

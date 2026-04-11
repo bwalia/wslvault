@@ -1,20 +1,35 @@
-//! In-memory transit key store.
+//! In-memory transit key store and backend abstraction.
 //!
 //! Keys are identified by `(tenant_id, key_name)` and may have multiple
 //! versions. Only the current version is used for new encryptions; all
 //! previous versions remain available for decryption to allow gradual
 //! re-encryption (rewrap) of existing ciphertexts.
+//!
+//! # Backend Architecture
+//!
+//! The `TransitKeyStoreBackend` trait decouples the HTTP handlers from the
+//! concrete storage implementation.  Two implementations are provided:
+//!
+//! - `InMemoryTransitKeyStore`: pure in-memory map, used when `DATABASE_URL`
+//!   is not set (development / testing).
+//! - `PgTransitKeyBackend` (in `pg_store`): hybrid PostgreSQL + in-memory
+//!   cache; metadata is persisted in PG while key material lives in the cache.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use zeroize::ZeroizeOnDrop;
 
 use wslvault_core::VaultError;
 
-/// Type alias for the shared store.
+/// Type alias for the raw, shared in-memory key map.
+///
+/// Used internally by `InMemoryTransitKeyStore` and the `PgTransitKeyBackend`
+/// cache layer.  Consumers outside this module should program to the
+/// `TransitKeyStoreBackend` trait instead.
 pub type SharedKeyStore = Arc<RwLock<HashMap<(String, String), TransitKey>>>;
 
 /// A single 32-byte key version.  The `ZeroizeOnDrop` derive ensures the raw
@@ -81,16 +96,101 @@ impl TransitKey {
     }
 }
 
-/// Create a new empty key store.
+// ---------------------------------------------------------------------------
+// Backend trait
+// ---------------------------------------------------------------------------
+
+/// Abstraction over transit key storage backends.
+///
+/// Implementing this trait allows the HTTP handlers to remain agnostic of
+/// whether keys are kept purely in memory or persisted to PostgreSQL.
+/// All methods mirror the original free-standing functions so that handler
+/// code requires only a one-line change.
+#[async_trait]
+pub trait TransitKeyStoreBackend: Send + Sync {
+    /// Create a new named key for the given tenant.
+    ///
+    /// Returns `VaultError::ValidationError` if the key already exists.
+    async fn create_key(&self, tenant_id: &str, key_name: &str) -> Result<(), VaultError>;
+
+    /// Retrieve a transit key by tenant and name.
+    ///
+    /// Returns a clone so callers hold no references into any internal lock.
+    async fn get_key(&self, tenant_id: &str, key_name: &str) -> Result<TransitKey, VaultError>;
+
+    /// Rotate a key by appending a new version and returning the new version number.
+    ///
+    /// Old versions are retained so that existing ciphertexts can still be
+    /// decrypted until a rewrap pass has been completed.
+    async fn rotate_key(&self, tenant_id: &str, key_name: &str) -> Result<u32, VaultError>;
+}
+
+// ---------------------------------------------------------------------------
+// In-memory implementation
+// ---------------------------------------------------------------------------
+
+/// Pure in-memory implementation of `TransitKeyStoreBackend`.
+///
+/// State is not persisted; all keys are lost when the process exits.  This
+/// backend is suitable for development, CI, and integration tests where a
+/// running PostgreSQL instance is not available.
+pub struct InMemoryTransitKeyStore {
+    store: SharedKeyStore,
+}
+
+impl InMemoryTransitKeyStore {
+    /// Create a new, empty in-memory key store.
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+}
+
+impl Default for InMemoryTransitKeyStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl TransitKeyStoreBackend for InMemoryTransitKeyStore {
+    async fn create_key(&self, tenant_id: &str, key_name: &str) -> Result<(), VaultError> {
+        create_key(&self.store, tenant_id, key_name).await
+    }
+
+    async fn get_key(&self, tenant_id: &str, key_name: &str) -> Result<TransitKey, VaultError> {
+        get_key(&self.store, tenant_id, key_name).await
+    }
+
+    async fn rotate_key(&self, tenant_id: &str, key_name: &str) -> Result<u32, VaultError> {
+        rotate_key(&self.store, tenant_id, key_name).await
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Convenience constructor (kept for backward-compat with main.rs during
+// migration; prefer InMemoryTransitKeyStore::new() directly)
+// ---------------------------------------------------------------------------
+
+/// Create a new empty raw key store map.
+///
+/// Prefer constructing an `InMemoryTransitKeyStore` or `PgTransitKeyBackend`
+/// through their respective `new()` functions.  This remains public so that
+/// the `pg_store` module can initialise its internal cache.
 pub fn new_key_store() -> SharedKeyStore {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-/// Create a new named key for the given tenant.
+// ---------------------------------------------------------------------------
+// Private helper implementations used by InMemoryTransitKeyStore
+// ---------------------------------------------------------------------------
+
+/// Create a new named key for the given tenant inside a `SharedKeyStore`.
 ///
 /// Returns `VaultError::ValidationError` if a key with that name already exists
 /// for the tenant.
-pub async fn create_key(
+async fn create_key(
     store: &SharedKeyStore,
     tenant_id: &str,
     key_name: &str,
@@ -128,7 +228,7 @@ pub async fn create_key(
 /// Look up an existing transit key by tenant + name.
 ///
 /// Returns a clone of the key so callers hold no references into the lock.
-pub async fn get_key(
+async fn get_key(
     store: &SharedKeyStore,
     tenant_id: &str,
     key_name: &str,
@@ -145,7 +245,7 @@ pub async fn get_key(
 /// Rotate a transit key by appending a new version and updating `current_version`.
 ///
 /// Old versions are retained so that existing ciphertexts can still be decrypted.
-pub async fn rotate_key(
+async fn rotate_key(
     store: &SharedKeyStore,
     tenant_id: &str,
     key_name: &str,
@@ -170,7 +270,7 @@ pub async fn rotate_key(
 }
 
 /// Generate a fresh 32-byte random key using the OS CSPRNG via `ring`.
-fn generate_key_material() -> [u8; 32] {
+pub(crate) fn generate_key_material() -> [u8; 32] {
     use ring::rand::{SecureRandom, SystemRandom};
     let rng = SystemRandom::new();
     let mut key = [0u8; 32];

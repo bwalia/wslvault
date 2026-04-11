@@ -1,0 +1,124 @@
+{{/*
+lease-manager/deployment.yaml
+The lease-manager owns the lifecycle of secret leases: it tracks TTLs, handles
+renewals, and triggers revocation calls back to the secret-engine and
+crypto-service when leases expire.
+*/}}
+{{- if .Values.leaseManager.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "lease-manager" "componentType" "core" "context" $) | nindent 4 }}
+  {{- with .Values.leaseManager.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.leaseManager.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "lease-manager" "componentType" "core" "context" $) | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        {{- toYaml .Values.monitoring.scrapeAnnotations | nindent 8 }}
+        prometheus.io/port: {{ .Values.leaseManager.httpPort | quote }}
+        {{- with .Values.leaseManager.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.leaseManager.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: lease-manager
+          image: {{ include "wslvault.image" (dict "image" .Values.leaseManager.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.leaseManager.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.leaseManager.grpcPort }}
+              protocol: TCP
+          env:
+            - name: HTTP_PORT
+              value: {{ .Values.leaseManager.httpPort | quote }}
+            - name: GRPC_PORT
+              value: {{ .Values.leaseManager.grpcPort | quote }}
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  optional: false
+            - name: DATABASE_URL
+              value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
+                          .Values.postgresql.auth.username
+                          (include "wslvault.postgresHost" .)
+                          (include "wslvault.postgresPort" .)
+                          .Values.postgresql.auth.database }}
+            # gRPC address for revocation callbacks to crypto-service
+            - name: CRYPTO_SERVICE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $))
+                          (.Values.cryptoService.grpcPort | toString) }}
+            # gRPC address for revocation callbacks to secret-engine
+            - name: SECRET_ENGINE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $))
+                          (.Values.secretEngine.grpcPort | toString) }}
+            {{- with .Values.leaseManager.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.leaseManager.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.leaseManager.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.leaseManager.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.leaseManager.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

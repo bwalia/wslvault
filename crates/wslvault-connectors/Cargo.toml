@@ -1,0 +1,46 @@
+[package]
+name = "wslvault-connectors"
+version = "0.1.0"
+edition = "2021"
+description = "External secret management connectors: sync secrets to/from AWS, Azure, GCP, and database credential rotation"
+license = "Apache-2.0"
+
+[features]
+default = []
+# AWS Secrets Manager connector via the official AWS SDK
+aws = ["aws-sdk-secretsmanager", "aws-config"]
+# Azure Key Vault connector via reqwest REST calls (avoids pulling in the full Azure SDK)
+azure = []
+# GCP Secret Manager connector via reqwest REST calls with OAuth2 workload identity
+gcp = []
+# PostgreSQL dynamic credential rotation via sqlx
+postgres-rotation = ["sqlx"]
+# HashiCorp Vault KV v2 connector via reqwest REST calls
+hashicorp-vault = []
+# Kubernetes Secrets API connector via reqwest REST calls
+k8s = []
+# Convenience feature that activates every connector
+all = ["aws", "azure", "gcp", "postgres-rotation", "hashicorp-vault", "k8s"]
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+base64 = { workspace = true }
+# Used by GCP connector for RS256 JWT signing
+jsonwebtoken = { workspace = true }
+# Used by postgres-rotation for zeroing password bytes on drop
+zeroize = { workspace = true }
+rand = { workspace = true }
+
+# AWS Secrets Manager SDK (optional — only compiled when `aws` feature is active)
+aws-sdk-secretsmanager = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+
+# PostgreSQL rotation (optional — only compiled when `postgres-rotation` feature is active)
+sqlx = { workspace = true, optional = true }

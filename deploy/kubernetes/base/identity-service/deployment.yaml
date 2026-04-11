@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: identity-service
+  labels:
+    app: identity-service
+    component: core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: identity-service
+  template:
+    metadata:
+      labels:
+        app: identity-service
+        component: core
+    spec:
+      serviceAccountName: identity-service
+      containers:
+        - name: identity-service
+          image: wslvault/identity-service:latest
+          ports:
+            - name: http
+              containerPort: 8082
+            - name: grpc
+              containerPort: 50054
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: VAULT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-jwt-secret
+                  key: secret
+            - name: VAULT_HTTP_ADDR
+              value: "0.0.0.0:8082"
+            - name: RUST_LOG
+              value: "info,identity_service=debug"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "2000m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: identity-service
+spec:
+  selector:
+    app: identity-service
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http
+    - name: grpc
+      port: 50054
+      targetPort: grpc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: identity-service

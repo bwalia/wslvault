@@ -63,6 +63,26 @@ pub struct Tenant {
     pub deleted_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Runtime tenant context extracted from request headers or JWT claims.
+///
+/// This struct is threaded through axum middleware extractors and gRPC
+/// interceptors so that every handler receives a fully-resolved, validated
+/// tenant identity without needing to re-parse headers itself.
+///
+/// The `policies` field carries the policy names that the authenticated
+/// principal is currently entitled to; downstream authorization checks
+/// compare this slice against the policy requirements of a given operation.
+#[derive(Debug, Clone)]
+pub struct TenantContext {
+    /// Identifies the tenant that owns this request.
+    pub tenant_id: TenantId,
+    /// Authenticated caller identity — may be "anonymous" when auth is
+    /// disabled (e.g. during local development or integration tests).
+    pub principal_id: String,
+    /// Policy names currently attached to `principal_id` within this tenant.
+    pub policies: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,5 +23,6 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
 anyhow = { workspace = true }
+axum = { workspace = true }
 config = { workspace = true }
 tokio = { workspace = true }

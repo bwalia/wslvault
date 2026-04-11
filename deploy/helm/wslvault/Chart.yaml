@@ -1,0 +1,19 @@
+apiVersion: v2
+name: wslvault
+description: Enterprise secret management platform with multi-tenancy, RBAC, and Kubernetes-native operations
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - secrets
+  - vault
+  - security
+  - encryption
+  - kubernetes
+maintainers:
+  - name: WSLVault Team
+dependencies:
+  - name: postgresql
+    version: "16.4.3"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

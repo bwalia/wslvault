@@ -1,0 +1,160 @@
+WSLVault has been deployed successfully!
+
+Release name : {{ .Release.Name }}
+Namespace    : {{ .Release.Namespace }}
+Chart version: {{ .Chart.Version }}
+App version  : {{ .Chart.AppVersion }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SERVICES DEPLOYED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.gateway.enabled }}
+  Gateway (OpenResty):    {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }}:{{ .Values.gateway.httpsPort }}
+{{- end }}
+{{- if .Values.cryptoService.enabled }}
+  Crypto Service:         {{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}:{{ .Values.cryptoService.httpPort }}
+{{- end }}
+{{- if .Values.secretEngine.enabled }}
+  Secret Engine:          {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $) }}:{{ .Values.secretEngine.httpPort }}
+{{- end }}
+{{- if .Values.policyEngine.enabled }}
+  Policy Engine:          {{ include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $) }}:{{ .Values.policyEngine.httpPort }}
+{{- end }}
+{{- if .Values.identityService.enabled }}
+  Identity Service:       {{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:{{ .Values.identityService.httpPort }}
+{{- end }}
+{{- if .Values.leaseManager.enabled }}
+  Lease Manager:          {{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $) }}:{{ .Values.leaseManager.httpPort }}
+{{- end }}
+{{- if .Values.auditService.enabled }}
+  Audit Service:          {{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $) }}:{{ .Values.auditService.httpPort }}
+{{- end }}
+{{- if .Values.transitEngine.enabled }}
+  Transit Engine:         {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}:{{ .Values.transitEngine.httpPort }}
+{{- end }}
+{{- if .Values.mcpServer.enabled }}
+  MCP Server:             {{ include "wslvault.componentFullname" (dict "component" "mcp-server" "context" $) }}:{{ .Values.mcpServer.httpPort }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ACCESSING WSLVAULT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.gateway.enabled }}
+
+The gateway service is of type {{ .Values.gateway.service.type }}.
+
+{{- if eq .Values.gateway.service.type "LoadBalancer" }}
+
+  Wait for the external IP to be assigned:
+
+    kubectl get svc {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }} \
+      --namespace {{ .Release.Namespace }} \
+      --watch
+
+  Once the EXTERNAL-IP is available:
+
+    export WSLVAULT_HOST=$(kubectl get svc \
+      {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }} \
+      --namespace {{ .Release.Namespace }} \
+      -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+    curl -k https://${WSLVAULT_HOST}/health
+
+{{- else if eq .Values.gateway.service.type "ClusterIP" }}
+
+  Forward the gateway port to your local machine:
+
+    kubectl port-forward \
+      svc/{{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }} \
+      8443:{{ .Values.gateway.httpsPort }} \
+      --namespace {{ .Release.Namespace }}
+
+  Then access the API at: https://localhost:8443
+
+{{- end }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FIRST-TIME SETUP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. Replace placeholder secrets before going to production:
+
+   The following secrets were created with placeholder values.
+   Replace them with real cryptographic material immediately:
+
+     {{ include "wslvault.fullname" . }}-root-key   (key: root-key)
+     {{ include "wslvault.fullname" . }}-jwt-secret  (key: jwt-secret)
+
+   Generate a root key:
+     openssl rand -base64 32
+
+   Generate a JWT secret:
+     openssl rand -base64 64
+
+   Update the secrets:
+     kubectl create secret generic {{ include "wslvault.fullname" . }}-root-key \
+       --namespace {{ .Release.Namespace }} \
+       --from-literal=root-key="$(openssl rand -base64 32)" \
+       --dry-run=client -o yaml | kubectl apply -f -
+
+2. Check that all pods are running:
+
+     kubectl get pods --namespace {{ .Release.Namespace }} \
+       -l app.kubernetes.io/instance={{ .Release.Name }}
+
+3. View logs for a specific service (e.g. secret-engine):
+
+     kubectl logs --namespace {{ .Release.Namespace }} \
+       -l app.kubernetes.io/name=secret-engine \
+       --tail=100 -f
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DATABASE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{{- if .Values.postgresql.enabled }}
+PostgreSQL is deployed as part of this release.
+
+  Host:     {{ include "wslvault.postgresHost" . }}
+  Port:     {{ include "wslvault.postgresPort" . }}
+  Database: {{ .Values.postgresql.auth.database }}
+  Username: {{ .Values.postgresql.auth.username }}
+
+  Connect from inside the cluster:
+
+    kubectl run pg-client --rm --tty -i \
+      --restart=Never \
+      --namespace {{ .Release.Namespace }} \
+      --image docker.io/bitnami/postgresql:16 \
+      --env="PGPASSWORD=$(kubectl get secret \
+        {{ include "wslvault.dbCredentialsSecretName" . }} \
+        --namespace {{ .Release.Namespace }} \
+        -o jsonpath='{.data.password}' | base64 -d)" \
+      -- psql \
+        --host {{ include "wslvault.postgresHost" . }} \
+        --username {{ .Values.postgresql.auth.username }} \
+        --dbname {{ .Values.postgresql.auth.database }} \
+        --port {{ include "wslvault.postgresPort" . }}
+
+{{- else }}
+Using external PostgreSQL at {{ .Values.postgresql.external.host }}:{{ .Values.postgresql.external.port }}.
+Ensure the database {{ .Values.postgresql.auth.database | quote }} exists and the user
+{{ .Values.postgresql.auth.username | quote }} has full privileges on it.
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECURITY REMINDERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  - Replace all placeholder secrets before exposing wslvault to production traffic.
+  - Provide a valid TLS certificate in secret {{ .Values.gateway.tls.secretName | quote }}.
+  - NetworkPolicies are {{ if .Values.networkPolicies.enabled }}ENABLED{{ else }}DISABLED - enable in production{{ end }}.
+  - Review RBAC: rbac.create={{ .Values.rbac.create }}.
+  - Rotate the root key and JWT secret according to your organisation's key
+    rotation policy. A root key rotation requires re-encrypting all stored
+    secrets via the crypto-service re-key API.
+
+For documentation, see: https://github.com/your-org/wslvault

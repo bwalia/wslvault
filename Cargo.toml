@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/wslvault-core",
     "crates/wslvault-storage",
+    "crates/wslvault-connectors",
+    "crates/wslvault-cluster",
     "services/secret-engine",
     "services/crypto-service",
     "services/identity-service",
@@ -11,6 +13,10 @@ members = [
     "services/lease-manager",
     "services/audit-service",
     "services/mcp-server",
+    "services/k8s-operator",
+    "services/replication-agent",
+    "services/region-health",
+    "services/sync-scheduler",
     "sdks/rust",
     "wslvault-cli",
 ]
@@ -64,3 +70,5 @@ toml = "0.8"
 dirs = "6"
 colored = "2"
 dialoguer = "0.11"
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }

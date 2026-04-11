@@ -9,17 +9,25 @@ use axum::{http::StatusCode, response::IntoResponse, routing::get, Json, Router}
 use serde::Serialize;
 
 /// Payload returned by the health endpoints.
-#[derive(Debug, Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    service: &'static str,
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct HealthResponse {
+    pub status: &'static str,
+    pub service: &'static str,
 }
 
 /// GET /healthz — liveness probe.
 ///
 /// Returns 200 OK as long as the process is alive and the event loop is
 /// running.  Does not check downstream dependencies.
-async fn liveness() -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    responses(
+        (status = 200, description = "Service is alive", body = HealthResponse),
+    ),
+    tag = "health"
+)]
+pub async fn liveness() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(HealthResponse {
@@ -34,7 +42,15 @@ async fn liveness() -> impl IntoResponse {
 /// Returns 200 OK when the service is ready to accept gRPC traffic.
 /// Extend this handler to check dependency health (e.g., database
 /// connectivity) before returning 200 when those dependencies are added.
-async fn readiness() -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/readyz",
+    responses(
+        (status = 200, description = "Service is ready to accept traffic", body = HealthResponse),
+    ),
+    tag = "health"
+)]
+pub async fn readiness() -> impl IntoResponse {
     (
         StatusCode::OK,
         Json(HealthResponse {

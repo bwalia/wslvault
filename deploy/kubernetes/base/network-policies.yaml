@@ -1,0 +1,199 @@
+# Default deny all ingress for the wslvault namespace.
+# Each NetworkPolicy below opens only the necessary ingress paths,
+# following the principle of least privilege.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# crypto-service: only reachable by secret-engine, transit-engine, and lease-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-crypto-service-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: crypto-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: secret-engine
+        - podSelector:
+            matchLabels:
+              app: transit-engine
+        - podSelector:
+            matchLabels:
+              app: lease-manager
+---
+# secret-engine: only reachable by gateway and mcp-server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-secret-engine-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: secret-engine
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+---
+# policy-engine: only reachable by secret-engine, transit-engine, and gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-policy-engine-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: policy-engine
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: secret-engine
+        - podSelector:
+            matchLabels:
+              app: transit-engine
+        - podSelector:
+            matchLabels:
+              app: gateway
+---
+# audit-service: only reachable by secret-engine and transit-engine
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-audit-service-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: audit-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: secret-engine
+        - podSelector:
+            matchLabels:
+              app: transit-engine
+---
+# lease-manager: only reachable by secret-engine
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-lease-manager-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: lease-manager
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: secret-engine
+---
+# identity-service: only reachable by gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-identity-service-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: identity-service
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+---
+# gateway: reachable from anywhere (edge service, handles external traffic)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-gateway-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - {}
+---
+# postgres: reachable from all wslvault application services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              platform: wslvault
+---
+# transit-engine: only reachable by gateway and mcp-server
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-transit-engine-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: transit-engine
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway
+        - podSelector:
+            matchLabels:
+              app: mcp-server
+---
+# mcp-server: only reachable by gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-mcp-server-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app: mcp-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: gateway

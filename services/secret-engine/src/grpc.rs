@@ -13,8 +13,11 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 use tracing::{error, info, instrument};
 
-use crate::kv_store::KvStore;
+use crate::audit_client::AuditClient;
+use crate::kv_store::SecretStoreBackend;
+use crate::lease_client::LeaseClient;
 use crate::path::normalize_and_validate;
+use crate::policy_client::{extract_grpc_policies, extract_grpc_principal_id, PolicyClient};
 
 // Include the generated code for both proto packages in separate modules to
 // prevent name collisions between identically named messages.
@@ -60,19 +63,47 @@ fn vault_err_to_status(err: VaultError) -> Status {
 /// The `crypto_client` field is a `CryptoServiceClient` connected to the
 /// upstream crypto-service. It is cloned per-request to satisfy tonic's
 /// `Clone` requirements on client types.
+///
+/// `store` is held as `Arc<dyn SecretStoreBackend>` so the handler is
+/// independent of the specific backend (in-memory or PostgreSQL).
+///
+/// `policy_client` is used to authorize every incoming RPC before the
+/// handler touches the store or crypto-service (fail-closed).
+///
+/// `audit_client` is used to emit fire-and-forget audit events after each
+/// operation; failures are logged but never propagated to the caller.
+///
+/// `lease_client` is used to optionally attach TTL-based leases to secret
+/// reads.  If the lease-manager is unavailable the RPC still succeeds
+/// (degraded mode — no lease is included in the response).
 #[derive(Debug, Clone)]
 pub struct SecretServiceImpl {
-    pub store: Arc<KvStore>,
+    pub store: Arc<dyn SecretStoreBackend>,
     /// Base endpoint URL for the crypto-service gRPC connection, e.g.
     /// "http://crypto-service:50051". The client is cloned per request.
     pub crypto_endpoint: String,
+    /// Client for the audit-service event emitter.
+    pub audit_client: AuditClient,
+    /// Client for the policy-engine authorization service.
+    pub policy_client: PolicyClient,
+    /// Client for the lease-manager; lease creation is best-effort.
+    pub lease_client: LeaseClient,
 }
 
 impl SecretServiceImpl {
-    pub fn new(store: Arc<KvStore>, crypto_endpoint: String) -> Self {
+    pub fn new(
+        store: Arc<dyn SecretStoreBackend>,
+        crypto_endpoint: String,
+        audit_client: AuditClient,
+        policy_client: PolicyClient,
+        lease_client: LeaseClient,
+    ) -> Self {
         Self {
             store,
             crypto_endpoint,
+            audit_client,
+            policy_client,
+            lease_client,
         }
     }
 
@@ -109,6 +140,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<GetSecretRequest>,
     ) -> Result<Response<GetSecretResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         let path = normalize_and_validate(&req.path).map_err(vault_err_to_status)?;
@@ -123,27 +158,120 @@ impl SecretService for SecretServiceImpl {
 
         info!("get_secret");
 
-        let ver_entry = self
+        // Authorize before reading from the store.
+        let resource = format!("secret/data/{}", path);
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "read", &resource)
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.read",
+                    &path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
+        let ver_entry = match self
             .store
             .get(&req.tenant_id, &path, req.version)
             .await
-            .map_err(vault_err_to_status)?;
+        {
+            Ok(v) => v,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.read",
+                        &path,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(vault_err_to_status(e));
+            }
+        };
 
         let aad = Self::build_aad(&req.tenant_id, &path);
 
-        let mut crypto = self.crypto_client().await?;
+        let mut crypto = match self.crypto_client().await {
+            Ok(c) => c,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.read",
+                        &path,
+                        "failure",
+                        &e.message().to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
 
-        let decrypt_resp = crypto
+        let decrypt_resp = match crypto
             .decrypt(crypto_proto::DecryptRequest {
                 tenant_id: req.tenant_id.clone(),
                 ciphertext_b64: ver_entry.ciphertext.clone(),
                 aad,
             })
             .await
-            .map_err(|e| {
+        {
+            Ok(r) => r,
+            Err(e) => {
                 error!(error = %e, "crypto-service decrypt failed");
-                Status::internal(format!("decryption failed: {}", e))
-            })?;
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.read",
+                        &path,
+                        "failure",
+                        &format!("decryption failed: {}", e),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(Status::internal(format!("decryption failed: {}", e)));
+            }
+        };
+
+        // Attempt to create a TTL-based lease for this secret read.
+        // This is best-effort — if the lease-manager is unavailable the RPC
+        // still succeeds and no lease is included in the response (degraded mode).
+        let default_ttl_seconds: i64 = 3600;
+        let _lease_info = self
+            .lease_client
+            .create_lease_for_read(&req.tenant_id, &path, default_ttl_seconds)
+            .await;
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.read",
+                &path,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(GetSecretResponse {
             data: decrypt_resp.into_inner().plaintext,
@@ -159,6 +287,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<PutSecretRequest>,
     ) -> Result<Response<PutSecretResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         let path = normalize_and_validate(&req.path).map_err(vault_err_to_status)?;
@@ -176,25 +308,79 @@ impl SecretService for SecretServiceImpl {
 
         info!("put_secret");
 
+        // Authorize before writing to the crypto-service or store.
+        let resource = format!("secret/data/{}", path);
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "write", &resource)
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.write",
+                    &path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
         let aad = Self::build_aad(&req.tenant_id, &path);
 
-        let mut crypto = self.crypto_client().await?;
+        let mut crypto = match self.crypto_client().await {
+            Ok(c) => c,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.write",
+                        &path,
+                        "failure",
+                        &e.message().to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(e);
+            }
+        };
 
-        let encrypt_resp = crypto
+        let encrypt_resp = match crypto
             .encrypt(crypto_proto::EncryptRequest {
                 tenant_id: req.tenant_id.clone(),
                 plaintext: req.data,
                 aad,
             })
             .await
-            .map_err(|e| {
+        {
+            Ok(r) => r,
+            Err(e) => {
                 error!(error = %e, "crypto-service encrypt failed");
-                Status::internal(format!("encryption failed: {}", e))
-            })?;
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.write",
+                        &path,
+                        "failure",
+                        &format!("encryption failed: {}", e),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(Status::internal(format!("encryption failed: {}", e)));
+            }
+        };
 
         let enc = encrypt_resp.into_inner();
 
-        let (secret_id, version) = self
+        let (secret_id, version) = match self
             .store
             .put(
                 &req.tenant_id,
@@ -206,7 +392,37 @@ impl SecretService for SecretServiceImpl {
                 None,
             )
             .await
-            .map_err(vault_err_to_status)?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.write",
+                        &path,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(vault_err_to_status(e));
+            }
+        };
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.write",
+                &path,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(PutSecretResponse { secret_id, version }))
     }
@@ -220,6 +436,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<DeleteSecretRequest>,
     ) -> Result<Response<DeleteSecretResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         let path = normalize_and_validate(&req.path).map_err(vault_err_to_status)?;
@@ -233,11 +453,63 @@ impl SecretService for SecretServiceImpl {
 
         info!("delete_secret");
 
-        let deleted_count = self
+        // Authorize before soft-deleting from the store.
+        let resource = format!("secret/data/{}", path);
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "delete", &resource)
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.delete",
+                    &path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
+        let deleted_count = match self
             .store
             .soft_delete(&req.tenant_id, &path, &req.versions)
             .await
-            .map_err(vault_err_to_status)?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.delete",
+                        &path,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(vault_err_to_status(e));
+            }
+        };
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.delete",
+                &path,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(DeleteSecretResponse { deleted_count }))
     }
@@ -251,6 +523,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<DestroySecretRequest>,
     ) -> Result<Response<DestroySecretResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         let path = normalize_and_validate(&req.path).map_err(vault_err_to_status)?;
@@ -264,11 +540,63 @@ impl SecretService for SecretServiceImpl {
 
         info!("destroy_secret");
 
-        let destroyed_count = self
+        // Authorize before permanently destroying versions in the store.
+        let resource = format!("secret/data/{}", path);
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "delete", &resource)
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.destroy",
+                    &path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
+        let destroyed_count = match self
             .store
             .destroy(&req.tenant_id, &path, &req.versions)
             .await
-            .map_err(vault_err_to_status)?;
+        {
+            Ok(c) => c,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.destroy",
+                        &path,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(vault_err_to_status(e));
+            }
+        };
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.destroy",
+                &path,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(DestroySecretResponse { destroyed_count }))
     }
@@ -279,6 +607,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<ListSecretsRequest>,
     ) -> Result<Response<ListSecretsResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         if req.tenant_id.is_empty() {
@@ -297,8 +629,42 @@ impl SecretService for SecretServiceImpl {
 
         info!("list_secrets");
 
+        // Authorize before listing from the store.
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "list", "secret/list")
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.list",
+                    &prefix,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
         let mut paths = self.store.list(&req.tenant_id, &prefix).await;
         paths.sort();
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.list",
+                &prefix,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(ListSecretsResponse { paths }))
     }
@@ -309,6 +675,10 @@ impl SecretService for SecretServiceImpl {
         &self,
         request: Request<GetMetadataRequest>,
     ) -> Result<Response<GetMetadataResponse>, Status> {
+        // Extract identity metadata from request headers before consuming the request.
+        let principal_id = extract_grpc_principal_id(request.metadata());
+        let policies = extract_grpc_policies(request.metadata());
+
         let req = request.into_inner();
 
         let path = normalize_and_validate(&req.path).map_err(vault_err_to_status)?;
@@ -322,11 +692,63 @@ impl SecretService for SecretServiceImpl {
 
         info!("get_metadata");
 
-        let entry = self
+        // Authorize before reading metadata from the store.
+        let resource = format!("secret/metadata/{}", path);
+        if let Err(e) = self
+            .policy_client
+            .authorize(&req.tenant_id, &principal_id, &policies, "read", &resource)
+            .await
+        {
+            self.audit_client
+                .emit(
+                    &req.tenant_id,
+                    &principal_id,
+                    "secret.metadata.read",
+                    &path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    "",
+                )
+                .await;
+            return Err(vault_err_to_status(e));
+        }
+
+        let entry = match self
             .store
             .get_metadata(&req.tenant_id, &path)
             .await
-            .map_err(vault_err_to_status)?;
+        {
+            Ok(e) => e,
+            Err(e) => {
+                self.audit_client
+                    .emit(
+                        &req.tenant_id,
+                        &principal_id,
+                        "secret.metadata.read",
+                        &path,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        "",
+                    )
+                    .await;
+                return Err(vault_err_to_status(e));
+            }
+        };
+
+        self.audit_client
+            .emit(
+                &req.tenant_id,
+                &principal_id,
+                "secret.metadata.read",
+                &path,
+                "success",
+                "",
+                "",
+                "",
+            )
+            .await;
 
         Ok(Response::new(GetMetadataResponse {
             current_version: entry.current_version_number(),

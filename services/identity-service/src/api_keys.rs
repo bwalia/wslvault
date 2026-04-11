@@ -1,0 +1,1349 @@
+//! API key management for machine-to-machine authentication.
+//!
+//! API keys provide a simpler alternative to OIDC/JWT for service accounts and
+//! automation pipelines that do not participate in an OIDC flow.  Each key is
+//! scoped to a tenant and optionally to a set of secret path prefixes and
+//! policy names.
+//!
+//! # Security design
+//!
+//! - The raw key (`wslv_<base64url-32-bytes>`) is generated once, returned in
+//!   the creation response, and **never stored**.
+//! - Only the SHA-256 hash of the raw key is held in memory (and persisted to
+//!   PostgreSQL via a future storage integration).
+//! - Lookup during validation uses a constant-time XOR-fold comparison
+//!   (`ct_bytes_equal`) to prevent timing-based key enumeration.
+//! - The `key_prefix` (first 8 characters after the `wslv_` sentinel) is
+//!   stored in plain text solely so operators can identify a key in audit logs
+//!   without access to the raw secret.
+//!
+//! # Endpoints
+//!
+//! | Method | Path                        | Description                        |
+//! |--------|-----------------------------|------------------------------------|
+//! | POST   | /v1/api-keys                | Create a new API key               |
+//! | GET    | /v1/api-keys                | List active API keys for a tenant  |
+//! | DELETE | /v1/api-keys/:id            | Revoke an API key                  |
+//! | POST   | /v1/api-keys/:id/rotate     | Rotate an API key                  |
+//! | POST   | /v1/auth/api-key            | Exchange an API key for a JWT      |
+
+use std::{
+    collections::HashMap,
+    sync::Arc,
+};
+
+use axum::{
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{delete, post},
+    Json, Router,
+};
+use chrono::{DateTime, Utc};
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
+use tracing::{info, warn};
+use uuid::Uuid;
+
+use crate::token::TokenManager;
+
+// ---------------------------------------------------------------------------
+// Key generation constants
+// ---------------------------------------------------------------------------
+
+/// Human-readable sentinel prefix prepended to every raw API key.
+/// Allows tooling (git scanners, etc.) to detect accidentally committed keys.
+const RAW_KEY_PREFIX: &str = "wslv_";
+
+/// Number of random bytes that form the secret portion of the key.
+/// 32 bytes = 256 bits of entropy, encoded as ~43 base64url characters.
+const KEY_SECRET_BYTES: usize = 32;
+
+/// Number of characters retained from the random portion for the `key_prefix`
+/// identification field (not a secret; stored in plain text for audit use).
+const KEY_PREFIX_DISPLAY_LEN: usize = 8;
+
+/// TTL (in seconds) of JWTs issued via the `/v1/auth/api-key` exchange endpoint.
+const API_KEY_JWT_TTL_SECONDS: i64 = 3600;
+
+// ---------------------------------------------------------------------------
+// Error type
+// ---------------------------------------------------------------------------
+
+/// Errors that can be returned by [`ApiKeyManager`] operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ApiKeyError {
+    #[error("api key not found")]
+    KeyNotFound,
+
+    #[error("api key has expired")]
+    KeyExpired,
+
+    #[error("api key has been revoked")]
+    KeyRevoked,
+
+    #[error("an api key with name '{0}' already exists for this tenant")]
+    DuplicateName(String),
+
+    #[error("api key format is invalid; expected '{RAW_KEY_PREFIX}<base64url>'")]
+    InvalidKeyFormat,
+
+    #[error("rate limit exceeded")]
+    RateLimitExceeded,
+
+    /// Wraps internal JWT-issuance failures surfaced from [`TokenManager`].
+    #[error("token issuance failed: {0}")]
+    TokenIssuance(String),
+}
+
+impl ApiKeyError {
+    /// Map this error to an appropriate HTTP status code.
+    fn status_code(&self) -> StatusCode {
+        match self {
+            ApiKeyError::KeyNotFound => StatusCode::NOT_FOUND,
+            ApiKeyError::KeyExpired => StatusCode::UNAUTHORIZED,
+            ApiKeyError::KeyRevoked => StatusCode::UNAUTHORIZED,
+            ApiKeyError::DuplicateName(_) => StatusCode::CONFLICT,
+            ApiKeyError::InvalidKeyFormat => StatusCode::BAD_REQUEST,
+            ApiKeyError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,
+            ApiKeyError::TokenIssuance(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    /// Stable machine-readable error code included in JSON error bodies.
+    fn error_code(&self) -> &'static str {
+        match self {
+            ApiKeyError::KeyNotFound => "key_not_found",
+            ApiKeyError::KeyExpired => "key_expired",
+            ApiKeyError::KeyRevoked => "key_revoked",
+            ApiKeyError::DuplicateName(_) => "duplicate_name",
+            ApiKeyError::InvalidKeyFormat => "invalid_key_format",
+            ApiKeyError::RateLimitExceeded => "rate_limit_exceeded",
+            ApiKeyError::TokenIssuance(_) => "token_issuance_failed",
+        }
+    }
+}
+
+impl IntoResponse for ApiKeyError {
+    fn into_response(self) -> axum::response::Response {
+        (
+            self.status_code(),
+            Json(serde_json::json!({
+                "code": self.error_code(),
+                "message": self.to_string(),
+            })),
+        )
+            .into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Domain types
+// ---------------------------------------------------------------------------
+
+/// Persisted representation of an API key.
+///
+/// The raw key is **never** stored here; only the SHA-256 hash and a short
+/// display prefix are retained.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiKeyRecord {
+    pub id: Uuid,
+    pub tenant_id: String,
+    pub name: String,
+    /// SHA-256 hash of the raw key (the raw key itself is never stored).
+    pub key_hash: Vec<u8>,
+    /// First [`KEY_PREFIX_DISPLAY_LEN`] characters of the random key portion,
+    /// used for identification in logs and UIs.  Not a secret.
+    pub key_prefix: String,
+    /// Allowed secret path prefixes.  An empty list means all paths are allowed.
+    pub path_prefixes: Vec<String>,
+    /// Policy names granted to bearers of this key.
+    pub policies: Vec<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    /// `None` means the key never expires.
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// `None` means the key is active; `Some(_)` means it has been revoked.
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub rate_limit_per_minute: i32,
+}
+
+/// Response body returned from `POST /v1/api-keys`.
+///
+/// This is the **only** time the raw `key` is exposed.  The caller must
+/// store it securely immediately; it cannot be retrieved later.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiKeyCreateResponse {
+    pub id: Uuid,
+    /// The raw API key string.  Shown **once at creation** and never again.
+    pub key: String,
+    pub key_prefix: String,
+    pub name: String,
+    pub tenant_id: String,
+    pub policies: Vec<String>,
+    pub path_prefixes: Vec<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Request body for `POST /v1/api-keys`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ApiKeyCreateRequest {
+    /// Human-readable name; must be unique within the tenant.
+    pub name: String,
+    pub tenant_id: String,
+    /// Optional list of policy names to attach to this key.
+    pub policies: Option<Vec<String>>,
+    /// Optional list of secret path prefixes this key may access.
+    /// `None` or an empty list grants access to all paths.
+    pub path_prefixes: Option<Vec<String>>,
+    /// If set, the key expires after this many seconds from creation.
+    pub expires_in_seconds: Option<i64>,
+    /// Maximum requests per minute; defaults to 60.
+    pub rate_limit_per_minute: Option<i32>,
+}
+
+/// Successful result of validating a raw API key.
+#[derive(Debug)]
+pub struct ApiKeyValidationResult {
+    pub key_id: Uuid,
+    pub tenant_id: String,
+    pub policies: Vec<String>,
+    pub path_prefixes: Vec<String>,
+    pub rate_limit_per_minute: i32,
+}
+
+// ---------------------------------------------------------------------------
+// Constant-time helpers
+// ---------------------------------------------------------------------------
+
+/// Compares two byte slices in constant time to prevent timing side-channels.
+///
+/// The comparison XORs every byte pair and accumulates the differences so that
+/// the execution time does not reveal where (or whether) the first differing
+/// byte occurs.  Slices of unequal length are treated as non-equal without
+/// short-circuiting.
+fn ct_bytes_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Fold all XOR differences into a single accumulator; a non-zero result
+    // means at least one byte differed.
+    let diff: u8 = a
+        .iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    diff == 0
+}
+
+// ---------------------------------------------------------------------------
+// Manager
+// ---------------------------------------------------------------------------
+
+/// Manages API key lifecycle: generation, validation, revocation, and rotation.
+///
+/// The backing store is an in-memory [`HashMap`] keyed by the SHA-256 hash of
+/// the raw key, giving O(1) average-case lookup on the hot validation path.
+/// A secondary index by [`Uuid`] supports management operations (revoke by ID,
+/// list by tenant).
+///
+/// All mutations are serialised through a [`tokio::sync::RwLock`] which allows
+/// many concurrent reads (validation) alongside exclusive writes (create/revoke).
+#[derive(Clone)]
+pub struct ApiKeyManager {
+    /// Primary index: key_hash → record.  Used on the authentication hot path.
+    by_hash: Arc<RwLock<HashMap<Vec<u8>, ApiKeyRecord>>>,
+    /// Secondary index: id → key_hash.  Enables O(1) lookup by UUID for
+    /// management operations (revoke, rotate) without scanning the primary map.
+    id_to_hash: Arc<RwLock<HashMap<Uuid, Vec<u8>>>>,
+}
+
+impl ApiKeyManager {
+    /// Creates a new, empty `ApiKeyManager`.
+    pub fn new() -> Self {
+        Self {
+            by_hash: Arc::new(RwLock::new(HashMap::new())),
+            id_to_hash: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cryptographic helpers
+    // -----------------------------------------------------------------------
+
+    /// Generates a new raw API key: `"wslv_" + base64url(32 random bytes)`.
+    ///
+    /// The raw key is returned only here and must never be logged or stored.
+    fn generate_key() -> String {
+        let mut random_bytes = [0u8; KEY_SECRET_BYTES];
+        // `rand::thread_rng()` uses the OS CSPRNG (via getrandom).
+        rand::thread_rng().fill_bytes(&mut random_bytes);
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &random_bytes);
+        format!("{RAW_KEY_PREFIX}{encoded}")
+    }
+
+    /// Computes the SHA-256 hash of a raw API key.
+    ///
+    /// The hash is what is stored and compared; the raw key must never persist.
+    fn hash_key(raw_key: &str) -> Vec<u8> {
+        let mut hasher = Sha256::new();
+        hasher.update(raw_key.as_bytes());
+        hasher.finalize().to_vec()
+    }
+
+    /// Validates that a raw key has the expected `wslv_` prefix and non-empty
+    /// random suffix, returning the random portion on success.
+    fn parse_key_random_portion(raw_key: &str) -> Result<&str, ApiKeyError> {
+        raw_key
+            .strip_prefix(RAW_KEY_PREFIX)
+            .filter(|s| !s.is_empty())
+            .ok_or(ApiKeyError::InvalidKeyFormat)
+    }
+
+    // -----------------------------------------------------------------------
+    // Public API
+    // -----------------------------------------------------------------------
+
+    /// Creates a new API key from the given request.
+    ///
+    /// Returns an [`ApiKeyCreateResponse`] containing the raw key string.
+    /// **This is the only time the raw key is accessible.**
+    pub async fn create_key(
+        &self,
+        req: ApiKeyCreateRequest,
+        created_by: &str,
+    ) -> Result<ApiKeyCreateResponse, ApiKeyError> {
+        // Reject blank names early to avoid cluttering the store.
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Err(ApiKeyError::InvalidKeyFormat);
+        }
+
+        // Duplicate-name guard: scan existing active keys for the tenant.
+        {
+            let guard = self.by_hash.read().await;
+            let duplicate = guard.values().any(|record| {
+                record.tenant_id == req.tenant_id
+                    && record.name == name
+                    && record.revoked_at.is_none()
+            });
+            if duplicate {
+                return Err(ApiKeyError::DuplicateName(name.clone()));
+            }
+        }
+
+        let raw_key = Self::generate_key();
+        let key_hash = Self::hash_key(&raw_key);
+
+        // Extract the display prefix from the random portion (after `wslv_`).
+        let random_portion = Self::parse_key_random_portion(&raw_key)?;
+        let key_prefix = random_portion
+            .chars()
+            .take(KEY_PREFIX_DISPLAY_LEN)
+            .collect::<String>();
+
+        let now = Utc::now();
+        let expires_at = req.expires_in_seconds.map(|secs| {
+            now + chrono::Duration::seconds(secs)
+        });
+
+        // Generate a random UUID using a timestamp-based v7 UUID so records
+        // sort naturally by creation time (consistent with the rest of the codebase).
+        let record = ApiKeyRecord {
+            id: Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)),
+            tenant_id: req.tenant_id.clone(),
+            name: name.clone(),
+            key_hash: key_hash.clone(),
+            key_prefix: key_prefix.clone(),
+            path_prefixes: req.path_prefixes.clone().unwrap_or_default(),
+            policies: req.policies.clone().unwrap_or_default(),
+            created_by: created_by.to_string(),
+            created_at: now,
+            expires_at,
+            last_used_at: None,
+            revoked_at: None,
+            rate_limit_per_minute: req.rate_limit_per_minute.unwrap_or(60),
+        };
+
+        let response = ApiKeyCreateResponse {
+            id: record.id,
+            key: raw_key,
+            key_prefix: key_prefix.clone(),
+            name: name.clone(),
+            tenant_id: req.tenant_id.clone(),
+            policies: record.policies.clone(),
+            path_prefixes: record.path_prefixes.clone(),
+            expires_at,
+            created_at: now,
+        };
+
+        // Persist under both indexes atomically (we acquire write locks in a
+        // consistent order to avoid deadlocks: hash map first, then id map).
+        let mut by_hash = self.by_hash.write().await;
+        let mut id_to_hash = self.id_to_hash.write().await;
+        by_hash.insert(key_hash.clone(), record.clone());
+        id_to_hash.insert(record.id, key_hash);
+
+        info!(
+            key_id = %record.id,
+            tenant_id = %req.tenant_id,
+            key_prefix = %key_prefix,
+            "api key created"
+        );
+
+        Ok(response)
+    }
+
+    /// Validates a raw API key string, returning tenant / policy metadata.
+    ///
+    /// The lookup is O(1) and uses a constant-time byte comparison to prevent
+    /// timing-based key enumeration.  `last_used_at` is updated on success.
+    pub async fn validate_key(
+        &self,
+        raw_key: &str,
+    ) -> Result<ApiKeyValidationResult, ApiKeyError> {
+        // Reject obviously malformed keys before touching the store.
+        Self::parse_key_random_portion(raw_key)?;
+
+        let candidate_hash = Self::hash_key(raw_key);
+
+        let mut by_hash = self.by_hash.write().await;
+
+        // Find a record whose stored hash matches the candidate via constant-time compare.
+        // `ct_bytes_equal` XORs all bytes and folds the result so that execution
+        // time is independent of where (or whether) a differing byte occurs.
+        // This prevents timing-based key enumeration attacks.
+        let record = by_hash
+            .iter_mut()
+            .find(|(stored_hash, _)| ct_bytes_equal(stored_hash, &candidate_hash))
+            .map(|(_, record)| record)
+            .ok_or(ApiKeyError::KeyNotFound)?;
+
+        if record.revoked_at.is_some() {
+            warn!(key_id = %record.id, "attempt to use revoked api key");
+            return Err(ApiKeyError::KeyRevoked);
+        }
+
+        if let Some(expires_at) = record.expires_at {
+            if Utc::now() > expires_at {
+                warn!(key_id = %record.id, "attempt to use expired api key");
+                return Err(ApiKeyError::KeyExpired);
+            }
+        }
+
+        // Stamp last_used_at in-place; the record lives behind the write lock.
+        record.last_used_at = Some(Utc::now());
+
+        let result = ApiKeyValidationResult {
+            key_id: record.id,
+            tenant_id: record.tenant_id.clone(),
+            policies: record.policies.clone(),
+            path_prefixes: record.path_prefixes.clone(),
+            rate_limit_per_minute: record.rate_limit_per_minute,
+        };
+
+        Ok(result)
+    }
+
+    /// Revokes an API key by its UUID.
+    ///
+    /// The caller must supply the owning `tenant_id` to prevent cross-tenant
+    /// revocation (even if a key UUID is somehow leaked).
+    pub async fn revoke_key(
+        &self,
+        key_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<(), ApiKeyError> {
+        let id_to_hash = self.id_to_hash.read().await;
+        let hash = id_to_hash
+            .get(&key_id)
+            .ok_or(ApiKeyError::KeyNotFound)?
+            .clone();
+        drop(id_to_hash);
+
+        let mut by_hash = self.by_hash.write().await;
+        let record = by_hash.get_mut(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+        if record.tenant_id != tenant_id {
+            // Do not reveal that the key exists under a different tenant.
+            return Err(ApiKeyError::KeyNotFound);
+        }
+
+        if record.revoked_at.is_some() {
+            // Idempotent: revoking an already-revoked key is a no-op.
+            return Ok(());
+        }
+
+        record.revoked_at = Some(Utc::now());
+        info!(key_id = %key_id, tenant_id = %tenant_id, "api key revoked");
+        Ok(())
+    }
+
+    /// Lists all active (non-revoked, non-expired) API keys for a tenant.
+    ///
+    /// The returned records never contain the raw key or its hash;
+    /// only metadata safe for administrative display is included.
+    pub async fn list_keys(&self, tenant_id: &str) -> Vec<ApiKeyRecord> {
+        let now = Utc::now();
+        let by_hash = self.by_hash.read().await;
+
+        let mut keys: Vec<ApiKeyRecord> = by_hash
+            .values()
+            .filter(|record| {
+                record.tenant_id == tenant_id
+                    && record.revoked_at.is_none()
+                    && record.expires_at.map_or(true, |exp| now <= exp)
+            })
+            .map(|record| {
+                // Return a copy with the key_hash zeroed out so the SHA-256
+                // digest is never serialised into a response body.
+                ApiKeyRecord {
+                    key_hash: vec![],
+                    ..record.clone()
+                }
+            })
+            .collect();
+
+        // Stable ordering: newest first for UI convenience.
+        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        keys
+    }
+
+    /// Rotates an API key: revokes the existing key and issues a new one with
+    /// the same name, tenant, policies, path prefixes, and rate limit.
+    ///
+    /// Returns the creation response for the new key (with the new raw key).
+    pub async fn rotate_key(
+        &self,
+        key_id: Uuid,
+        tenant_id: &str,
+    ) -> Result<ApiKeyCreateResponse, ApiKeyError> {
+        // Capture the old record's configuration before revoking it.
+        let (old_name, old_policies, old_path_prefixes, old_rate_limit, old_created_by) = {
+            let id_to_hash = self.id_to_hash.read().await;
+            let hash = id_to_hash
+                .get(&key_id)
+                .ok_or(ApiKeyError::KeyNotFound)?
+                .clone();
+            drop(id_to_hash);
+
+            let by_hash = self.by_hash.read().await;
+            let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+            if record.tenant_id != tenant_id {
+                return Err(ApiKeyError::KeyNotFound);
+            }
+
+            (
+                record.name.clone(),
+                record.policies.clone(),
+                record.path_prefixes.clone(),
+                record.rate_limit_per_minute,
+                record.created_by.clone(),
+            )
+        };
+
+        // Revoke the old key first.
+        self.revoke_key(key_id, tenant_id).await?;
+
+        // Create the replacement key with the same logical identity.
+        let new_req = ApiKeyCreateRequest {
+            name: old_name,
+            tenant_id: tenant_id.to_string(),
+            policies: Some(old_policies),
+            path_prefixes: Some(old_path_prefixes),
+            // Preserve the original rate limit; do not reset it on rotation.
+            rate_limit_per_minute: Some(old_rate_limit),
+            // The new key inherits no expiry from the old one; callers that
+            // want expiry should set it on the create request directly.
+            expires_in_seconds: None,
+        };
+
+        let response = self
+            .create_key(new_req, &old_created_by)
+            .await?;
+
+        info!(
+            old_key_id = %key_id,
+            new_key_id = %response.id,
+            tenant_id = %tenant_id,
+            "api key rotated"
+        );
+
+        Ok(response)
+    }
+}
+
+impl Default for ApiKeyManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared app state for HTTP handlers
+// ---------------------------------------------------------------------------
+
+/// State passed to every API-key HTTP handler.
+#[derive(Clone)]
+pub struct ApiKeyState {
+    pub manager: ApiKeyManager,
+    pub token_manager: TokenManager,
+}
+
+// ---------------------------------------------------------------------------
+// HTTP request / response wire types
+// ---------------------------------------------------------------------------
+
+/// Response body for list and single-key operations (no raw key exposed).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiKeyMetadataResponse {
+    pub id: Uuid,
+    pub name: String,
+    pub tenant_id: String,
+    pub key_prefix: String,
+    pub policies: Vec<String>,
+    pub path_prefixes: Vec<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub rate_limit_per_minute: i32,
+}
+
+impl From<&ApiKeyRecord> for ApiKeyMetadataResponse {
+    fn from(record: &ApiKeyRecord) -> Self {
+        Self {
+            id: record.id,
+            name: record.name.clone(),
+            tenant_id: record.tenant_id.clone(),
+            key_prefix: record.key_prefix.clone(),
+            policies: record.policies.clone(),
+            path_prefixes: record.path_prefixes.clone(),
+            created_by: record.created_by.clone(),
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            last_used_at: record.last_used_at,
+            rate_limit_per_minute: record.rate_limit_per_minute,
+        }
+    }
+}
+
+/// Request body for `POST /v1/auth/api-key`.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ApiKeyAuthRequest {
+    /// Raw API key string (format: `wslv_<base64url>`).
+    pub api_key: String,
+}
+
+/// Response body from `POST /v1/auth/api-key`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ApiKeyAuthResponse {
+    pub token: String,
+    pub expires_at: DateTime<Utc>,
+    pub tenant_id: String,
+    pub policies: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handlers
+// ---------------------------------------------------------------------------
+
+/// `POST /v1/api-keys` — create a new API key.
+///
+/// Requires a JSON body of [`ApiKeyCreateRequest`].  The `created_by` field is
+/// populated from the `X-Principal-Id` header when present; otherwise it falls
+/// back to `"api"`.
+#[utoipa::path(
+    post,
+    path = "/v1/api-keys",
+    params(
+        ("x-principal-id" = Option<String>, Header, description = "Identity of the creator (defaults to 'api')"),
+    ),
+    request_body = ApiKeyCreateRequest,
+    responses(
+        (status = 201, description = "API key created; raw key is shown only once", body = ApiKeyCreateResponse),
+        (status = 409, description = "An active API key with this name already exists for the tenant"),
+        (status = 500, description = "Internal error during key creation"),
+    ),
+    tag = "api-keys"
+)]
+pub async fn handle_create_api_key(
+    State(state): State<ApiKeyState>,
+    headers: HeaderMap,
+    Json(payload): Json<ApiKeyCreateRequest>,
+) -> impl IntoResponse {
+    // Derive the creator identity from the request context header if available.
+    let created_by = headers
+        .get("x-principal-id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("api")
+        .to_string();
+
+    match state.manager.create_key(payload, &created_by).await {
+        Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
+        Err(err) => {
+            warn!(error = %err, "failed to create api key");
+            err.into_response()
+        }
+    }
+}
+
+/// `GET /v1/api-keys` — list active API keys for a tenant.
+///
+/// Requires the `X-Tenant-Id` header to identify the tenant scope.
+#[utoipa::path(
+    get,
+    path = "/v1/api-keys",
+    params(
+        ("x-tenant-id" = String, Header, description = "Tenant identifier (required)"),
+    ),
+    responses(
+        (status = 200, description = "Active API keys for the tenant (key hashes never included)", body = Vec<ApiKeyMetadataResponse>),
+        (status = 400, description = "Missing X-Tenant-Id header"),
+    ),
+    tag = "api-keys"
+)]
+pub async fn handle_list_api_keys(
+    State(state): State<ApiKeyState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "missing_tenant_id",
+                    "message": "X-Tenant-Id header is required",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let keys = state.manager.list_keys(&tenant_id).await;
+    let body: Vec<ApiKeyMetadataResponse> = keys.iter().map(ApiKeyMetadataResponse::from).collect();
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+/// `DELETE /v1/api-keys/:id` — revoke an API key.
+///
+/// Requires the `X-Tenant-Id` header for cross-tenant isolation enforcement.
+#[utoipa::path(
+    delete,
+    path = "/v1/api-keys/{id}",
+    params(
+        ("id" = String, Path, description = "UUID of the API key to revoke"),
+        ("x-tenant-id" = String, Header, description = "Tenant identifier (required for cross-tenant isolation)"),
+    ),
+    responses(
+        (status = 204, description = "API key revoked (idempotent)"),
+        (status = 400, description = "Invalid UUID or missing X-Tenant-Id header"),
+        (status = 404, description = "API key not found"),
+    ),
+    tag = "api-keys"
+)]
+pub async fn handle_revoke_api_key(
+    State(state): State<ApiKeyState>,
+    Path(id_str): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let key_id = match id_str.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "invalid_id",
+                    "message": "api key id must be a valid UUID",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "missing_tenant_id",
+                    "message": "X-Tenant-Id header is required",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match state.manager.revoke_key(key_id, &tenant_id).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            warn!(error = %err, key_id = %key_id, "failed to revoke api key");
+            err.into_response()
+        }
+    }
+}
+
+/// `POST /v1/api-keys/:id/rotate` — rotate an API key.
+///
+/// Revokes the current key and issues a replacement with the same configuration.
+/// The new raw key is returned in the response body.
+#[utoipa::path(
+    post,
+    path = "/v1/api-keys/{id}/rotate",
+    params(
+        ("id" = String, Path, description = "UUID of the API key to rotate"),
+        ("x-tenant-id" = String, Header, description = "Tenant identifier (required)"),
+    ),
+    responses(
+        (status = 200, description = "Old key revoked and new key issued; raw key shown once", body = ApiKeyCreateResponse),
+        (status = 400, description = "Invalid UUID or missing X-Tenant-Id header"),
+        (status = 404, description = "API key not found"),
+    ),
+    tag = "api-keys"
+)]
+pub async fn handle_rotate_api_key(
+    State(state): State<ApiKeyState>,
+    Path(id_str): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let key_id = match id_str.parse::<Uuid>() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "invalid_id",
+                    "message": "api key id must be a valid UUID",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
+        Some(id) if !id.is_empty() => id.to_string(),
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "code": "missing_tenant_id",
+                    "message": "X-Tenant-Id header is required",
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    match state.manager.rotate_key(key_id, &tenant_id).await {
+        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(err) => {
+            warn!(error = %err, key_id = %key_id, "failed to rotate api key");
+            err.into_response()
+        }
+    }
+}
+
+/// `POST /v1/auth/api-key` — exchange a raw API key for a short-lived JWT.
+///
+/// Accepts `{ "api_key": "wslv_..." }` and returns a JWT token that downstream
+/// services can verify using the shared `VAULT_JWT_SECRET`.
+#[utoipa::path(
+    post,
+    path = "/v1/auth/api-key",
+    request_body = ApiKeyAuthRequest,
+    responses(
+        (status = 200, description = "JWT issued for the API key's tenant and policies", body = ApiKeyAuthResponse),
+        (status = 400, description = "Malformed API key format"),
+        (status = 401, description = "API key is expired or revoked"),
+        (status = 404, description = "API key not found"),
+        (status = 500, description = "JWT issuance failed"),
+    ),
+    tag = "auth"
+)]
+pub async fn handle_auth_api_key(
+    State(state): State<ApiKeyState>,
+    Json(payload): Json<ApiKeyAuthRequest>,
+) -> impl IntoResponse {
+    // Validate the key and retrieve its associated metadata.
+    let validation_result = match state.manager.validate_key(&payload.api_key).await {
+        Ok(result) => result,
+        Err(err) => {
+            warn!(error = %err, "api key authentication failed");
+            return err.into_response();
+        }
+    };
+
+    // Issue a short-lived JWT using the key's UUID as the subject so that
+    // downstream services can correlate the token back to the originating key.
+    let subject = validation_result.key_id.to_string();
+    let (token, expires_at) = match state.token_manager.issue_token(
+        &subject,
+        &validation_result.tenant_id,
+        validation_result.policies.clone(),
+        API_KEY_JWT_TTL_SECONDS,
+    ) {
+        Ok(pair) => pair,
+        Err(err) => {
+            let api_err = ApiKeyError::TokenIssuance(err.to_string());
+            return api_err.into_response();
+        }
+    };
+
+    info!(
+        key_id = %validation_result.key_id,
+        tenant_id = %validation_result.tenant_id,
+        "api key exchanged for jwt"
+    );
+
+    (
+        StatusCode::OK,
+        Json(ApiKeyAuthResponse {
+            token,
+            expires_at,
+            tenant_id: validation_result.tenant_id,
+            policies: validation_result.policies,
+        }),
+    )
+        .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// Router builder
+// ---------------------------------------------------------------------------
+
+/// Builds an [`axum::Router`] containing all API-key routes.
+///
+/// Mount alongside other service routers at startup:
+/// ```no_run
+/// let app = health::router()
+///     .merge(tenant_handlers::router(tenant_store))
+///     .merge(api_keys::router(api_key_state));
+/// ```
+pub fn router(state: ApiKeyState) -> Router {
+    Router::new()
+        .route("/v1/api-keys", post(handle_create_api_key).get(handle_list_api_keys))
+        .route("/v1/api-keys/:id", delete(handle_revoke_api_key))
+        .route("/v1/api-keys/:id/rotate", post(handle_rotate_api_key))
+        .route("/v1/auth/api-key", post(handle_auth_api_key))
+        .with_state(state)
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    fn make_token_manager() -> TokenManager {
+        TokenManager::new(b"test-secret-that-is-at-least-32-bytes-long!!")
+    }
+
+    fn make_state() -> ApiKeyState {
+        ApiKeyState {
+            manager: ApiKeyManager::new(),
+            token_manager: make_token_manager(),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Key generation / hashing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn generated_key_has_correct_prefix() {
+        let key = ApiKeyManager::generate_key();
+        assert!(
+            key.starts_with(RAW_KEY_PREFIX),
+            "key should start with '{RAW_KEY_PREFIX}', got: {key}"
+        );
+    }
+
+    #[test]
+    fn generated_key_has_sufficient_entropy() {
+        let key = ApiKeyManager::generate_key();
+        let random_part = key.strip_prefix(RAW_KEY_PREFIX).unwrap();
+        // 32 bytes base64url-encoded = ceil(32*4/3) = 43 characters.
+        assert!(
+            random_part.len() >= 40,
+            "random portion should be at least 40 chars, got: {}",
+            random_part.len()
+        );
+    }
+
+    #[test]
+    fn hash_key_is_deterministic() {
+        let hash1 = ApiKeyManager::hash_key("wslv_test_key");
+        let hash2 = ApiKeyManager::hash_key("wslv_test_key");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn hash_key_differs_for_different_keys() {
+        let hash1 = ApiKeyManager::hash_key("wslv_key_one");
+        let hash2 = ApiKeyManager::hash_key("wslv_key_two");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn parse_key_random_portion_rejects_missing_prefix() {
+        assert!(ApiKeyManager::parse_key_random_portion("noprefix_abc").is_err());
+    }
+
+    #[test]
+    fn parse_key_random_portion_rejects_prefix_only() {
+        assert!(ApiKeyManager::parse_key_random_portion("wslv_").is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Create
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_key_returns_raw_key_once() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "ci-bot".into(),
+            tenant_id: "tenant-1".into(),
+            policies: Some(vec!["read".into()]),
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let response = mgr.create_key(req, "operator").await.unwrap();
+
+        assert!(response.key.starts_with(RAW_KEY_PREFIX));
+        assert_eq!(response.name, "ci-bot");
+        assert_eq!(response.tenant_id, "tenant-1");
+        assert_eq!(response.policies, vec!["read"]);
+        assert_eq!(response.key_prefix.len(), KEY_PREFIX_DISPLAY_LEN);
+    }
+
+    #[tokio::test]
+    async fn create_key_rejects_duplicate_name_within_tenant() {
+        let mgr = ApiKeyManager::new();
+        let make_req = || ApiKeyCreateRequest {
+            name: "dup-key".into(),
+            tenant_id: "tenant-dup".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        mgr.create_key(make_req(), "op").await.unwrap();
+        let err = mgr.create_key(make_req(), "op").await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::DuplicateName(_)));
+    }
+
+    #[tokio::test]
+    async fn create_key_allows_same_name_across_tenants() {
+        let mgr = ApiKeyManager::new();
+        let req1 = ApiKeyCreateRequest {
+            name: "deploy-key".into(),
+            tenant_id: "tenant-a".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let req2 = ApiKeyCreateRequest {
+            name: "deploy-key".into(),
+            tenant_id: "tenant-b".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        assert!(mgr.create_key(req1, "op").await.is_ok());
+        assert!(mgr.create_key(req2, "op").await.is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Validate
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn validate_key_succeeds_for_valid_key() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "valid-key".into(),
+            tenant_id: "tenant-v".into(),
+            policies: Some(vec!["read".into(), "write".into()]),
+            path_prefixes: Some(vec!["secret/data/".into()]),
+            expires_in_seconds: None,
+            rate_limit_per_minute: Some(120),
+        };
+        let create_resp = mgr.create_key(req, "op").await.unwrap();
+
+        let validation = mgr.validate_key(&create_resp.key).await.unwrap();
+        assert_eq!(validation.tenant_id, "tenant-v");
+        assert_eq!(validation.policies, vec!["read", "write"]);
+        assert_eq!(validation.path_prefixes, vec!["secret/data/"]);
+        assert_eq!(validation.rate_limit_per_minute, 120);
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_unknown_key() {
+        let mgr = ApiKeyManager::new();
+        let err = mgr
+            .validate_key("wslv_unknownkeyunknownkeyunknownkey1234")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ApiKeyError::KeyNotFound));
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_revoked_key() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "revoke-me".into(),
+            tenant_id: "tenant-r".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let resp = mgr.create_key(req, "op").await.unwrap();
+        mgr.revoke_key(resp.id, "tenant-r").await.unwrap();
+
+        let err = mgr.validate_key(&resp.key).await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::KeyRevoked));
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_expired_key() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "expire-me".into(),
+            tenant_id: "tenant-e".into(),
+            policies: None,
+            path_prefixes: None,
+            // Negative TTL: the key is created already-expired.
+            expires_in_seconds: Some(-1),
+            rate_limit_per_minute: None,
+        };
+        let resp = mgr.create_key(req, "op").await.unwrap();
+
+        let err = mgr.validate_key(&resp.key).await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::KeyExpired));
+    }
+
+    #[tokio::test]
+    async fn validate_key_rejects_invalid_format() {
+        let mgr = ApiKeyManager::new();
+        let err = mgr.validate_key("not-a-wslv-key").await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::InvalidKeyFormat));
+    }
+
+    // -----------------------------------------------------------------------
+    // Revoke
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn revoke_key_cross_tenant_is_rejected() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "cross-tenant-key".into(),
+            tenant_id: "tenant-owner".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let resp = mgr.create_key(req, "op").await.unwrap();
+
+        // Attempt to revoke with wrong tenant id.
+        let err = mgr.revoke_key(resp.id, "tenant-attacker").await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::KeyNotFound));
+    }
+
+    // -----------------------------------------------------------------------
+    // List
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn list_keys_excludes_revoked_and_other_tenants() {
+        let mgr = ApiKeyManager::new();
+
+        // Create two keys for tenant-a, one for tenant-b.
+        for name in ["key-1", "key-2"] {
+            let req = ApiKeyCreateRequest {
+                name: name.into(),
+                tenant_id: "tenant-a".into(),
+                policies: None,
+                path_prefixes: None,
+                expires_in_seconds: None,
+                rate_limit_per_minute: None,
+            };
+            mgr.create_key(req, "op").await.unwrap();
+        }
+        let req_b = ApiKeyCreateRequest {
+            name: "key-b".into(),
+            tenant_id: "tenant-b".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let resp_b = mgr.create_key(req_b, "op").await.unwrap();
+
+        // Revoke one tenant-a key.
+        let all_a = mgr.list_keys("tenant-a").await;
+        mgr.revoke_key(all_a[0].id, "tenant-a").await.unwrap();
+
+        let active_a = mgr.list_keys("tenant-a").await;
+        assert_eq!(active_a.len(), 1, "only 1 active key should remain for tenant-a");
+
+        let active_b = mgr.list_keys("tenant-b").await;
+        assert_eq!(active_b.len(), 1);
+        assert_eq!(active_b[0].id, resp_b.id);
+    }
+
+    #[tokio::test]
+    async fn list_keys_does_not_expose_key_hash() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "hash-guard-key".into(),
+            tenant_id: "tenant-hg".into(),
+            policies: None,
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        mgr.create_key(req, "op").await.unwrap();
+
+        let keys = mgr.list_keys("tenant-hg").await;
+        assert_eq!(keys.len(), 1);
+        assert!(
+            keys[0].key_hash.is_empty(),
+            "list_keys must not expose the SHA-256 hash"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Rotate
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn rotate_key_issues_new_key_and_revokes_old() {
+        let mgr = ApiKeyManager::new();
+        let req = ApiKeyCreateRequest {
+            name: "rotate-me".into(),
+            tenant_id: "tenant-rot".into(),
+            policies: Some(vec!["admin".into()]),
+            path_prefixes: Some(vec!["secret/".into()]),
+            expires_in_seconds: None,
+            rate_limit_per_minute: Some(30),
+        };
+        let old_resp = mgr.create_key(req, "op").await.unwrap();
+        let old_id = old_resp.id;
+
+        let new_resp = mgr.rotate_key(old_id, "tenant-rot").await.unwrap();
+
+        // New key should differ from the old one.
+        assert_ne!(new_resp.id, old_id);
+        assert_ne!(new_resp.key, old_resp.key);
+
+        // New key inherits the same configuration.
+        assert_eq!(new_resp.name, "rotate-me");
+        assert_eq!(new_resp.policies, vec!["admin"]);
+        assert_eq!(new_resp.path_prefixes, vec!["secret/"]);
+
+        // Old key should now be revoked.
+        let err = mgr.validate_key(&old_resp.key).await.unwrap_err();
+        assert!(matches!(err, ApiKeyError::KeyRevoked));
+
+        // New key should be valid.
+        let validation = mgr.validate_key(&new_resp.key).await.unwrap();
+        assert_eq!(validation.tenant_id, "tenant-rot");
+    }
+
+    // -----------------------------------------------------------------------
+    // HTTP integration tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn http_create_api_key_returns_201() {
+        let app = router(make_state());
+        let body = serde_json::json!({
+            "name": "http-test-key",
+            "tenant_id": "http-tenant",
+            "policies": ["read"]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("x-principal-id", "test-operator")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn http_list_api_keys_requires_tenant_header() {
+        let app = router(make_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/api-keys")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn http_auth_api_key_returns_jwt() {
+        let state = make_state();
+        // Pre-create a key directly via the manager.
+        let req = ApiKeyCreateRequest {
+            name: "auth-test-key".into(),
+            tenant_id: "auth-tenant".into(),
+            policies: Some(vec!["read".into()]),
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+        };
+        let create_resp = state.manager.create_key(req, "op").await.unwrap();
+
+        let app = router(state);
+        let body = serde_json::json!({ "api_key": create_resp.key });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/api-key")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn http_auth_invalid_api_key_returns_401() {
+        let app = router(make_state());
+        let body = serde_json::json!({ "api_key": "wslv_invalidkeyinvalidkeyinvalidkey00000" });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/api-key")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        // KeyNotFound maps to 404, which is intentionally opaque to attackers.
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+}

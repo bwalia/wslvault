@@ -1,0 +1,22 @@
+{{- if .Values.identityService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "identity-service" "componentType" "auth" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.identityService.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.identityService.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

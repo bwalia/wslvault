@@ -3,11 +3,18 @@
 //! Starts two servers concurrently:
 //! - gRPC server on port 50056 (AuditService)
 //! - HTTP health server on port 8085 (GET /health)
+//!
+//! When the `DATABASE_URL` environment variable is set the service uses the
+//! PostgreSQL-backed store; otherwise it falls back to the in-memory store so
+//! the service can start in development without a database.
 
 mod grpc;
 mod health;
 mod integrity;
+mod pg_store;
 mod store;
+
+use std::sync::Arc;
 
 use axum::{routing::get, Router};
 use grpc::proto::audit_service_server::AuditServiceServer;
@@ -15,6 +22,8 @@ use grpc::AuditServiceImpl;
 use tonic::transport::Server as GrpcServer;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+use store::AuditStoreBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,8 +35,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting audit-service");
 
-    // Create the shared in-memory audit store.
-    let audit_store = store::new_store();
+    // Select the storage backend based on whether DATABASE_URL is configured.
+    let audit_store: Arc<dyn AuditStoreBackend> =
+        if let Ok(database_url) = std::env::var("DATABASE_URL") {
+            info!("DATABASE_URL found – connecting to PostgreSQL");
+
+            let config = wslvault_core::config::DatabaseConfig {
+                url: database_url,
+                ..Default::default()
+            };
+
+            let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
+            info!("PostgreSQL connection pool established; using PgAuditBackend");
+            Arc::new(pg_store::PgAuditBackend::new(pool))
+        } else {
+            info!("DATABASE_URL not set – using in-memory audit store");
+            Arc::new(store::InMemoryAuditStore::new())
+        };
 
     // Build the gRPC service.
     let audit_service = AuditServiceImpl::new(audit_store);

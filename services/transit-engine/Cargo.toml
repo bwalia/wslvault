@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 wslvault-core = { path = "../../crates/wslvault-core" }
+wslvault-storage = { path = "../../crates/wslvault-storage" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
@@ -33,6 +34,8 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 hex = { workspace = true }
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

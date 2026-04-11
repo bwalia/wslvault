@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: audit-service
+  labels:
+    app: audit-service
+    component: core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: audit-service
+  template:
+    metadata:
+      labels:
+        app: audit-service
+        component: core
+    spec:
+      serviceAccountName: audit-service
+      containers:
+        - name: audit-service
+          image: wslvault/audit-service:latest
+          ports:
+            - name: http
+              containerPort: 8085
+            - name: grpc
+              containerPort: 50056
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: RUST_LOG
+              value: "info,audit_service=debug"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: audit-service
+spec:
+  selector:
+    app: audit-service
+  ports:
+    - name: http
+      port: 8085
+      targetPort: http
+    - name: grpc
+      port: 50056
+      targetPort: grpc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: audit-service

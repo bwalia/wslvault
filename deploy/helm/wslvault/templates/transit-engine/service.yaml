@@ -1,0 +1,18 @@
+{{- if .Values.transitEngine.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "transit-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.transitEngine.httpPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

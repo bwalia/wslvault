@@ -1,0 +1,30 @@
+[package]
+name = "sync-scheduler"
+version = "0.1.0"
+edition = "2021"
+description = "Scheduled and event-driven sync between WSLVault and external secret managers"
+license = "Apache-2.0"
+
+[[bin]]
+name = "sync-scheduler"
+path = "src/main.rs"
+
+[dependencies]
+wslvault-core = { path = "../../crates/wslvault-core" }
+wslvault-storage = { path = "../../crates/wslvault-storage" }
+wslvault-cluster = { path = "../../crates/wslvault-cluster" }
+wslvault-connectors = { path = "../../crates/wslvault-connectors", features = ["all"] }
+tokio = { workspace = true }
+axum = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+prometheus = { workspace = true }
+cron = "0.12"

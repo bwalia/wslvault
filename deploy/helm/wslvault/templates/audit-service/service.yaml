@@ -1,0 +1,22 @@
+{{- if .Values.auditService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "audit-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.auditService.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.auditService.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

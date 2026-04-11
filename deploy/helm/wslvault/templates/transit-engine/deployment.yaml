@@ -1,0 +1,108 @@
+{{/*
+transit-engine/deployment.yaml
+The transit-engine provides encryption-as-a-service. It does NOT store
+plaintext secrets; it encrypts/decrypts caller-supplied data using named
+keys managed in crypto-service. No gRPC port is exposed; consumers interact
+via REST only.
+*/}}
+{{- if .Values.transitEngine.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "transit-engine" "componentType" "core" "context" $) | nindent 4 }}
+  {{- with .Values.transitEngine.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.transitEngine.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "transit-engine" "componentType" "core" "context" $) | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        {{- toYaml .Values.monitoring.scrapeAnnotations | nindent 8 }}
+        prometheus.io/port: {{ .Values.transitEngine.httpPort | quote }}
+        {{- with .Values.transitEngine.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.transitEngine.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: transit-engine
+          image: {{ include "wslvault.image" (dict "image" .Values.transitEngine.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.transitEngine.httpPort }}
+              protocol: TCP
+          env:
+            - name: HTTP_PORT
+              value: {{ .Values.transitEngine.httpPort | quote }}
+            # gRPC address of the crypto-service for encrypt/decrypt key operations
+            - name: CRYPTO_SERVICE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $))
+                          (.Values.cryptoService.grpcPort | toString) }}
+            # gRPC address of the policy-engine for transit key access policies
+            - name: POLICY_ENGINE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
+                          (.Values.policyEngine.grpcPort | toString) }}
+            {{- with .Values.transitEngine.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.transitEngine.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.transitEngine.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.transitEngine.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.transitEngine.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
