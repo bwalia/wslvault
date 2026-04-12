@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: wslvault
       POSTGRES_PASSWORD: devpassword
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./storage/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -35,12 +35,13 @@ services:
       context: .
       dockerfile: deploy/docker/crypto-service/Dockerfile
     environment:
-      VAULT_ROOT_KEY: "dGVzdC1yb290LWtleS0zMi1ieXRlcy1sb25nISE="  # base64 test key
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      VAULT_ROOT_KEY: "d3NsdmF1bHQtZGV2LXJvb3QtMzItYnl0ZXMta2V5ISE="  # base64("wslvault-dev-root-32-bytes-key!!" = 32 bytes)
       VAULT_LISTEN_ADDR: "0.0.0.0:8080"
       RUST_LOG: "info,crypto_service=debug"
     ports:
       - "50051:50051"
-      - "8080:8080"
+      - "18080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,70 +51,98 @@ services:
       context: .
       dockerfile: deploy/docker/secret-engine/Dockerfile
     environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
       VAULT_CRYPTO_ENDPOINT: "http://crypto-service:50051"
       VAULT_LISTEN_ADDR: "0.0.0.0:8081"
+      REGION_ID: "local"
       RUST_LOG: "info,secret_engine=debug"
     ports:
       - "50052:50052"
       - "8081:8081"
     depends_on:
-      - crypto-service
+      crypto-service:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   identity-service:
     build:
       context: .
       dockerfile: deploy/docker/identity-service/Dockerfile
     environment:
+      # DATABASE_URL intentionally omitted: identity-service uses in-memory stores
+      # (TenantStoreState falls back to in-memory when DATABASE_URL is absent)
       VAULT_JWT_SECRET: "dev-jwt-secret-change-in-production"
-      VAULT_LISTEN_ADDR: "0.0.0.0:8082"
+      VAULT_LISTEN_ADDR: "0.0.0.0:50054"
+      VAULT_HTTP_ADDR: "0.0.0.0:8082"
       RUST_LOG: "info,identity_service=debug"
     ports:
-      - "50054:50054"
-      - "8082:8082"
+      - "15054:50054"
+      - "18082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   policy-engine:
     build:
       context: .
       dockerfile: deploy/docker/policy-engine/Dockerfile
     environment:
-      VAULT_LISTEN_ADDR: "0.0.0.0:8083"
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      VAULT_LISTEN_ADDR: "0.0.0.0:50053"
+      VAULT_HEALTH_ADDR: "0.0.0.0:8083"
       RUST_LOG: "info,policy_engine=debug"
     ports:
       - "50053:50053"
       - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   transit-engine:
     build:
       context: .
       dockerfile: deploy/docker/transit-engine/Dockerfile
     environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
       VAULT_LISTEN_ADDR: "0.0.0.0:8086"
       RUST_LOG: "info,transit_engine=debug"
     ports:
-      - "8086:8086"
+      - "18086:8086"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   lease-manager:
     build:
       context: .
       dockerfile: deploy/docker/lease-manager/Dockerfile
     environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
       VAULT_LISTEN_ADDR: "0.0.0.0:8084"
       RUST_LOG: "info,lease_manager=debug"
     ports:
-      - "50055:50055"
-      - "8084:8084"
+      - "15055:50055"
+      - "18084:8084"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   audit-service:
     build:
       context: .
       dockerfile: deploy/docker/audit-service/Dockerfile
     environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
       VAULT_AUDIT_SIGNING_KEY: "dev-audit-signing-key-32bytes!"
       VAULT_LISTEN_ADDR: "0.0.0.0:8085"
       RUST_LOG: "info,audit_service=debug"
     ports:
-      - "50056:50056"
-      - "8085:8085"
+      - "15056:50056"
+      - "18085:8085"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   mcp-server:
     build:

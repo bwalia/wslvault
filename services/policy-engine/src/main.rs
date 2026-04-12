@@ -26,6 +26,7 @@ use wslvault_cluster::leader::LeaderElector;
 mod evaluator;
 mod grpc;
 mod health;
+mod http;
 mod model;
 mod pg_store;
 mod store;
@@ -218,10 +219,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .add_service(PolicyServiceServer::new(policy_service))
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
-    // --- Build HTTP health server ---
+    // --- Build HTTP API server (health + REST policy endpoints) ---
     let health_addr: std::net::SocketAddr = config.health_listen_addr.parse()?;
     let health_listener = tokio::net::TcpListener::bind(health_addr).await?;
-    let health_app = health::health_router();
+    let http_state = http::AppState {
+        store: Arc::clone(&store),
+        compiled: Arc::clone(&compiled),
+    };
+    let health_app = http::api_router(http_state);
     let health_server =
         axum::serve(health_listener, health_app).with_graceful_shutdown(shutdown_signal());
 

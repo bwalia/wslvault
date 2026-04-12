@@ -116,7 +116,7 @@ pub async fn compute_analytics(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
 ) -> AuditAnalytics {
-    let guard = store.read().await;
+    let guard: tokio::sync::RwLockReadGuard<'_, Vec<AuditRecord>> = store.read().await;
 
     let records: Vec<&AuditRecord> = guard
         .iter()

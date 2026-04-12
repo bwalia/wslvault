@@ -69,7 +69,7 @@ pub trait AuditStoreBackend: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Type alias kept for internal use by `InMemoryAuditStore`.
-type SharedAuditStore = Arc<RwLock<Vec<AuditRecord>>>;
+pub type SharedAuditStore = Arc<RwLock<Vec<AuditRecord>>>;
 
 /// In-memory implementation of `AuditStoreBackend`.
 ///

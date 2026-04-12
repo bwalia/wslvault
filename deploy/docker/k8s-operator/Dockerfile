@@ -10,8 +10,11 @@
 # Port 8090 is exposed for the built-in health/readiness HTTP server.
 FROM rust:1.94-bookworm AS builder
 
-RUN apt-get update && apt-get install -y musl-tools lld && \
-    rustup target add x86_64-unknown-linux-musl
+RUN apt-get update && apt-get install -y musl-tools lld
+RUN case "$(uname -m)" in \
+      aarch64) RUST_TARGET=aarch64-unknown-linux-musl ;; \
+      *) RUST_TARGET=x86_64-unknown-linux-musl ;; \
+    esac && rustup target add $RUST_TARGET && echo $RUST_TARGET > /tmp/rust-target
 
 WORKDIR /app
 
@@ -31,7 +34,9 @@ COPY wslvault-cli/ wslvault-cli/
 # Copy deploy directory so the embedded CRD YAML is available at compile time.
 COPY deploy/ deploy/
 
-RUN cargo build --release --target x86_64-unknown-linux-musl -p k8s-operator
+RUN RUST_TARGET=$(cat /tmp/rust-target) && \
+    cargo build --release --target $RUST_TARGET -p k8s-operator && \
+    cp /app/target/$RUST_TARGET/release/k8s-operator /app/k8s-operator
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM alpine:3.20
@@ -40,9 +45,7 @@ FROM alpine:3.20
 # API server (in-cluster) and to any HTTPS wslvault endpoint.
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder \
-    /app/target/x86_64-unknown-linux-musl/release/k8s-operator \
-    /usr/local/bin/k8s-operator
+COPY --from=builder /app/k8s-operator /usr/local/bin/k8s-operator
 
 # Port 8090: liveness and readiness health server.
 EXPOSE 8090

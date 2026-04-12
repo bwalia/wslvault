@@ -37,7 +37,7 @@ pub struct SecretData {
 }
 
 /// Summary produced after a batch sync operation.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct SyncResult {
     /// Number of secrets that were successfully synced.
     pub synced: usize,
