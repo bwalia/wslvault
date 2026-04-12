@@ -1,0 +1,345 @@
+# -- Global configuration applied across all services
+global:
+  # -- Default image tag for all wslvault services (overridden per-service with image.tag)
+  imageTag: "0.1.0"
+  # -- Default image pull policy
+  imagePullPolicy: IfNotPresent
+  # -- Image pull secrets for private registries
+  imagePullSecrets: []
+  # -- Target namespace (used in NetworkPolicy cross-namespace selectors)
+  namespace: wslvault
+
+# -- Service account creation and RBAC configuration
+serviceAccount:
+  # -- Whether to create a shared service account
+  create: true
+  # -- Annotations to add to the service account
+  annotations: {}
+  # -- Override the default service account name
+  name: ""
+
+# -- RBAC resource creation
+rbac:
+  # -- Whether to create RBAC roles and bindings
+  create: true
+
+# -- NetworkPolicy creation
+networkPolicies:
+  # -- Whether to create NetworkPolicy resources (default deny + explicit allow rules)
+  enabled: true
+
+# -- Ingress configuration (disabled by default; use gateway TLS termination instead)
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: wslvault.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: wslvault-tls
+      hosts:
+        - wslvault.example.com
+
+# -- Prometheus monitoring annotations
+monitoring:
+  # -- Annotate pods with prometheus.io/scrape, path, and port
+  enabled: true
+  scrapeAnnotations:
+    "prometheus.io/scrape": "true"
+    "prometheus.io/path": "/metrics"
+
+# -- Secrets injected as Kubernetes Secret objects
+secrets:
+  # -- Root encryption key for the vault (base64-encoded 32-byte key recommended)
+  rootKey: ""
+  # -- JWT signing secret for identity-service token issuance
+  jwtSecret: ""
+
+# -- crypto-service: AES-GCM and ChaCha20 encryption primitives
+cryptoService:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wslvault/crypto-service
+    # -- Leave empty to use global.imageTag
+    tag: ""
+  # -- HTTP port for REST and health endpoints
+  httpPort: 8080
+  # -- gRPC port for inter-service calls
+  grpcPort: 50051
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Extra environment variables injected into the container
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- secret-engine: core secret storage and retrieval engine
+secretEngine:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: wslvault/secret-engine
+    tag: ""
+  httpPort: 8081
+  grpcPort: 50052
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "256Mi"
+    limits:
+      cpu: "750m"
+      memory: "512Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- policy-engine: RBAC policy evaluation and enforcement
+policyEngine:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/policy-engine
+    tag: ""
+  httpPort: 8083
+  grpcPort: 50053
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- identity-service: authentication, JWT issuance, and tenant management
+identityService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/identity-service
+    tag: ""
+  httpPort: 8082
+  grpcPort: 50054
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- lease-manager: secret lease lifecycle and renewal
+leaseManager:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/lease-manager
+    tag: ""
+  httpPort: 8084
+  grpcPort: 50055
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- audit-service: immutable audit log ingestion and query
+auditService:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/audit-service
+    tag: ""
+  httpPort: 8085
+  grpcPort: 50056
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- transit-engine: encryption-as-a-service (no persistent secrets stored)
+transitEngine:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/transit-engine
+    tag: ""
+  httpPort: 8086
+  # -- transit-engine does not expose a gRPC port
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "128Mi"
+    limits:
+      cpu: "750m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+# -- mcp-server: Model Context Protocol integration server (single replica by design)
+mcpServer:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: wslvault/mcp-server
+    tag: ""
+  httpPort: 8087
+  # -- mcp-server does not expose a gRPC port
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+
+# -- gateway: OpenResty TLS termination and reverse proxy
+gateway:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: openresty/openresty
+    tag: "1.25.3.2-alpine"
+  httpsPort: 443
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+  # -- TLS certificate secret name (must exist in the same namespace)
+  tls:
+    secretName: "wslvault-gateway-tls"
+  service:
+    type: LoadBalancer
+    annotations: {}
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+
+# -- Bitnami PostgreSQL subchart configuration
+# See: https://github.com/bitnami/charts/tree/main/bitnami/postgresql
+postgresql:
+  # -- Deploy PostgreSQL as part of this release; set to false to use an external database
+  enabled: true
+  auth:
+    # -- PostgreSQL database name
+    database: wslvault
+    # -- PostgreSQL superuser username
+    username: wslvault
+    # -- PostgreSQL password (set a strong value in production; prefer existingSecret)
+    password: "changeme"
+    # -- Use an existing secret for credentials instead of the above plain-text values
+    existingSecret: ""
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+    resources:
+      requests:
+        cpu: "250m"
+        memory: "256Mi"
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+  # -- Used to build the DATABASE_URL for all services when postgresql.enabled=true
+  # Override this if connecting to an external database
+  external:
+    host: ""
+    port: 5432

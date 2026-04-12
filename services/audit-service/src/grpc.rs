@@ -4,13 +4,15 @@
 //! `wslvault.audit.v1` proto package. Each handler signs events before
 //! storing them and applies filtering for queries.
 
+use std::sync::Arc;
+
 use chrono::DateTime;
 use tonic::{Request, Response, Status};
 use uuid::Uuid;
 
 use crate::integrity::sign_event;
-use crate::store::{insert_record, query_events, AuditRecord, SharedAuditStore};
-use wslvault_core::metrics::collector::{AUDIT_EVENTS_TOTAL, AUDIT_EVENTS_BY_ACTION};
+use crate::store::{AuditRecord, AuditStoreBackend};
+use wslvault_core::metrics::collector::{AUDIT_EVENTS_BY_ACTION, AUDIT_EVENTS_TOTAL};
 
 use proto::audit_service_server::AuditService;
 use proto::{
@@ -30,13 +32,13 @@ const DEFAULT_SIGNING_KEY: &[u8] = b"wslvault-audit-default-hmac-key-256bits!!";
 /// Concrete gRPC service handler.
 #[derive(Clone)]
 pub struct AuditServiceImpl {
-    store: SharedAuditStore,
+    store: Arc<dyn AuditStoreBackend>,
     /// HMAC-SHA256 signing key (shared across all tenants for this implementation).
     signing_key: Vec<u8>,
 }
 
 impl AuditServiceImpl {
-    pub fn new(store: SharedAuditStore) -> Self {
+    pub fn new(store: Arc<dyn AuditStoreBackend>) -> Self {
         // Load the signing key from the environment; fall back to the constant
         // default if not configured so the service starts without crashing.
         let signing_key = std::env::var("AUDIT_SIGNING_KEY")
@@ -99,7 +101,7 @@ impl AuditService for AuditServiceImpl {
             .with_label_values(&[&record.action, &record.outcome, &record.tenant_id])
             .inc();
 
-        insert_record(&self.store, record).await;
+        self.store.insert_record(record).await;
 
         Ok(Response::new(EmitEventResponse { event_id }))
     }
@@ -134,17 +136,18 @@ impl AuditService for AuditServiceImpl {
         let limit = req.limit.max(0) as usize;
         let offset = req.offset.max(0) as usize;
 
-        let (records, total_count) = query_events(
-            &self.store,
-            &req.tenant_id,
-            start_time,
-            end_time,
-            action_filter,
-            principal_filter,
-            limit,
-            offset,
-        )
-        .await;
+        let (records, total_count) = self
+            .store
+            .query_events(
+                &req.tenant_id,
+                start_time,
+                end_time,
+                action_filter,
+                principal_filter,
+                limit,
+                offset,
+            )
+            .await;
 
         let events: Vec<AuditEventInfo> = records
             .into_iter()

@@ -1,11 +1,20 @@
 use clap::{Parser, Subcommand};
 
+mod apikey;
+mod cluster;
 mod completion;
 mod identity;
+mod init;
+mod integration;
 mod lease;
 mod mcp_cmd;
+mod operator;
+mod policy;
+mod region;
 mod secret;
 mod status;
+mod sync;
+mod tenant;
 mod transit;
 
 use crate::config::AppConfig;
@@ -60,10 +69,29 @@ pub enum Commands {
     Lease(lease::LeaseArgs),
     /// Manage identities and service accounts
     Identity(identity::IdentityArgs),
+    /// Manage tenants (create, list, get, delete)
+    Tenant(tenant::TenantArgs),
+    /// Manage policies (create, list, get, delete)
+    Policy(policy::PolicyArgs),
+    /// Manage API keys (create, list, revoke, rotate)
+    #[command(name = "api-key")]
+    ApiKey(apikey::ApiKeyArgs),
+    /// Show health status of all WSLVault services
+    Operator,
     /// MCP client operations for AI agent integration
     Mcp(mcp_cmd::McpArgs),
+    /// HA cluster status and node management
+    Cluster(cluster::ClusterArgs),
+    /// Multi-region status, health, and failover
+    Region(region::RegionArgs),
+    /// Manage external secret manager integrations
+    Integration(integration::IntegrationArgs),
+    /// Cross-region replication and sync job status
+    Sync(sync::SyncArgs),
     /// Check server status and connectivity
     Status,
+    /// Interactive guided setup — writes ~/.wslvault/config.toml
+    Init,
     /// Generate shell completions
     Completion(completion::CompletionArgs),
 }
@@ -94,8 +122,17 @@ pub async fn execute(cli: Cli, config: AppConfig) -> anyhow::Result<()> {
         Commands::Transit(args) => transit::execute(args, &ctx).await,
         Commands::Lease(args) => lease::execute(args, &ctx).await,
         Commands::Identity(args) => identity::execute(args, &ctx).await,
+        Commands::Tenant(args) => tenant::execute(args, &ctx).await,
+        Commands::Policy(args) => policy::execute(args, &ctx).await,
+        Commands::ApiKey(args) => apikey::execute(args, &ctx).await,
+        Commands::Operator => operator::execute(&ctx).await,
         Commands::Mcp(args) => mcp_cmd::execute(args, &ctx).await,
+        Commands::Cluster(args) => cluster::execute(args, &ctx).await,
+        Commands::Region(args) => region::execute(args, &ctx).await,
+        Commands::Integration(args) => integration::execute(args, &ctx).await,
+        Commands::Sync(args) => sync::execute(args, &ctx).await,
         Commands::Status => status::execute(&ctx).await,
+        Commands::Init => init::execute().await,
         Commands::Completion(args) => completion::execute(args),
     }
 }

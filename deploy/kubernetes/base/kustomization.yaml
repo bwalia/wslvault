@@ -8,6 +8,13 @@ resources:
   - crypto-service/deployment.yaml
   - secret-engine/deployment.yaml
   - gateway/deployment.yaml
+  - policy-engine/deployment.yaml
+  - identity-service/deployment.yaml
+  - lease-manager/deployment.yaml
+  - audit-service/deployment.yaml
+  - transit-engine/deployment.yaml
+  - mcp-server/deployment.yaml
+  - network-policies.yaml
 
 commonLabels:
   platform: wslvault

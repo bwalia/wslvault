@@ -1,0 +1,610 @@
+{{/*
+networkpolicies.yaml
+Default-deny NetworkPolicies plus explicit allow rules for the wslvault
+service mesh.
+
+Traffic topology (allowed ingress paths):
+  gateway           <- external clients (port 443)
+  identity-service  <- gateway (auth), mcp-server (session auth)
+  secret-engine     <- gateway, mcp-server
+  policy-engine     <- secret-engine, transit-engine, gateway, identity-service
+  crypto-service    <- secret-engine, transit-engine, lease-manager
+  lease-manager     <- secret-engine (lease creation), gateway (renewal API)
+  audit-service     <- all services (fire-and-forget audit events)
+  transit-engine    <- gateway
+  mcp-server        <- gateway (MCP HTTP sessions)
+
+All pods in the release are restricted to the release namespace via
+namespaceSelector unless cross-namespace access is explicitly required.
+*/}}
+{{- if .Values.networkPolicies.enabled }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+Default deny: block all ingress and egress for every pod in the namespace.
+Individual policies below punch holes for legitimate traffic.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-default-deny
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+Allow all pods to reach kube-dns (UDP/TCP 53) so service discovery works.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-allow-dns
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+gateway: accept external HTTPS traffic and allow egress to internal services
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.gateway.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Accept inbound HTTPS from anywhere (external clients)
+    - ports:
+        - port: {{ .Values.gateway.httpsPort }}
+          protocol: TCP
+  egress:
+    # Forward to identity-service HTTP for auth
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+    # Forward to secret-engine HTTP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.secretEngine.httpPort }}
+          protocol: TCP
+    # Forward to transit-engine HTTP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.transitEngine.httpPort }}
+          protocol: TCP
+    # Forward to policy-engine HTTP for admin policy management API
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.policyEngine.httpPort }}
+          protocol: TCP
+    # Forward to lease-manager HTTP for lease renewal
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.leaseManager.httpPort }}
+          protocol: TCP
+    # Forward to mcp-server HTTP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.mcpServer.httpPort }}
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+crypto-service: accept gRPC from secret-engine, transit-engine, lease-manager
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.cryptoService.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-crypto-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.cryptoService.grpcPort }}
+          protocol: TCP
+  egress:
+    # crypto-service needs to reach PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+secret-engine: accept gRPC/HTTP from gateway and mcp-server
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.secretEngine.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-secret-engine
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.secretEngine.httpPort }}
+          protocol: TCP
+        - port: {{ .Values.secretEngine.grpcPort }}
+          protocol: TCP
+  egress:
+    # Calls crypto-service for all encryption operations
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.cryptoService.grpcPort }}
+          protocol: TCP
+    # Consults policy-engine for access decisions
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+    # Emits audit events
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+    # Reaches PostgreSQL for secret storage
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+policy-engine: accept gRPC from secret-engine, transit-engine, gateway,
+               identity-service
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.policyEngine.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-policy-engine
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+        - port: {{ .Values.policyEngine.httpPort }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+identity-service: accept HTTP/gRPC from gateway and mcp-server
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.identityService.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-identity-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+        - port: {{ .Values.identityService.grpcPort }}
+          protocol: TCP
+  egress:
+    # Policy checks during token validation
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Emit audit events for auth decisions
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+lease-manager: accept gRPC from secret-engine and HTTP from gateway
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.leaseManager.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-lease-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.leaseManager.httpPort }}
+          protocol: TCP
+        - port: {{ .Values.leaseManager.grpcPort }}
+          protocol: TCP
+  egress:
+    # Revocation callbacks to crypto-service
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.cryptoService.grpcPort }}
+          protocol: TCP
+    # Revocation callbacks to secret-engine
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.secretEngine.grpcPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Emit audit events for lease lifecycle changes
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+audit-service: accept gRPC from all services (write-only ingest port)
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.auditService.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-audit-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # All wslvault services may emit audit events; match by part-of label
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: {{ include "wslvault.name" . }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+        - port: {{ .Values.auditService.httpPort }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+transit-engine: accept HTTP from gateway; call crypto-service and policy-engine
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.transitEngine.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-transit-engine
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.transitEngine.httpPort }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.cryptoService.grpcPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+    # Emit audit events for encrypt/decrypt operations
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+mcp-server: accept HTTP from gateway; call secret-engine and identity-service
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.mcpServer.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-mcp-server
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.mcpServer.httpPort }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.secretEngine.grpcPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.grpcPort }}
+          protocol: TCP
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+PostgreSQL: accept connections from all wslvault services
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-postgresql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgresql
+  policyTypes:
+    - Ingress
+  ingress:
+    # Allow all wslvault microservice pods to reach PostgreSQL
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: {{ include "wslvault.name" . }}
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+
+{{- end }}{{/* networkPolicies.enabled */}}

@@ -1,0 +1,135 @@
+{{/*
+gateway/deployment.yaml
+The OpenResty gateway is the single TLS termination point for all external
+traffic. It proxies to identity-service for auth, then forwards to secret-engine,
+transit-engine, or other services depending on the request path. Configuration
+(nginx.conf / lua scripts) should be mounted from a ConfigMap (not generated here).
+*/}}
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "gateway" "componentType" "edge" "context" $) | nindent 4 }}
+  {{- with .Values.gateway.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "gateway" "componentType" "edge" "context" $) | nindent 8 }}
+      {{- with .Values.gateway.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      # Gateway runs as nobody but needs to bind to port 443; ensure the container
+      # image uses a non-privileged port or that the host allows low-port binding.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: gateway
+          image: {{ printf "%s:%s" .Values.gateway.image.repository .Values.gateway.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            runAsGroup: 65534
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              # NET_BIND_SERVICE allows binding to port 443 without root
+              add:
+                - NET_BIND_SERVICE
+          ports:
+            - name: https
+              containerPort: {{ .Values.gateway.httpsPort }}
+              protocol: TCP
+          env:
+            - name: HTTPS_PORT
+              value: {{ .Values.gateway.httpsPort | quote }}
+            # Downstream service addresses for OpenResty upstream blocks
+            - name: SECRET_ENGINE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $))
+                          (.Values.secretEngine.httpPort | toString) }}
+            - name: IDENTITY_SERVICE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "identity-service" "context" $))
+                          (.Values.identityService.httpPort | toString) }}
+            - name: TRANSIT_ENGINE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $))
+                          (.Values.transitEngine.httpPort | toString) }}
+            - name: POLICY_ENGINE_ADDR
+              value: {{ printf "%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
+                          (.Values.policyEngine.httpPort | toString) }}
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/ssl/wslvault
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            # OpenResty needs a writable cache directory
+            - name: openresty-cache
+              mountPath: /var/cache/nginx
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ .Values.gateway.tls.secretName }}
+        - name: tmp
+          emptyDir: {}
+        - name: openresty-cache
+          emptyDir: {}
+      {{- with .Values.gateway.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gateway.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

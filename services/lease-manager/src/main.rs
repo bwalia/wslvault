@@ -5,11 +5,18 @@
 //! - HTTP health server on port 8084 (GET /health)
 //!
 //! A background Tokio task runs every 5 seconds to sweep expired leases.
+//!
+//! When the `DATABASE_URL` environment variable is set the service uses the
+//! PostgreSQL-backed store; otherwise it falls back to the in-memory store so
+//! the service can start in development without a database.
 
 mod expiration;
 mod grpc;
 mod health;
+mod pg_store;
 mod store;
+
+use std::sync::Arc;
 
 use axum::{routing::get, Router};
 use grpc::proto::lease_service_server::LeaseServiceServer;
@@ -17,6 +24,10 @@ use grpc::LeaseServiceImpl;
 use tonic::transport::Server as GrpcServer;
 use tracing::info;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use wslvault_cluster::config::ClusterConfig;
+use wslvault_cluster::leader::LeaderElector;
+
+use store::LeaseStoreBackend;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,14 +39,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting lease-manager service");
 
-    // Create the shared in-memory lease store.
-    let lease_store = store::new_store();
+    // Select the storage backend based on whether DATABASE_URL is configured.
+    // When a database is available, also initialise the leader elector so that
+    // coordination tasks (expiration sweeps) run on exactly one node.
+    let (lease_store, elector): (Arc<dyn LeaseStoreBackend>, Option<Arc<LeaderElector>>) =
+        if let Ok(database_url) = std::env::var("DATABASE_URL") {
+            info!("DATABASE_URL found – connecting to PostgreSQL");
 
-    // Spawn background expiration sweep.
-    let _expiration_handle = expiration::spawn_expiration_task(lease_store.clone());
+            let config = wslvault_core::config::DatabaseConfig {
+                url: database_url,
+                ..Default::default()
+            };
+
+            let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
+            info!("PostgreSQL connection pool established; using PgLeaseBackend");
+
+            // Initialise leader election for coordination tasks.
+            let cluster_config = ClusterConfig::default();
+            let leader = Arc::new(LeaderElector::new(
+                pool.clone(),
+                &cluster_config,
+                "lease-manager",
+            ));
+            let _election_handle = leader.run();
+
+            (Arc::new(pg_store::PgLeaseBackend::new(pool)), Some(leader))
+        } else {
+            info!("DATABASE_URL not set – using in-memory lease store");
+            (Arc::new(store::InMemoryLeaseStore::new()), None)
+        };
+
+    // Spawn background expiration sweep (works with any backend).
+    // When an elector is available, only the leader node runs the sweep.
+    let _expiration_handle =
+        expiration::spawn_expiration_task(Arc::clone(&lease_store), elector);
 
     // Build the gRPC service.
-    let lease_service = LeaseServiceImpl::new(lease_store.clone());
+    let lease_service = LeaseServiceImpl::new(Arc::clone(&lease_store));
     let grpc_addr = "0.0.0.0:50055".parse()?;
 
     // Build the health HTTP service.

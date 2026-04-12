@@ -1,0 +1,20 @@
+[package]
+name = "wslvault-cluster"
+version = "0.1.0"
+edition = "2021"
+description = "HA clustering primitives: leader election, node tracking, and cluster coordination"
+license = "Apache-2.0"
+
+[dependencies]
+wslvault-core = { path = "../wslvault-core" }
+wslvault-storage = { path = "../wslvault-storage" }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+hostname = "0.4"

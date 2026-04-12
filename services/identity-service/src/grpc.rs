@@ -17,6 +17,8 @@ use uuid::Uuid;
 use wslvault_core::{types::principal::AuthMethod, VaultError};
 
 use crate::{
+    mtls::MtlsManager,
+    oidc::OidcManager,
     // `include_proto!("wslvault.identity.v1")` inlines the generated file at
     // this module level — there are no nested sub-modules for the package path.
     proto::{
@@ -61,14 +63,29 @@ pub struct IdentityServiceImpl {
     /// In-memory revocation set: stores raw token strings that have been
     /// explicitly revoked before their natural expiry.
     revoked_tokens: Arc<RwLock<HashSet<String>>>,
+    /// Optional OIDC manager.  Present only when `VAULT_OIDC_PROVIDERS` is
+    /// configured at startup; `None` causes OIDC auth attempts to return
+    /// `Status::unavailable`.
+    oidc_manager: Option<Arc<OidcManager>>,
+    /// Optional mTLS manager.  Present only when `VAULT_MTLS_ENABLED=true` is
+    /// set at startup; `None` causes mTLS auth attempts to return
+    /// `Status::unavailable`.
+    mtls_manager: Option<Arc<MtlsManager>>,
 }
 
 impl IdentityServiceImpl {
-    pub fn new(token_manager: TokenManager, store: PrincipalStore) -> Self {
+    pub fn new(
+        token_manager: TokenManager,
+        store: PrincipalStore,
+        oidc_manager: Option<Arc<OidcManager>>,
+        mtls_manager: Option<Arc<MtlsManager>>,
+    ) -> Self {
         Self {
             token_manager,
             store,
             revoked_tokens: Arc::new(RwLock::new(HashSet::new())),
+            oidc_manager,
+            mtls_manager,
         }
     }
 
@@ -87,9 +104,11 @@ impl IdentityServiceImpl {
 impl IdentityService for IdentityServiceImpl {
     /// Authenticates a caller using the supplied method and issues a new JWT.
     ///
-    /// Supported methods: `TokenAuth` (validates an existing token and
-    /// re-issues), `OidcAuth` (stub — not yet integrated with an OIDC
-    /// provider), `MtlsAuth` (stub — not yet integrated with mTLS).
+    /// Supported methods:
+    /// - `TokenAuth`: validates an existing token and re-issues a fresh one.
+    /// - `OidcAuth`: stub — not yet integrated with an OIDC provider.
+    /// - `MtlsAuth`: validates a PEM-encoded X.509 client certificate against
+    ///   the configured trusted CA and issues a token for the cert principal.
     async fn authenticate(
         &self,
         request: Request<AuthenticateRequest>,
@@ -131,19 +150,124 @@ impl IdentityService for IdentityServiceImpl {
 
                 (claims.sub, claims.policies)
             }
-            Method::Oidc(_oidc_auth) => {
-                // OIDC integration is a planned feature; stub returns an error
-                // until an OIDC provider is wired in.
-                return Err(Status::unimplemented(
-                    "OIDC authentication is not yet implemented",
-                ));
+            Method::Oidc(oidc_auth) => {
+                // Require that an OIDC manager is configured; return a clear
+                // error if the operator has not set VAULT_OIDC_PROVIDERS.
+                let manager = self.oidc_manager.as_ref().ok_or_else(|| {
+                    Status::unavailable("OIDC authentication is not configured")
+                })?;
+
+                // Validate the caller-supplied ID token against the named
+                // provider and extract the wslvault principal concepts.
+                let result = manager
+                    .validate_id_token(&oidc_auth.provider, &oidc_auth.id_token)
+                    .await
+                    .map_err(|e| {
+                        Status::unauthenticated(format!("OIDC validation failed: {e}"))
+                    })?;
+
+                // Confirm the OIDC-derived tenant matches the requested tenant
+                // to prevent cross-tenant token injection attacks.
+                if result.tenant_id != req.tenant_id {
+                    warn!(
+                        provider = %oidc_auth.provider,
+                        oidc_tenant = %result.tenant_id,
+                        request_tenant = %req.tenant_id,
+                        "OIDC tenant claim does not match requested tenant"
+                    );
+                    return Err(Status::permission_denied(
+                        "OIDC tenant claim does not match the requested tenant",
+                    ));
+                }
+
+                // Construct a stable, provider-scoped principal ID so the same
+                // OIDC user always maps to the same wslvault principal across
+                // logins.
+                let principal_id =
+                    format!("oidc:{}:{}", oidc_auth.provider, result.subject);
+
+                // Upsert the principal record — create on first login, silently
+                // ignore the duplicate-key error on subsequent logins so the
+                // principal is always registered before a token is issued.
+                let record = PrincipalRecord {
+                    id: principal_id.clone(),
+                    tenant_id: result.tenant_id.clone(),
+                    display_name: result.display_name.clone(),
+                    auth_method: AuthMethod::Token,
+                    policies: result.policies.clone(),
+                    created_at: Utc::now(),
+                };
+
+                match self.store.create_principal(record) {
+                    Ok(()) => {}
+                    // A ValidationError means the principal was already
+                    // registered on a prior login; that is expected.
+                    Err(VaultError::ValidationError { .. }) => {}
+                    Err(other) => return Err(vault_err_to_status(other)),
+                }
+
+                (principal_id, result.policies)
             }
-            Method::Mtls(_mtls_auth) => {
-                // mTLS integration is a planned feature; stub returns an error
-                // until certificate verification is wired in.
-                return Err(Status::unimplemented(
-                    "mTLS authentication is not yet implemented",
-                ));
+            Method::Mtls(mtls_auth) => {
+                // Require that the mTLS manager was configured at startup.
+                let manager = self.mtls_manager.as_ref().ok_or_else(|| {
+                    Status::unavailable("mTLS authentication is not configured")
+                })?;
+
+                let result = manager
+                    .validate_certificate(&mtls_auth.certificate_pem)
+                    .map_err(|e| {
+                        Status::unauthenticated(format!("mTLS validation failed: {e}"))
+                    })?;
+
+                // Prefix the principal id so it is distinguishable from other
+                // auth methods in audit logs and policy evaluation.
+                let mtls_principal_id = format!("mtls:{}", result.principal_id);
+
+                // Verify that the tenant encoded in the certificate matches
+                // the tenant_id supplied in the request, consistent with the
+                // cross-check done for token-based authentication.
+                if result.tenant_id != req.tenant_id {
+                    warn!(
+                        principal_id = %mtls_principal_id,
+                        cert_tenant = %result.tenant_id,
+                        request_tenant = %req.tenant_id,
+                        "tenant mismatch during mTLS authentication"
+                    );
+                    return Err(Status::permission_denied(
+                        "certificate tenant does not match the requested tenant",
+                    ));
+                }
+
+                let lease_id = Uuid::now_v7().to_string();
+
+                let (token, expires_at) = self
+                    .token_manager
+                    .issue_token(
+                        &mtls_principal_id,
+                        &result.tenant_id,
+                        result.policies.clone(),
+                        TOKEN_REISSUE_TTL_SECONDS,
+                    )
+                    .map_err(vault_err_to_status)?;
+
+                info!(
+                    principal_id = %mtls_principal_id,
+                    tenant_id = %result.tenant_id,
+                    serial = %result.serial_number,
+                    display_name = %result.display_name,
+                    expires_at = %expires_at,
+                    "mTLS principal authenticated; token issued"
+                );
+
+                return Ok(Response::new(AuthenticateResponse {
+                    token,
+                    principal_id: mtls_principal_id,
+                    tenant_id: result.tenant_id,
+                    policies: result.policies,
+                    expires_at: expires_at.timestamp(),
+                    lease_id,
+                }));
             }
         };
 

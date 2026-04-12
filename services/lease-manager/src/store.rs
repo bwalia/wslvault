@@ -1,20 +1,17 @@
-//! In-memory lease store backed by a RwLock-protected HashMap.
+//! Lease store abstraction and in-memory backend.
 //!
-//! All lease state transitions go through this module. Each method acquires
-//! the lock for the minimum duration needed, avoiding long-held write locks
-//! that would block concurrent readers.
+//! Defines the `LeaseStoreBackend` trait so that both the in-memory store
+//! (used in tests and when no `DATABASE_URL` is configured) and the
+//! PostgreSQL backend can be used interchangeably by the gRPC handlers and
+//! the background expiration task.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
-
-use wslvault_core::VaultError;
-
-/// Type alias to avoid repeating the long lock type throughout the module.
-pub type SharedLeaseStore = Arc<RwLock<HashMap<LeaseId, LeaseRecord>>>;
 
 /// Newtype wrapper for lease identifiers so they cannot be confused with other
 /// UUID fields at compile time.
@@ -24,6 +21,12 @@ pub struct LeaseId(pub Uuid);
 impl LeaseId {
     pub fn new() -> Self {
         Self(Uuid::now_v7())
+    }
+}
+
+impl Default for LeaseId {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -60,7 +63,7 @@ impl LeaseState {
     }
 }
 
-/// Full lease record persisted in the in-memory store.
+/// Full lease record used by the service layer.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct LeaseRecord {
@@ -90,126 +93,161 @@ impl LeaseRecord {
     }
 }
 
-/// Create a new in-memory store.
-pub fn new_store() -> SharedLeaseStore {
-    Arc::new(RwLock::new(HashMap::new()))
+// ---------------------------------------------------------------------------
+// Trait definition
+// ---------------------------------------------------------------------------
+
+/// Abstraction over lease storage so that in-memory and PostgreSQL backends
+/// can be swapped without modifying the gRPC handlers or expiration task.
+#[async_trait]
+pub trait LeaseStoreBackend: Send + Sync {
+    /// Insert a new lease, returning its assigned `LeaseId`.
+    async fn insert_lease(&self, record: LeaseRecord) -> LeaseId;
+
+    /// Retrieve a lease by ID.  Returns `None` when the lease does not exist.
+    async fn get_lease(&self, lease_id: &LeaseId) -> Option<LeaseRecord>;
+
+    /// Renew a lease, extending its expiry by `increment_secs`.
+    ///
+    /// Returns the updated record on success, or an error string describing
+    /// why the renewal was rejected.
+    async fn renew_lease(
+        &self,
+        lease_id: &LeaseId,
+        increment_secs: i64,
+    ) -> Result<LeaseRecord, String>;
+
+    /// Transition a lease to the Revoked state.
+    async fn revoke_lease(&self, lease_id: &LeaseId) -> Result<(), String>;
+
+    /// List all leases for a tenant, optionally filtered by state string.
+    async fn list_leases(
+        &self,
+        tenant_id: &str,
+        state_filter: Option<&str>,
+    ) -> Vec<LeaseRecord>;
+
+    /// Sweep active leases whose wall-clock expiry has passed, transitioning
+    /// them to Expired.  Returns the IDs of all leases that were expired.
+    async fn expire_stale_leases(&self) -> Vec<LeaseId>;
 }
 
-/// Insert a new lease into the store.
+// ---------------------------------------------------------------------------
+// In-memory backend
+// ---------------------------------------------------------------------------
+
+/// Internal map type used by `InMemoryLeaseStore`.
+type InnerMap = Arc<RwLock<HashMap<LeaseId, LeaseRecord>>>;
+
+/// In-memory implementation of `LeaseStoreBackend`.
 ///
-/// The caller is responsible for constructing the `LeaseRecord`; this function
-/// only handles the storage operation.
-pub async fn insert_lease(store: &SharedLeaseStore, record: LeaseRecord) {
-    let mut guard = store.write().await;
-    guard.insert(record.id.clone(), record);
+/// All lease records live in a heap-allocated `HashMap` protected by a
+/// `tokio::RwLock`.  This backend is used when `DATABASE_URL` is not set.
+pub struct InMemoryLeaseStore {
+    inner: InnerMap,
 }
 
-/// Retrieve a lease by ID. Returns `VaultError::LeaseNotFound` when absent.
-pub async fn get_lease(
-    store: &SharedLeaseStore,
-    lease_id: &LeaseId,
-) -> Result<LeaseRecord, VaultError> {
-    let guard = store.read().await;
-    guard
-        .get(lease_id)
-        .cloned()
-        .ok_or_else(|| VaultError::LeaseNotFound {
-            lease_id: lease_id.to_string(),
-        })
-}
-
-/// Renew a lease, extending `expires_at` by `increment_seconds`.
-///
-/// Validates:
-/// - The lease must be active.
-/// - The lease must be marked renewable.
-/// - The new expiry must not exceed `issued_at + max_ttl_seconds`.
-pub async fn renew_lease(
-    store: &SharedLeaseStore,
-    lease_id: &LeaseId,
-    increment_seconds: i64,
-) -> Result<LeaseRecord, VaultError> {
-    let mut guard = store.write().await;
-    let record = guard
-        .get_mut(lease_id)
-        .ok_or_else(|| VaultError::LeaseNotFound {
-            lease_id: lease_id.to_string(),
-        })?;
-
-    if record.state != LeaseState::Active {
-        return Err(VaultError::LeaseExpired {
-            lease_id: lease_id.to_string(),
-        });
-    }
-
-    if !record.renewable {
-        return Err(VaultError::ValidationError {
-            field: "renewable".into(),
-            reason: "lease is not renewable".into(),
-        });
-    }
-
-    let max_expires_at = record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
-
-    let proposed_expires_at = Utc::now() + chrono::Duration::seconds(increment_seconds);
-
-    // Clamp proposed expiry to the hard upper bound.
-    let new_expires_at = proposed_expires_at.min(max_expires_at);
-
-    record.expires_at = new_expires_at;
-    record.ttl_seconds = increment_seconds;
-
-    Ok(record.clone())
-}
-
-/// Transition a lease to the Revoked state immediately.
-pub async fn revoke_lease(store: &SharedLeaseStore, lease_id: &LeaseId) -> Result<(), VaultError> {
-    let mut guard = store.write().await;
-    let record = guard
-        .get_mut(lease_id)
-        .ok_or_else(|| VaultError::LeaseNotFound {
-            lease_id: lease_id.to_string(),
-        })?;
-
-    record.state = LeaseState::Revoked;
-    record.revoked_at = Some(Utc::now());
-    Ok(())
-}
-
-/// List all leases for a tenant, optionally filtered by state string.
-pub async fn list_leases(
-    store: &SharedLeaseStore,
-    tenant_id: &str,
-    state_filter: Option<&str>,
-) -> Vec<LeaseRecord> {
-    let guard = store.read().await;
-    guard
-        .values()
-        .filter(|r| r.tenant_id == tenant_id)
-        .filter(|r| {
-            // An empty filter string means "return all".
-            state_filter
-                .map(|s| s.is_empty() || r.state.as_str() == s)
-                .unwrap_or(true)
-        })
-        .cloned()
-        .collect()
-}
-
-/// Mark all active, wall-clock-expired leases as Expired.
-///
-/// Called periodically by the background expiration task.
-pub async fn expire_stale_leases(store: &SharedLeaseStore) -> usize {
-    let now = Utc::now();
-    let mut guard = store.write().await;
-    let mut count = 0usize;
-
-    for record in guard.values_mut() {
-        if record.state == LeaseState::Active && record.expires_at <= now {
-            record.state = LeaseState::Expired;
-            count += 1;
+impl InMemoryLeaseStore {
+    /// Construct a new, empty in-memory store.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+}
 
-    count
+impl Default for InMemoryLeaseStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl LeaseStoreBackend for InMemoryLeaseStore {
+    async fn insert_lease(&self, record: LeaseRecord) -> LeaseId {
+        let id = record.id.clone();
+        let mut guard = self.inner.write().await;
+        guard.insert(id.clone(), record);
+        id
+    }
+
+    async fn get_lease(&self, lease_id: &LeaseId) -> Option<LeaseRecord> {
+        let guard = self.inner.read().await;
+        guard.get(lease_id).cloned()
+    }
+
+    async fn renew_lease(
+        &self,
+        lease_id: &LeaseId,
+        increment_secs: i64,
+    ) -> Result<LeaseRecord, String> {
+        let mut guard = self.inner.write().await;
+        let record = guard
+            .get_mut(lease_id)
+            .ok_or_else(|| format!("lease not found: {}", lease_id))?;
+
+        if record.state != LeaseState::Active {
+            return Err(format!("lease {} is not active", lease_id));
+        }
+
+        if !record.renewable {
+            return Err(format!("lease {} is not renewable", lease_id));
+        }
+
+        let max_expires_at =
+            record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
+        let proposed_expires_at = Utc::now() + chrono::Duration::seconds(increment_secs);
+        // Clamp proposed expiry to the hard upper bound.
+        let new_expires_at = proposed_expires_at.min(max_expires_at);
+
+        record.expires_at = new_expires_at;
+        record.ttl_seconds = increment_secs;
+
+        Ok(record.clone())
+    }
+
+    async fn revoke_lease(&self, lease_id: &LeaseId) -> Result<(), String> {
+        let mut guard = self.inner.write().await;
+        let record = guard
+            .get_mut(lease_id)
+            .ok_or_else(|| format!("lease not found: {}", lease_id))?;
+
+        record.state = LeaseState::Revoked;
+        record.revoked_at = Some(Utc::now());
+        Ok(())
+    }
+
+    async fn list_leases(
+        &self,
+        tenant_id: &str,
+        state_filter: Option<&str>,
+    ) -> Vec<LeaseRecord> {
+        let guard = self.inner.read().await;
+        guard
+            .values()
+            .filter(|r| r.tenant_id == tenant_id)
+            .filter(|r| {
+                // An empty filter string means "return all".
+                state_filter
+                    .map(|s| s.is_empty() || r.state.as_str() == s)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect()
+    }
+
+    async fn expire_stale_leases(&self) -> Vec<LeaseId> {
+        let now = Utc::now();
+        let mut guard = self.inner.write().await;
+        let mut expired_ids = Vec::new();
+
+        for record in guard.values_mut() {
+            if record.state == LeaseState::Active && record.expires_at <= now {
+                record.state = LeaseState::Expired;
+                expired_ids.push(record.id.clone());
+            }
+        }
+
+        expired_ids
+    }
 }

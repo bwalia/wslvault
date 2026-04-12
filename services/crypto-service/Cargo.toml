@@ -11,6 +11,8 @@ path = "src/main.rs"
 
 [dependencies]
 wslvault-core = { path = "../../crates/wslvault-core" }
+wslvault-storage = { path = "../../crates/wslvault-storage" }
+wslvault-cluster = { path = "../../crates/wslvault-cluster" }
 tokio = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }

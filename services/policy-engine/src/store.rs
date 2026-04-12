@@ -5,14 +5,61 @@
 //! store by the background compilation task in `main.rs`.
 //!
 //! All operations are async-safe via a `tokio::sync::RwLock`.
+//!
+//! The `PolicyStoreBackend` trait abstracts storage so that the in-memory
+//! `PolicyStore` and the PostgreSQL-backed `PgPolicyBackend` can be used
+//! interchangeably at runtime.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tracing::{debug, instrument};
 
 use crate::model::PolicyDocument;
+
+// ---------------------------------------------------------------------------
+// Storage backend trait
+// ---------------------------------------------------------------------------
+
+/// Abstracts the underlying policy storage mechanism.
+///
+/// Implementors include the in-memory [`PolicyStore`] (used in tests and when
+/// `DATABASE_URL` is not set) and the PostgreSQL-backed `PgPolicyBackend`
+/// (used in production when `DATABASE_URL` is provided).
+#[async_trait]
+pub trait PolicyStoreBackend: Send + Sync + std::fmt::Debug {
+    /// Insert or replace the policy document for `(tenant_id, policy.name)`.
+    ///
+    /// Returns the previous document if one existed. Backends that cannot
+    /// cheaply retrieve the old value (e.g. a Postgres upsert) SHOULD return
+    /// `None`.
+    async fn put_policy(&self, tenant_id: &str, document: PolicyDocument) -> Option<PolicyDocument>;
+
+    /// Retrieve a single policy by tenant and name.
+    ///
+    /// Returns `None` if the policy does not exist.
+    async fn get_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument>;
+
+    /// Remove a policy by tenant and name.
+    ///
+    /// Returns the removed document, or `None` if it was not present (or if
+    /// the backend cannot return the removed document cheaply).
+    async fn delete_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument>;
+
+    /// Return the names of all policies belonging to `tenant_id`.
+    async fn list_policies(&self, tenant_id: &str) -> Vec<String>;
+
+    /// Return all `PolicyDocument`s belonging to `tenant_id`.
+    async fn get_all_for_tenant(&self, tenant_id: &str) -> Vec<PolicyDocument>;
+
+    /// Return every `(tenant_id, PolicyDocument)` pair in the store.
+    ///
+    /// Used by the background compilation task to rebuild the entire compiled
+    /// snapshot without requiring a per-tenant refresh cycle.
+    async fn get_all(&self) -> Vec<(String, PolicyDocument)>;
+}
 
 /// Composite key used to namespace policies by tenant.
 type PolicyKey = (String, String); // (tenant_id, policy_name)
@@ -111,6 +158,40 @@ impl PolicyStore {
 impl Default for PolicyStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PolicyStoreBackend implementation for the in-memory store
+// ---------------------------------------------------------------------------
+
+/// Delegates every trait method to the corresponding inherent method on
+/// [`PolicyStore`], so that the in-memory store and the Postgres backend are
+/// fully interchangeable behind `Arc<dyn PolicyStoreBackend>`.
+#[async_trait]
+impl PolicyStoreBackend for PolicyStore {
+    async fn put_policy(&self, tenant_id: &str, document: PolicyDocument) -> Option<PolicyDocument> {
+        PolicyStore::put_policy(self, tenant_id, document).await
+    }
+
+    async fn get_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument> {
+        PolicyStore::get_policy(self, tenant_id, name).await
+    }
+
+    async fn delete_policy(&self, tenant_id: &str, name: &str) -> Option<PolicyDocument> {
+        PolicyStore::delete_policy(self, tenant_id, name).await
+    }
+
+    async fn list_policies(&self, tenant_id: &str) -> Vec<String> {
+        PolicyStore::list_policies(self, tenant_id).await
+    }
+
+    async fn get_all_for_tenant(&self, tenant_id: &str) -> Vec<PolicyDocument> {
+        PolicyStore::get_all_for_tenant(self, tenant_id).await
+    }
+
+    async fn get_all(&self) -> Vec<(String, PolicyDocument)> {
+        PolicyStore::get_all(self).await
     }
 }
 

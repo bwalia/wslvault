@@ -1,0 +1,140 @@
+{{/*
+pdb.yaml - PodDisruptionBudgets for wslvault core services.
+
+A PDB is created for each service that has 2 or more replicas, ensuring
+at least 1 pod remains available during voluntary disruptions (e.g. node
+drains, cluster upgrades).
+
+Services with replicaCount=1 (mcp-server by default) are excluded because
+setting minAvailable=1 on a single-replica deployment would block node drains.
+Operators should scale mcp-server to 2+ replicas before enabling a PDB for it.
+*/}}
+
+{{- if and .Values.cryptoService.enabled (gt (int .Values.cryptoService.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "crypto-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  # Keep at least 1 crypto-service pod running during voluntary disruptions
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.secretEngine.enabled (gt (int .Values.secretEngine.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "secret-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.policyEngine.enabled (gt (int .Values.policyEngine.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "policy-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.identityService.enabled (gt (int .Values.identityService.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "identity-service" "componentType" "auth" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.leaseManager.enabled (gt (int .Values.leaseManager.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "lease-manager" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.auditService.enabled (gt (int .Values.auditService.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "audit-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.transitEngine.enabled (gt (int .Values.transitEngine.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "transit-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $) | nindent 6 }}
+{{- end }}
+
+{{- if and .Values.gateway.enabled (gt (int .Values.gateway.replicaCount) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "gateway" "componentType" "edge" "context" $) | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 6 }}
+{{- end }}

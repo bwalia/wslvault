@@ -1,0 +1,240 @@
+{{/*
+hpa.yaml - HorizontalPodAutoscaler resources for wslvault services.
+
+Each service gets its own HPA when <service>.autoscaling.enabled=true.
+Default target: 70% CPU utilisation.  minReplicas defaults to the service's
+static replicaCount value; maxReplicas defaults to 10.
+
+Enable HPAs with:
+  cryptoService:
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 70
+*/}}
+
+{{- if and .Values.cryptoService.enabled .Values.cryptoService.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "crypto-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}
+  minReplicas: {{ .Values.cryptoService.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.cryptoService.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.cryptoService.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.secretEngine.enabled .Values.secretEngine.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "secret-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $) }}
+  minReplicas: {{ .Values.secretEngine.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.secretEngine.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.secretEngine.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.policyEngine.enabled .Values.policyEngine.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "policy-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $) }}
+  minReplicas: {{ .Values.policyEngine.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.policyEngine.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.policyEngine.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.identityService.enabled .Values.identityService.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "identity-service" "componentType" "auth" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}
+  minReplicas: {{ .Values.identityService.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.identityService.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.identityService.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.leaseManager.enabled .Values.leaseManager.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "lease-manager" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $) }}
+  minReplicas: {{ .Values.leaseManager.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.leaseManager.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.leaseManager.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.auditService.enabled .Values.auditService.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "audit-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $) }}
+  minReplicas: {{ .Values.auditService.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.auditService.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.auditService.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.transitEngine.enabled .Values.transitEngine.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "transit-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $) }}
+  minReplicas: {{ .Values.transitEngine.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.transitEngine.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.transitEngine.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.mcpServer.enabled .Values.mcpServer.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "mcp-server" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "mcp-server" "componentType" "integration" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "mcp-server" "context" $) }}
+  minReplicas: {{ .Values.mcpServer.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.mcpServer.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.mcpServer.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+
+{{- if and .Values.gateway.enabled .Values.gateway.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "gateway" "componentType" "edge" "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "wslvault.componentFullname" (dict "component" "gateway" "context" $) }}
+  minReplicas: {{ .Values.gateway.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.gateway.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.gateway.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

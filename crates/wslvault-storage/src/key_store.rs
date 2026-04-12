@@ -168,6 +168,59 @@ pub async fn insert_key_descriptor(
     Ok(())
 }
 
+/// A persisted key descriptor together with its wrapped (encrypted) key material.
+///
+/// Raw key bytes are never included here — only the wrapped form that must be
+/// decrypted by the holder of the appropriate KEK before use.
+#[derive(Debug)]
+pub struct PersistedKeyEntry {
+    /// Key identifier as a UUID string.
+    pub key_id: String,
+    /// Tenant that owns this key; `None` for root-scope keys.
+    pub tenant_id: Option<String>,
+    /// Monotonically increasing version counter.
+    pub version: u32,
+    /// The wrapped (encrypted) key material stored as a base64 envelope.
+    pub wrapped_key: String,
+}
+
+/// Load all active keys of the given purpose from the database, returning
+/// each entry together with its wrapped key material.
+///
+/// Used by the crypto-service on startup to rehydrate its in-memory key caches
+/// from persisted state without ever writing raw key bytes to the database.
+pub async fn list_active_keys_with_wrapped_key(
+    pool: &DbPool,
+    purpose: &KeyPurpose,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    let rows = sqlx::query(
+        "SELECT id, tenant_id, version, wrapped_key
+         FROM system.key_descriptors
+         WHERE purpose = $1 AND state = 'active'
+         ORDER BY version ASC",
+    )
+    .bind(purpose_str(purpose))
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    let entries = rows
+        .into_iter()
+        .map(|row| PersistedKeyEntry {
+            key_id: row.get::<Uuid, _>("id").to_string(),
+            tenant_id: row
+                .get::<Option<Uuid>, _>("tenant_id")
+                .map(|u| u.to_string()),
+            version: row.get::<i32, _>("version") as u32,
+            wrapped_key: row.get("wrapped_key"),
+        })
+        .collect();
+
+    Ok(entries)
+}
+
 /// Transition a key to a new state (e.g. active -> rotating_out -> retired -> destroyed).
 pub async fn update_key_state(
     pool: &DbPool,

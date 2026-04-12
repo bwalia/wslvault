@@ -11,10 +11,66 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use wslvault_core::VaultError;
+
+/// Abstraction over secret storage so the engine can run against
+/// in-memory (tests/dev) or PostgreSQL (production) backends.
+///
+/// Both `KvStore` (in-memory) and `PgSecretBackend` (PostgreSQL) implement
+/// this trait, allowing `server.rs` to select the backend at startup based
+/// on whether a `DATABASE_URL` environment variable is present.
+#[async_trait]
+pub trait SecretStoreBackend: Send + Sync + std::fmt::Debug {
+    /// Read a secret version. If `version` is `None`, returns the current live version.
+    async fn get(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        version: Option<u32>,
+    ) -> Result<VersionEntry, VaultError>;
+
+    /// Write a new secret version, optionally enforcing CAS optimistic locking.
+    async fn put(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        ciphertext: String,
+        dek_id: String,
+        cas: Option<u32>,
+        custom_metadata: HashMap<String, String>,
+        max_versions: Option<u32>,
+    ) -> Result<(String, u32), VaultError>;
+
+    /// Mark specific secret versions as deleted without erasing their ciphertext.
+    async fn soft_delete(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        versions: &[u32],
+    ) -> Result<u32, VaultError>;
+
+    /// Permanently destroy specific secret versions, zeroing their ciphertext.
+    async fn destroy(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        versions: &[u32],
+    ) -> Result<u32, VaultError>;
+
+    /// List all secret paths under a given prefix within a tenant.
+    async fn list(&self, tenant_id: &str, prefix: &str) -> Vec<String>;
+
+    /// Retrieve metadata for a secret path without reading any version data.
+    async fn get_metadata(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<SecretEntry, VaultError>;
+}
 
 /// Default maximum number of versions retained per secret when not specified by the caller.
 const DEFAULT_MAX_VERSIONS: u32 = 10;
@@ -380,6 +436,64 @@ impl KvStore {
                 path: path.to_string(),
                 version: None,
             })
+    }
+}
+
+/// Implement `SecretStoreBackend` for the in-memory `KvStore` by delegating
+/// each method to the existing inherent impl.
+#[async_trait]
+impl SecretStoreBackend for KvStore {
+    async fn get(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        version: Option<u32>,
+    ) -> Result<VersionEntry, VaultError> {
+        self.get(tenant_id, path, version).await
+    }
+
+    async fn put(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        ciphertext: String,
+        dek_id: String,
+        cas: Option<u32>,
+        custom_metadata: HashMap<String, String>,
+        max_versions: Option<u32>,
+    ) -> Result<(String, u32), VaultError> {
+        self.put(tenant_id, path, ciphertext, dek_id, cas, custom_metadata, max_versions)
+            .await
+    }
+
+    async fn soft_delete(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        versions: &[u32],
+    ) -> Result<u32, VaultError> {
+        self.soft_delete(tenant_id, path, versions).await
+    }
+
+    async fn destroy(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        versions: &[u32],
+    ) -> Result<u32, VaultError> {
+        self.destroy(tenant_id, path, versions).await
+    }
+
+    async fn list(&self, tenant_id: &str, prefix: &str) -> Vec<String> {
+        self.list(tenant_id, prefix).await
+    }
+
+    async fn get_metadata(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<SecretEntry, VaultError> {
+        self.get_metadata(tenant_id, path).await
     }
 }
 

@@ -1,20 +1,18 @@
-//! In-memory audit event store.
+//! Audit event store abstraction and in-memory backend.
 //!
-//! Uses an `Arc<RwLock<Vec<AuditRecord>>>` so that multiple gRPC handlers can
-//! append and query events concurrently without blocking each other for longer
-//! than necessary.
+//! Defines the `AuditStoreBackend` trait so that both the in-memory store
+//! (used in tests and when no `DATABASE_URL` is configured) and the
+//! PostgreSQL backend can be used interchangeably by the gRPC handlers.
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-/// Type alias used across the crate to pass the shared store around.
-pub type SharedAuditStore = Arc<RwLock<Vec<AuditRecord>>>;
-
-/// A single immutable audit record stored in memory.
+/// A single immutable audit record.
 ///
 /// The `signature` field is populated by the integrity module before the
 /// record is inserted; it covers all other fields so that any post-hoc
@@ -41,59 +39,106 @@ pub struct AuditRecord {
     pub timestamp: DateTime<Utc>,
 }
 
-/// Construct a new empty audit store.
-pub fn new_store() -> SharedAuditStore {
-    Arc::new(RwLock::new(Vec::new()))
+/// Abstraction over audit storage so that in-memory and PostgreSQL backends
+/// can be swapped without modifying the gRPC handlers.
+#[async_trait]
+pub trait AuditStoreBackend: Send + Sync {
+    /// Append a single audit record to the store.
+    async fn insert_record(&self, record: AuditRecord);
+
+    /// Query records with optional filters.
+    ///
+    /// Returns `(page, total_count)` where `total_count` is the number of
+    /// matching records before applying `limit`/`offset`.  `limit == 0`
+    /// means "return all".
+    #[allow(clippy::too_many_arguments)]
+    async fn query_events(
+        &self,
+        tenant_id: &str,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        action_filter: Option<&str>,
+        principal_filter: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> (Vec<AuditRecord>, usize);
 }
 
-/// Append a record to the store.
-pub async fn insert_record(store: &SharedAuditStore, record: AuditRecord) {
-    let mut guard = store.write().await;
-    guard.push(record);
-}
+// ---------------------------------------------------------------------------
+// In-memory backend
+// ---------------------------------------------------------------------------
 
-/// Query events with optional filters applied in-memory.
+/// Type alias kept for internal use by `InMemoryAuditStore`.
+type SharedAuditStore = Arc<RwLock<Vec<AuditRecord>>>;
+
+/// In-memory implementation of `AuditStoreBackend`.
 ///
-/// Filters are ANDed together; an empty/None filter for a field is treated as
-/// "match all".  `limit` 0 means "return all matching records".
-#[allow(clippy::too_many_arguments)]
-pub async fn query_events(
-    store: &SharedAuditStore,
-    tenant_id: &str,
-    start_time: Option<DateTime<Utc>>,
-    end_time: Option<DateTime<Utc>>,
-    action_filter: Option<&str>,
-    principal_filter: Option<&str>,
-    limit: usize,
-    offset: usize,
-) -> (Vec<AuditRecord>, usize) {
-    let guard = store.read().await;
+/// All records live in a heap-allocated `Vec` protected by a `tokio::RwLock`.
+/// This backend is used when `DATABASE_URL` is not set.
+pub struct InMemoryAuditStore {
+    inner: SharedAuditStore,
+}
 
-    let matching: Vec<&AuditRecord> = guard
-        .iter()
-        .filter(|r| r.tenant_id == tenant_id)
-        .filter(|r| start_time.is_none_or(|t| r.timestamp >= t))
-        .filter(|r| end_time.is_none_or(|t| r.timestamp <= t))
-        .filter(|r| {
-            action_filter
-                .map(|f| f.is_empty() || r.action == f)
-                .unwrap_or(true)
-        })
-        .filter(|r| {
-            principal_filter
-                .map(|f| f.is_empty() || r.principal_id == f)
-                .unwrap_or(true)
-        })
-        .collect();
+impl InMemoryAuditStore {
+    /// Construct a new, empty in-memory store.
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+}
 
-    let total = matching.len();
+impl Default for InMemoryAuditStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    let page: Vec<AuditRecord> = matching
-        .into_iter()
-        .skip(offset)
-        .take(if limit == 0 { usize::MAX } else { limit })
-        .cloned()
-        .collect();
+#[async_trait]
+impl AuditStoreBackend for InMemoryAuditStore {
+    async fn insert_record(&self, record: AuditRecord) {
+        let mut guard = self.inner.write().await;
+        guard.push(record);
+    }
 
-    (page, total)
+    async fn query_events(
+        &self,
+        tenant_id: &str,
+        start_time: Option<DateTime<Utc>>,
+        end_time: Option<DateTime<Utc>>,
+        action_filter: Option<&str>,
+        principal_filter: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> (Vec<AuditRecord>, usize) {
+        let guard = self.inner.read().await;
+
+        let matching: Vec<&AuditRecord> = guard
+            .iter()
+            .filter(|r| r.tenant_id == tenant_id)
+            .filter(|r| start_time.is_none_or(|t| r.timestamp >= t))
+            .filter(|r| end_time.is_none_or(|t| r.timestamp <= t))
+            .filter(|r| {
+                action_filter
+                    .map(|f| f.is_empty() || r.action == f)
+                    .unwrap_or(true)
+            })
+            .filter(|r| {
+                principal_filter
+                    .map(|f| f.is_empty() || r.principal_id == f)
+                    .unwrap_or(true)
+            })
+            .collect();
+
+        let total = matching.len();
+
+        let page: Vec<AuditRecord> = matching
+            .into_iter()
+            .skip(offset)
+            .take(if limit == 0 { usize::MAX } else { limit })
+            .cloned()
+            .collect();
+
+        (page, total)
+    }
 }

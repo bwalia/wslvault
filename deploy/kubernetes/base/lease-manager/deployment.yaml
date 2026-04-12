@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lease-manager
+  labels:
+    app: lease-manager
+    component: core
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: lease-manager
+  template:
+    metadata:
+      labels:
+        app: lease-manager
+        component: core
+    spec:
+      serviceAccountName: lease-manager
+      containers:
+        - name: lease-manager
+          image: wslvault/lease-manager:latest
+          ports:
+            - name: http
+              containerPort: 8084
+            - name: grpc
+              containerPort: 50055
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: RUST_LOG
+              value: "info,lease_manager=debug"
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lease-manager
+spec:
+  selector:
+    app: lease-manager
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http
+    - name: grpc
+      port: 50055
+      targetPort: grpc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: lease-manager

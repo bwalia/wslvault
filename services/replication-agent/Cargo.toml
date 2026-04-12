@@ -1,0 +1,33 @@
+[package]
+name = "replication-agent"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-region secret replication with conflict resolution"
+license = "Apache-2.0"
+
+[[bin]]
+name = "replication-agent"
+path = "src/main.rs"
+
+[dependencies]
+wslvault-core = { path = "../../crates/wslvault-core" }
+wslvault-storage = { path = "../../crates/wslvault-storage" }
+wslvault-cluster = { path = "../../crates/wslvault-cluster" }
+tokio = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reqwest = { workspace = true }
+config = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+prometheus = { workspace = true }
+lazy_static = "1.5"

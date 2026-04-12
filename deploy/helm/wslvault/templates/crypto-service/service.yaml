@@ -1,0 +1,22 @@
+{{- if .Values.cryptoService.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "crypto-service" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.cryptoService.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.cryptoService.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

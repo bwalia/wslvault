@@ -10,6 +10,16 @@ pub struct DbPool {
     inner: PgPool,
 }
 
+// Manual Debug implementation to avoid leaking connection string details
+// (host, credentials) that may be embedded in the PgPool's internal state.
+impl std::fmt::Debug for DbPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbPool")
+            .field("size", &self.inner.size())
+            .finish()
+    }
+}
+
 impl DbPool {
     /// Create a new connection pool from the given database configuration.
     pub async fn connect(config: &DatabaseConfig) -> Result<Self, VaultError> {

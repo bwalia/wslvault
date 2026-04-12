@@ -1,0 +1,22 @@
+{{- if .Values.secretEngine.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "secret-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.secretEngine.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.secretEngine.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+{{- end }}

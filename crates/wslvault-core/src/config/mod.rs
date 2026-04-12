@@ -90,6 +90,71 @@ impl Default for ObservabilityConfig {
     }
 }
 
+/// Configuration for HA clustering behaviour.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ClusterConfig {
+    /// Unique identifier for this node. Defaults to `hostname:pid` at runtime.
+    pub node_id: Option<String>,
+    /// Region this node belongs to (e.g. "us-east-1", "eu-west-2").
+    pub region: String,
+    /// How often the leader refreshes its heartbeat (seconds).
+    pub heartbeat_interval_secs: u64,
+    /// How long before a missing heartbeat is considered a leadership vacancy (seconds).
+    pub leader_lock_timeout_secs: u64,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            node_id: None,
+            region: "default".into(),
+            heartbeat_interval_secs: 5,
+            leader_lock_timeout_secs: 30,
+        }
+    }
+}
+
+/// Configuration for cross-region replication.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ReplicationConfig {
+    /// The region identifier for this deployment.
+    pub local_region: String,
+    /// Peer regions to replicate with.
+    pub peer_regions: Vec<RegionPeerConfig>,
+    /// Replication mode: "async" or "sync".
+    pub mode: String,
+    /// Conflict resolution strategy: "last_write_wins", "vector_clock", or "manual".
+    pub conflict_strategy: String,
+    /// How often to poll for new replication events (milliseconds).
+    pub poll_interval_ms: u64,
+    /// Maximum number of events to process per batch.
+    pub batch_size: usize,
+}
+
+impl Default for ReplicationConfig {
+    fn default() -> Self {
+        Self {
+            local_region: "default".into(),
+            peer_regions: Vec::new(),
+            mode: "async".into(),
+            conflict_strategy: "last_write_wins".into(),
+            poll_interval_ms: 500,
+            batch_size: 100,
+        }
+    }
+}
+
+/// Configuration for a single peer region.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RegionPeerConfig {
+    /// Region identifier (e.g. "eu-west-2").
+    pub id: String,
+    /// Replication API endpoint for this peer.
+    pub replication_endpoint: String,
+    /// Optional TLS configuration for the peer connection.
+    pub tls: Option<TlsConfig>,
+}
+
 /// Top-level configuration shared by all services.
 /// Individual services embed this and add their own fields.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -104,6 +169,10 @@ pub struct VaultConfig {
     pub service_name: String,
     /// "dev" | "staging" | "production"
     pub environment: String,
+    /// HA clustering configuration.
+    pub cluster: ClusterConfig,
+    /// Cross-region replication configuration.
+    pub replication: ReplicationConfig,
 }
 
 impl Default for VaultConfig {
@@ -116,6 +185,8 @@ impl Default for VaultConfig {
             ha: HaConfig::default(),
             service_name: "wslvault".into(),
             environment: "dev".into(),
+            cluster: ClusterConfig::default(),
+            replication: ReplicationConfig::default(),
         }
     }
 }

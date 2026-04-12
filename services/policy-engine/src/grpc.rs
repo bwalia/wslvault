@@ -21,25 +21,29 @@ use crate::proto::{
     PolicyDocument as ProtoPolicyDocument, PolicyRule as ProtoPolicyRule, PutPolicyRequest,
     PutPolicyResponse,
 };
-use crate::store::PolicyStore;
+use crate::store::PolicyStoreBackend;
 
 /// The concrete gRPC handler struct. Holds shared references to the mutable
-/// policy store and the most-recently-compiled evaluation snapshot.
+/// policy store backend and the most-recently-compiled evaluation snapshot.
+///
+/// The store is held behind `Arc<dyn PolicyStoreBackend>` so that either the
+/// in-memory `PolicyStore` or the Postgres-backed `PgPolicyBackend` can be
+/// injected at start-up without changing this struct or its methods.
 #[derive(Debug, Clone)]
 pub struct PolicyServiceImpl {
-    store: PolicyStore,
+    store: Arc<dyn PolicyStoreBackend>,
     compiled: Arc<RwLock<CompiledPolicies>>,
 }
 
 impl PolicyServiceImpl {
     /// Create a new service handler.
     ///
-    /// * `store` – the mutable policy store; also held by the background
-    ///   compilation task.
+    /// * `store` – the mutable policy store backend; also held by the
+    ///   background compilation task.
     /// * `compiled` – the latest compiled snapshot, updated by the background
     ///   task. The gRPC handler reads from this under a read lock
     ///   to avoid blocking writers.
-    pub fn new(store: PolicyStore, compiled: Arc<RwLock<CompiledPolicies>>) -> Self {
+    pub fn new(store: Arc<dyn PolicyStoreBackend>, compiled: Arc<RwLock<CompiledPolicies>>) -> Self {
         Self { store, compiled }
     }
 }
@@ -234,9 +238,19 @@ impl PolicyService for PolicyServiceImpl {
             return Err(Status::invalid_argument("policy name must not be empty"));
         }
 
-        let removed = self.store.delete_policy(&req.tenant_id, &req.name).await;
+        // Check existence first so that NOT_FOUND is returned correctly
+        // regardless of the backing store.  The in-memory store returns the
+        // deleted document from `delete_policy`, but the Postgres backend
+        // always returns `None` (the upsert path does not cheaply recover the
+        // old row).  A pre-delete `get_policy` call normalises the behaviour
+        // across both backends.
+        let exists = self
+            .store
+            .get_policy(&req.tenant_id, &req.name)
+            .await
+            .is_some();
 
-        if removed.is_none() {
+        if !exists {
             warn!(
                 tenant_id = %req.tenant_id,
                 name       = %req.name,
@@ -247,6 +261,8 @@ impl PolicyService for PolicyServiceImpl {
                 req.name, req.tenant_id
             )));
         }
+
+        self.store.delete_policy(&req.tenant_id, &req.name).await;
 
         Ok(Response::new(DeletePolicyResponse {}))
     }

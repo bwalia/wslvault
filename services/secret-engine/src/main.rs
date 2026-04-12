@@ -12,13 +12,28 @@
 //!
 //! The crypto-service endpoint defaults to `http://crypto-service:50051` and can
 //! be overridden with `VAULT__CRYPTO_SERVICE__ENDPOINT`.
+//!
+//! The audit-service endpoint defaults to `http://audit-service:50056` and can
+//! be overridden with `AUDIT_SERVICE_ENDPOINT`.
+//!
+//! The policy-engine endpoint defaults to `http://policy-engine:50053` and can
+//! be overridden with `POLICY_ENGINE_ENDPOINT`.  Every operation is checked
+//! against the policy-engine before proceeding (fail-closed).
+//!
+//! The lease-manager endpoint defaults to `http://lease-manager:50055` and can
+//! be overridden with `LEASE_MANAGER_ENDPOINT`.  Lease creation is optional —
+//! if the lease-manager is unavailable, operations succeed in degraded mode.
 
+mod audit_client;
 mod grpc;
 mod ha_status;
 mod health;
 mod http;
 mod kv_store;
+mod lease_client;
 mod path;
+mod pg_store;
+mod policy_client;
 mod server;
 
 use std::net::SocketAddr;
@@ -35,6 +50,15 @@ const DEFAULT_HTTP_ADDR: &str = "0.0.0.0:8081";
 
 /// Default crypto-service gRPC endpoint.
 const DEFAULT_CRYPTO_ENDPOINT: &str = "http://crypto-service:50051";
+
+/// Default audit-service gRPC endpoint.
+const DEFAULT_AUDIT_ENDPOINT: &str = "http://audit-service:50056";
+
+/// Default policy-engine gRPC endpoint.
+const DEFAULT_POLICY_ENDPOINT: &str = "http://policy-engine:50053";
+
+/// Default lease-manager gRPC endpoint.
+const DEFAULT_LEASE_ENDPOINT: &str = "http://lease-manager:50055";
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -97,26 +121,46 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // ── 5. Resolve audit-service endpoint ───────────────────────────────────
+    // Precedence: AUDIT_SERVICE_ENDPOINT env var > compiled default.
+    let audit_endpoint = std::env::var("AUDIT_SERVICE_ENDPOINT")
+        .unwrap_or_else(|_| DEFAULT_AUDIT_ENDPOINT.to_string());
+
+    // ── 6. Resolve policy-engine endpoint ───────────────────────────────────
+    // Precedence: POLICY_ENGINE_ENDPOINT env var > compiled default.
+    let policy_endpoint = std::env::var("POLICY_ENGINE_ENDPOINT")
+        .unwrap_or_else(|_| DEFAULT_POLICY_ENDPOINT.to_string());
+
+    // ── 7. Resolve lease-manager endpoint ───────────────────────────────────
+    // Precedence: LEASE_MANAGER_ENDPOINT env var > compiled default.
+    // Lease creation is optional — the secret-engine operates in degraded mode
+    // when this endpoint is unreachable.
+    let lease_endpoint = std::env::var("LEASE_MANAGER_ENDPOINT")
+        .unwrap_or_else(|_| DEFAULT_LEASE_ENDPOINT.to_string());
+
     info!(
         grpc_addr = %grpc_addr,
         http_addr = %http_addr,
         crypto_endpoint = %crypto_endpoint,
+        audit_endpoint = %audit_endpoint,
+        policy_endpoint = %policy_endpoint,
+        lease_endpoint = %lease_endpoint,
         "resolved service configuration"
     );
 
-    // ── 5. Start metrics server ──────────────────────────────────────────────
+    // ── 8. Start metrics server ──────────────────────────────
     let metrics_addr = config.observability.metrics_addr;
     tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
 
-    // ── 6. Start HA heartbeat if enabled ──────────��─────────────────────────
+    // ── 9. Start HA heartbeat if enabled ─────────────────────
     if config.ha.enabled {
         let cluster_state = wslvault_core::ha::cluster::new_cluster_state(config.ha.clone());
         tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(cluster_state));
         info!("HA mode enabled, heartbeat loop started");
     }
 
-    // ── 7. Start servers ───────────────────────────────────────────────��────
-    server::run(grpc_addr, http_addr, crypto_endpoint).await?;
+    // ── 10. Start servers ────────────────────────────────────
+    server::run(grpc_addr, http_addr, crypto_endpoint, audit_endpoint, policy_endpoint, lease_endpoint).await?;
 
     Ok(())
 }
