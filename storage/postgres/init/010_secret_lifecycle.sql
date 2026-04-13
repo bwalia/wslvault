@@ -389,6 +389,10 @@ $$ LANGUAGE plpgsql;
 -- 6. Update vault_upsert_secret to populate created_by and set status/expires_at
 -- =============================================================================
 
+-- Drop any previous 8/9-param overloads so calling with defaults is unambiguous.
+DROP FUNCTION IF EXISTS shared.vault_upsert_secret(uuid, text, text, text, text, integer, integer, boolean);
+DROP FUNCTION IF EXISTS shared.vault_upsert_secret(uuid, text, text, text, text, integer, integer, boolean, jsonb);
+
 CREATE OR REPLACE FUNCTION shared.vault_upsert_secret(
     p_tenant_id         UUID,
     p_path              TEXT,
