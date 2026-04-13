@@ -31,6 +31,132 @@ impl std::fmt::Display for SecretId {
     }
 }
 
+/// Lifecycle type controlling how a secret expires and rotates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum SecretType {
+    /// Short-lived, TTL-enforced credential. Auto-expires; renewable.
+    Ephemeral,
+    /// Has a TTL but not strictly enforced. Soft-rotation with warnings.
+    #[default]
+    StaleTtl,
+    /// Must be rotated periodically. Rotation is coordinated with the target
+    /// application via two-phase confirmation before the new version activates.
+    RotationRequired,
+}
+
+impl SecretType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ephemeral => "EPHEMERAL",
+            Self::StaleTtl => "STALE_TTL",
+            Self::RotationRequired => "ROTATION_REQUIRED",
+        }
+    }
+}
+
+impl std::str::FromStr for SecretType {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_uppercase().as_str() {
+            "EPHEMERAL" => Ok(Self::Ephemeral),
+            "STALE_TTL" => Ok(Self::StaleTtl),
+            "ROTATION_REQUIRED" => Ok(Self::RotationRequired),
+            other => Err(format!("unknown secret type: {other}")),
+        }
+    }
+}
+
+impl std::fmt::Display for SecretType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Lifecycle status of a single secret version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionStatus {
+    /// The current readable version.
+    #[default]
+    Active,
+    /// Awaiting rotation confirmation (two-phase rotation).
+    Pending,
+    /// Superseded by a newer version; readable by power_admin only.
+    Deprecated,
+    /// Grace period expired; ciphertext destroyed.
+    Revoked,
+}
+
+impl VersionStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Pending => "pending",
+            Self::Deprecated => "deprecated",
+            Self::Revoked => "revoked",
+        }
+    }
+}
+
+impl std::str::FromStr for VersionStatus {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Self::Active),
+            "pending" => Ok(Self::Pending),
+            "deprecated" => Ok(Self::Deprecated),
+            "revoked" => Ok(Self::Revoked),
+            other => Err(format!("unknown version status: {other}")),
+        }
+    }
+}
+
+/// Lifecycle policy attached to a secret.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RotationPolicy {
+    /// Seconds until the secret expires (EPHEMERAL / STALE_TTL).
+    pub ttl_seconds: Option<i64>,
+    /// Seconds before expiry to emit a soft-warning (STALE_TTL).
+    pub soft_warn_seconds: Option<i64>,
+    /// How often the secret must be rotated (ROTATION_REQUIRED), in seconds.
+    pub rotation_interval_seconds: Option<i64>,
+    /// Grace period (seconds) before the old version is revoked after confirmation.
+    pub grace_period_seconds: Option<i64>,
+    /// Webhook URL to notify during two-phase rotation.
+    pub webhook_url: Option<String>,
+}
+
+/// In-progress rotation record returned by the rotation API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RotationRecord {
+    pub rotation_id: String,
+    pub secret_id: String,
+    pub path: String,
+    pub old_version: u32,
+    pub new_version: u32,
+    pub status: String,
+    pub initiated_by: String,
+    pub confirmed_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub grace_ends_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Version metadata entry without ciphertext — safe to return to admins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionMeta {
+    pub version: u32,
+    pub status: VersionStatus,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deprecated_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub destroyed: bool,
+}
+
 /// Classification of which engine manages this secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SecretEngine {
@@ -58,6 +184,18 @@ pub struct SecretVersion {
     pub ciphertext: String,
     /// ID of the DEK used to encrypt this version, for key rotation tracking.
     pub dek_id: String,
+    /// Lifecycle status of this version.
+    #[serde(default)]
+    pub status: VersionStatus,
+    /// Principal ID that created this version (if recorded).
+    #[serde(default)]
+    pub created_by: Option<String>,
+    /// When this version was deprecated (superseded).
+    #[serde(default)]
+    pub deprecated_at: Option<DateTime<Utc>>,
+    /// When this version was revoked (ciphertext destroyed after grace period).
+    #[serde(default)]
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// Top-level secret metadata; no plaintext data stored here.
@@ -76,6 +214,24 @@ pub struct SecretMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub custom_metadata: HashMap<String, String>,
+    /// Lifecycle type governing expiry and rotation behaviour.
+    #[serde(default)]
+    pub secret_type: SecretType,
+    /// Attached rotation / TTL policy.
+    #[serde(default)]
+    pub rotation_policy: RotationPolicy,
+    /// When this secret expires (derived from TTL at write time).
+    #[serde(default)]
+    pub expires_at: Option<DateTime<Utc>>,
+    /// When the last rotation was completed.
+    #[serde(default)]
+    pub last_rotated_at: Option<DateTime<Utc>>,
+    /// When the next rotation is due (ROTATION_REQUIRED).
+    #[serde(default)]
+    pub next_rotation_at: Option<DateTime<Utc>>,
+    /// Current rotation workflow state ('none' | 'pending' | 'confirmed').
+    #[serde(default)]
+    pub rotation_status: String,
 }
 
 /// Transient plaintext value; dropped and zeroed as soon as the request handler returns.

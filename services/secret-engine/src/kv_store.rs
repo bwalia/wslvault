@@ -15,7 +15,38 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use wslvault_core::types::secret::VersionStatus;
 use wslvault_core::VaultError;
+
+/// Version metadata without ciphertext — safe to return to admin callers.
+#[derive(Debug, Clone)]
+pub struct VersionMeta {
+    pub version: u32,
+    pub status: VersionStatus,
+    pub created_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub deleted_at: Option<DateTime<Utc>>,
+    pub deprecated_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub destroyed: bool,
+}
+
+/// Rotation record returned from the active-rotation query.
+#[derive(Debug, Clone)]
+pub struct RotationInfo {
+    pub rotation_id: String,
+    pub secret_id: String,
+    pub path: String,
+    pub old_version: u32,
+    pub new_version: u32,
+    pub status: String,
+    pub initiated_by: String,
+    pub confirmed_by: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub confirmed_at: Option<DateTime<Utc>>,
+    pub grace_ends_at: Option<DateTime<Utc>>,
+    pub expires_at: DateTime<Utc>,
+}
 
 /// Abstraction over secret storage so the engine can run against
 /// in-memory (tests/dev) or PostgreSQL (production) backends.
@@ -70,6 +101,50 @@ pub trait SecretStoreBackend: Send + Sync + std::fmt::Debug {
         tenant_id: &str,
         path: &str,
     ) -> Result<SecretEntry, VaultError>;
+
+    /// Initiate a two-phase rotation: create a pending new version and return
+    /// (rotation_id, new_version).
+    async fn initiate_rotation(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        ciphertext: String,
+        dek_id: String,
+        initiated_by: &str,
+        webhook_url: Option<&str>,
+        timeout_secs: Option<i32>,
+    ) -> Result<(String, u32), VaultError>;
+
+    /// Confirm a pending rotation by rotation_id. Returns (old_version, new_version,
+    /// grace_ends_at).
+    async fn confirm_rotation(
+        &self,
+        rotation_id: &str,
+        confirmed_by: &str,
+    ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError>;
+
+    /// Rollback to a previous version (power_admin only). Returns the new version number.
+    async fn rollback(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        target_version: u32,
+        rolled_back_by: &str,
+    ) -> Result<u32, VaultError>;
+
+    /// List all version metadata for a secret path (no ciphertext).
+    async fn list_versions(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<Vec<VersionMeta>, VaultError>;
+
+    /// Return the active rotation record for a path, if any.
+    async fn get_active_rotation(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<Option<RotationInfo>, VaultError>;
 }
 
 /// Default maximum number of versions retained per secret when not specified by the caller.
@@ -441,6 +516,11 @@ impl KvStore {
 
 /// Implement `SecretStoreBackend` for the in-memory `KvStore` by delegating
 /// each method to the existing inherent impl.
+///
+/// Lifecycle methods (rotate/confirm/rollback) are not supported by the
+/// in-memory backend — they return `UnsupportedOperation`. The in-memory
+/// backend is only used for dev/test environments where the full PostgreSQL
+/// rotation workflow is not required.
 #[async_trait]
 impl SecretStoreBackend for KvStore {
     async fn get(
@@ -494,6 +574,76 @@ impl SecretStoreBackend for KvStore {
         path: &str,
     ) -> Result<SecretEntry, VaultError> {
         self.get_metadata(tenant_id, path).await
+    }
+
+    async fn initiate_rotation(
+        &self,
+        _tenant_id: &str,
+        _path: &str,
+        _ciphertext: String,
+        _dek_id: String,
+        _initiated_by: &str,
+        _webhook_url: Option<&str>,
+        _timeout_secs: Option<i32>,
+    ) -> Result<(String, u32), VaultError> {
+        Err(VaultError::UnsupportedOperation {
+            engine_type: "kv_memory".into(),
+            operation: "initiate_rotation".into(),
+        })
+    }
+
+    async fn confirm_rotation(
+        &self,
+        _rotation_id: &str,
+        _confirmed_by: &str,
+    ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError> {
+        Err(VaultError::UnsupportedOperation {
+            engine_type: "kv_memory".into(),
+            operation: "confirm_rotation".into(),
+        })
+    }
+
+    async fn rollback(
+        &self,
+        _tenant_id: &str,
+        _path: &str,
+        _target_version: u32,
+        _rolled_back_by: &str,
+    ) -> Result<u32, VaultError> {
+        Err(VaultError::UnsupportedOperation {
+            engine_type: "kv_memory".into(),
+            operation: "rollback".into(),
+        })
+    }
+
+    async fn list_versions(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<Vec<VersionMeta>, VaultError> {
+        let entry = self.get_metadata(tenant_id, path).await?;
+        Ok(entry
+            .versions
+            .into_iter()
+            .map(|v| VersionMeta {
+                version: v.version,
+                status: VersionStatus::Active,
+                created_by: None,
+                created_at: v.created_at,
+                deleted_at: v.deleted_at,
+                deprecated_at: None,
+                revoked_at: None,
+                destroyed: v.destroyed,
+            })
+            .collect())
+    }
+
+    async fn get_active_rotation(
+        &self,
+        _tenant_id: &str,
+        _path: &str,
+    ) -> Result<Option<RotationInfo>, VaultError> {
+        Ok(None)
     }
 }
 

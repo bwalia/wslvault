@@ -51,6 +51,9 @@ pub enum VaultError {
     #[error("validation error: {field}: {reason}")]
     ValidationError { field: String, reason: String },
 
+    #[error("invalid operation: {reason}")]
+    InvalidOperation { reason: String },
+
     // Storage errors
     #[error("database error: {reason}")]
     Database { reason: String },
@@ -96,6 +99,7 @@ impl VaultError {
             VaultError::CasConflict { .. } => "cas_conflict",
             VaultError::VersionDestroyed { .. } => "version_destroyed",
             VaultError::ValidationError { .. } => "validation_error",
+            VaultError::InvalidOperation { .. } => "invalid_operation",
             VaultError::Database { .. } => "database_error",
             VaultError::Storage { .. } => "storage_error",
             VaultError::ServiceUnavailable { .. } => "service_unavailable",
@@ -117,7 +121,9 @@ impl VaultError {
             | VaultError::LeaseNotFound { .. } => 404,
             VaultError::CasConflict { .. } => 409,
             VaultError::VersionDestroyed { .. } => 410,
-            VaultError::ValidationError { .. } | VaultError::InvalidPath { .. } => 400,
+            VaultError::ValidationError { .. }
+            | VaultError::InvalidPath { .. }
+            | VaultError::InvalidOperation { .. } => 400,
             VaultError::ServiceUnavailable { .. } => 503,
             VaultError::LeaseExpired { .. } => 403,
             _ => 500,

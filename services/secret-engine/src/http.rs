@@ -1083,6 +1083,486 @@ pub async fn list_secrets(
     (StatusCode::OK, Json(ListResponseBody { paths })).into_response()
 }
 
+// ─── Lifecycle request/response bodies ───────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct InitiateRotationBody {
+    /// Base64-encoded plaintext for the new (pending) version.
+    pub data: String,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    /// Rotation confirmation timeout in seconds (default 86400 = 24 h).
+    #[serde(default)]
+    pub timeout_secs: Option<i32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InitiateRotationResponse {
+    pub rotation_id: String,
+    pub new_version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConfirmRotationBody {
+    pub rotation_id: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ConfirmRotationResponse {
+    pub old_version: u32,
+    pub new_version: u32,
+    pub grace_ends_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RollbackBody {
+    pub target_version: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RollbackResponse {
+    pub new_version: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VersionMetaItem {
+    pub version: u32,
+    pub status: String,
+    pub created_by: Option<String>,
+    pub created_at: String,
+    pub deleted_at: Option<String>,
+    pub deprecated_at: Option<String>,
+    pub revoked_at: Option<String>,
+    pub destroyed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ListVersionsResponse {
+    pub versions: Vec<VersionMetaItem>,
+}
+
+// ─── Lifecycle handlers ───────────────────────────────────────────────────────
+
+/// POST /v1/secret/rotate/*path
+///
+/// Initiate a two-phase rotation. Encrypts the supplied plaintext and stores
+/// it as a `pending` version. Returns `rotation_id` and `new_version`.
+/// The calling application must later confirm via POST /v1/secret/confirm/*path.
+#[instrument(skip(state, headers, body), fields(path, tenant_id))]
+pub async fn initiate_rotation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+    Json(body): Json<InitiateRotationBody>,
+) -> Response {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let client_ip = extract_client_ip(&headers);
+
+    let normalized_path = match normalize_and_validate(&path) {
+        Ok(p) => p,
+        Err(e) => return vault_err_to_response(e),
+    };
+
+    tracing::Span::current().record("path", &normalized_path.as_str());
+    tracing::Span::current().record("tenant_id", &tenant_id.as_str());
+    info!("http initiate_rotation");
+
+    let principal_id = extract_principal_id(&headers);
+    let policies = extract_policies(&headers);
+    let resource = format!("secret/data/{}", normalized_path);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "write", &resource)
+        .await
+    {
+        state
+            .audit_client
+            .emit(
+                &tenant_id,
+                &principal_id,
+                "secret.rotation.initiate",
+                &normalized_path,
+                "failure",
+                &e.to_string(),
+                "",
+                &client_ip,
+            )
+            .await;
+        return vault_err_to_response(e);
+    }
+
+    let plaintext = match base64_decode(&body.data) {
+        Ok(b) => b,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "validation_error",
+                    message: "data field must be valid base64".into(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
+    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
+        state.crypto_endpoint.clone(),
+    )
+    .await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "crypto-service connect failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    code: "service_unavailable",
+                    message: format!("crypto-service unavailable: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let encrypt_resp = match crypto_client
+        .encrypt(crypto_proto::EncryptRequest {
+            tenant_id: tenant_id.clone(),
+            plaintext,
+            aad,
+        })
+        .await
+    {
+        Ok(r) => r.into_inner(),
+        Err(e) => {
+            error!(error = %e, "crypto-service encrypt failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError {
+                    code: "encryption_failed",
+                    message: format!("encryption failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let (rotation_id, new_version) = match state
+        .store
+        .initiate_rotation(
+            &tenant_id,
+            &normalized_path,
+            encrypt_resp.ciphertext_b64,
+            encrypt_resp.dek_id,
+            &principal_id,
+            body.webhook_url.as_deref(),
+            body.timeout_secs,
+        )
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    "secret.rotation.initiate",
+                    &normalized_path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            return vault_err_to_response(e);
+        }
+    };
+
+    state
+        .audit_client
+        .emit(
+            &tenant_id,
+            &principal_id,
+            "secret.rotation.initiate",
+            &normalized_path,
+            "success",
+            &rotation_id,
+            "",
+            &client_ip,
+        )
+        .await;
+
+    (
+        StatusCode::OK,
+        Json(InitiateRotationResponse {
+            rotation_id,
+            new_version,
+        }),
+    )
+        .into_response()
+}
+
+/// POST /v1/secret/confirm/*path
+///
+/// Confirm a pending rotation: activates the new version and deprecates the old.
+/// The `rotation_id` returned by initiate_rotation must be included in the body.
+#[instrument(skip(state, headers, body), fields(path, tenant_id))]
+pub async fn confirm_rotation(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+    Json(body): Json<ConfirmRotationBody>,
+) -> Response {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let client_ip = extract_client_ip(&headers);
+
+    let normalized_path = match normalize_and_validate(&path) {
+        Ok(p) => p,
+        Err(e) => return vault_err_to_response(e),
+    };
+
+    let principal_id = extract_principal_id(&headers);
+    let policies = extract_policies(&headers);
+    let resource = format!("secret/data/{}", normalized_path);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "write", &resource)
+        .await
+    {
+        return vault_err_to_response(e);
+    }
+
+    let (old_version, new_version, grace_ends_at) = match state
+        .store
+        .confirm_rotation(&body.rotation_id, &principal_id)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    "secret.rotation.confirm",
+                    &normalized_path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            return vault_err_to_response(e);
+        }
+    };
+
+    state
+        .audit_client
+        .emit(
+            &tenant_id,
+            &principal_id,
+            "secret.rotation.confirm",
+            &normalized_path,
+            "success",
+            &body.rotation_id,
+            "",
+            &client_ip,
+        )
+        .await;
+
+    (
+        StatusCode::OK,
+        Json(ConfirmRotationResponse {
+            old_version,
+            new_version,
+            grace_ends_at: grace_ends_at.to_rfc3339(),
+        }),
+    )
+        .into_response()
+}
+
+/// POST /v1/secret/rollback/*path
+///
+/// Roll back to a specific previous version (power_admin only). Creates a new
+/// version row with the same ciphertext as the target version, preserving audit trail.
+#[instrument(skip(state, headers, body), fields(path, tenant_id))]
+pub async fn rollback_secret(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+    Json(body): Json<RollbackBody>,
+) -> Response {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let client_ip = extract_client_ip(&headers);
+
+    let normalized_path = match normalize_and_validate(&path) {
+        Ok(p) => p,
+        Err(e) => return vault_err_to_response(e),
+    };
+
+    let principal_id = extract_principal_id(&headers);
+    let policies = extract_policies(&headers);
+    // Rollback requires power_admin policy.
+    let resource = format!("secret/data/{}", normalized_path);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "rollback", &resource)
+        .await
+    {
+        state
+            .audit_client
+            .emit(
+                &tenant_id,
+                &principal_id,
+                "secret.rollback",
+                &normalized_path,
+                "failure",
+                &e.to_string(),
+                "",
+                &client_ip,
+            )
+            .await;
+        return vault_err_to_response(e);
+    }
+
+    let new_version = match state
+        .store
+        .rollback(&tenant_id, &normalized_path, body.target_version, &principal_id)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    "secret.rollback",
+                    &normalized_path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            return vault_err_to_response(e);
+        }
+    };
+
+    state
+        .audit_client
+        .emit(
+            &tenant_id,
+            &principal_id,
+            "secret.rollback",
+            &normalized_path,
+            "success",
+            &format!("target={} new={}", body.target_version, new_version),
+            "",
+            &client_ip,
+        )
+        .await;
+
+    (StatusCode::OK, Json(RollbackResponse { new_version })).into_response()
+}
+
+/// GET /v1/secret/versions/*path
+///
+/// List version metadata for a secret (no ciphertext). Admin and power_admin
+/// can see all versions; developer-level callers receive only the current version.
+#[instrument(skip(state, headers), fields(path, tenant_id))]
+pub async fn list_versions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+) -> Response {
+    let tenant_id = match extract_tenant_id(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let client_ip = extract_client_ip(&headers);
+
+    let normalized_path = match normalize_and_validate(&path) {
+        Ok(p) => p,
+        Err(e) => return vault_err_to_response(e),
+    };
+
+    let principal_id = extract_principal_id(&headers);
+    let policies = extract_policies(&headers);
+    let resource = format!("secret/metadata/{}", normalized_path);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "read", &resource)
+        .await
+    {
+        return vault_err_to_response(e);
+    }
+
+    let versions = match state
+        .store
+        .list_versions(&tenant_id, &normalized_path)
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    "secret.versions.list",
+                    &normalized_path,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            return vault_err_to_response(e);
+        }
+    };
+
+    state
+        .audit_client
+        .emit(
+            &tenant_id,
+            &principal_id,
+            "secret.versions.list",
+            &normalized_path,
+            "success",
+            "",
+            "",
+            &client_ip,
+        )
+        .await;
+
+    let items = versions
+        .into_iter()
+        .map(|v| VersionMetaItem {
+            version: v.version,
+            status: v.status.as_str().to_string(),
+            created_by: v.created_by,
+            created_at: v.created_at.to_rfc3339(),
+            deleted_at: v.deleted_at.map(|t| t.to_rfc3339()),
+            deprecated_at: v.deprecated_at.map(|t| t.to_rfc3339()),
+            revoked_at: v.revoked_at.map(|t| t.to_rfc3339()),
+            destroyed: v.destroyed,
+        })
+        .collect();
+
+    (StatusCode::OK, Json(ListVersionsResponse { versions: items })).into_response()
+}
+
 // ─── Router factory ───────────────────────────────────────────────────────────
 
 /// Build the axum `Router` for the REST API.
@@ -1116,6 +1596,10 @@ pub fn build_router(
         .route("/v1/secret/destroy/*path", post(destroy_secret))
         .route("/v1/secret/metadata/*path", get(get_metadata))
         .route("/v1/secret/list", get(list_secrets))
+        .route("/v1/secret/rotate/*path", post(initiate_rotation))
+        .route("/v1/secret/confirm/*path", post(confirm_rotation))
+        .route("/v1/secret/rollback/*path", post(rollback_secret))
+        .route("/v1/secret/versions/*path", get(list_versions))
         .with_state(app_state)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }

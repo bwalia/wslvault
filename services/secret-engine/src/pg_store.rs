@@ -17,7 +17,7 @@ use wslvault_core::VaultError;
 use wslvault_storage::pool::DbPool;
 use wslvault_storage::secret_store;
 
-use crate::kv_store::{SecretEntry, SecretStoreBackend, VersionEntry};
+use crate::kv_store::{RotationInfo, SecretEntry, SecretStoreBackend, VersionEntry, VersionMeta};
 
 /// PostgreSQL-backed secret store.
 ///
@@ -237,5 +237,93 @@ impl SecretStoreBackend for PgSecretBackend {
             // callers use get() to retrieve individual versions.
             versions: Vec::new(),
         })
+    }
+
+    async fn initiate_rotation(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        ciphertext: String,
+        dek_id: String,
+        initiated_by: &str,
+        webhook_url: Option<&str>,
+        timeout_secs: Option<i32>,
+    ) -> Result<(String, u32), VaultError> {
+        let tid = Self::parse_tenant_id(tenant_id)?;
+        secret_store::initiate_rotation(
+            &self.pool,
+            &tid,
+            path,
+            &ciphertext,
+            &dek_id,
+            initiated_by,
+            webhook_url,
+            timeout_secs,
+        )
+        .await
+    }
+
+    async fn confirm_rotation(
+        &self,
+        rotation_id: &str,
+        confirmed_by: &str,
+    ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError> {
+        secret_store::confirm_rotation(&self.pool, rotation_id, confirmed_by).await
+    }
+
+    async fn rollback(
+        &self,
+        tenant_id: &str,
+        path: &str,
+        target_version: u32,
+        rolled_back_by: &str,
+    ) -> Result<u32, VaultError> {
+        let tid = Self::parse_tenant_id(tenant_id)?;
+        secret_store::rollback_secret(&self.pool, &tid, path, target_version, rolled_back_by).await
+    }
+
+    async fn list_versions(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<Vec<VersionMeta>, VaultError> {
+        let tid = Self::parse_tenant_id(tenant_id)?;
+        let metas = secret_store::list_version_history(&self.pool, &tid, path).await?;
+        Ok(metas
+            .into_iter()
+            .map(|m| VersionMeta {
+                version: m.version,
+                status: m.status,
+                created_by: m.created_by,
+                created_at: m.created_at,
+                deleted_at: m.deleted_at,
+                deprecated_at: m.deprecated_at,
+                revoked_at: m.revoked_at,
+                destroyed: m.destroyed,
+            })
+            .collect())
+    }
+
+    async fn get_active_rotation(
+        &self,
+        tenant_id: &str,
+        path: &str,
+    ) -> Result<Option<RotationInfo>, VaultError> {
+        let tid = Self::parse_tenant_id(tenant_id)?;
+        let record = secret_store::get_active_rotation(&self.pool, &tid, path).await?;
+        Ok(record.map(|r| RotationInfo {
+            rotation_id: r.rotation_id,
+            secret_id: r.secret_id,
+            path: r.path,
+            old_version: r.old_version,
+            new_version: r.new_version,
+            status: r.status,
+            initiated_by: r.initiated_by,
+            confirmed_by: r.confirmed_by,
+            created_at: r.created_at,
+            confirmed_at: r.confirmed_at,
+            grace_ends_at: r.grace_ends_at,
+            expires_at: r.expires_at,
+        }))
     }
 }
