@@ -163,6 +163,10 @@ async fn create_policy(
         Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "message": e }))).into_response(),
     };
     state.store.put_policy(&tid, doc.clone()).await;
+    {
+        let mut guard = state.compiled.write().await;
+        guard.upsert(doc.name.clone(), doc.rules.clone());
+    }
     (StatusCode::CREATED, Json(doc_to_dto(doc))).into_response()
 }
 
@@ -197,6 +201,10 @@ async fn upsert_policy(
         Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "message": e }))).into_response(),
     };
     state.store.put_policy(&tid, doc.clone()).await;
+    {
+        let mut guard = state.compiled.write().await;
+        guard.upsert(doc.name.clone(), doc.rules.clone());
+    }
     (StatusCode::OK, Json(doc_to_dto(doc))).into_response()
 }
 

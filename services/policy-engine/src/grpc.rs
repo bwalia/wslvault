@@ -215,7 +215,14 @@ impl PolicyService for PolicyServiceImpl {
         let policy_id = proto_doc.name.clone();
         let domain_doc = proto_to_domain_document(proto_doc)?;
 
-        self.store.put_policy(&req.tenant_id, domain_doc).await;
+        self.store.put_policy(&req.tenant_id, domain_doc.clone()).await;
+
+        // Eagerly update compiled snapshot — no need to wait for the background
+        // compilation cycle (which may be skipped when not the leader).
+        {
+            let mut guard = self.compiled.write().await;
+            guard.upsert(domain_doc.name.clone(), domain_doc.rules);
+        }
 
         Ok(Response::new(PutPolicyResponse { policy_id }))
     }

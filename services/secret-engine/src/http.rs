@@ -350,10 +350,13 @@ pub async fn get_secret(
         }
     };
 
+    // Crypto-service expects "<dek_id>:<ciphertext_b64>" in the ciphertext_b64 field
+    let combined_ciphertext = format!("{}:{}", ver_entry.dek_id, ver_entry.ciphertext);
+
     let decrypt_resp = match crypto_client
         .decrypt(crypto_proto::DecryptRequest {
             tenant_id: tenant_id.clone(),
-            ciphertext_b64: ver_entry.ciphertext,
+            ciphertext_b64: combined_ciphertext,
             aad,
         })
         .await

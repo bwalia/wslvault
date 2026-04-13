@@ -410,7 +410,7 @@ impl KekStore {
                 expires_at: None,
             };
 
-            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, Some(&tenant_uuid))
+            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, None)
                 .await
                 .map_err(|e| VaultError::Internal {
                     reason: format!("Failed to persist tenant KEK to DB: {e}"),
@@ -488,7 +488,7 @@ impl KekStore {
                 expires_at: None,
             };
 
-            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, Some(&tenant_uuid))
+            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, None)
                 .await
                 .map_err(|e| VaultError::Internal {
                     reason: format!("Failed to persist DEK to DB: {e}"),
@@ -617,7 +617,7 @@ impl KekStore {
                 expires_at: None,
             };
 
-            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, Some(&tenant_uuid))
+            insert_key_descriptor(pool, &desc, &envelope.ciphertext_b64, None)
                 .await
                 .map_err(|e| VaultError::Internal {
                     reason: format!("Failed to persist rotated DEK to DB: {e}"),

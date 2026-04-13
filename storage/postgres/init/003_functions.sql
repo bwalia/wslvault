@@ -47,10 +47,11 @@ BEGIN
     UPDATE shared.secrets SET current_version = v_new_version WHERE id = v_secret_id;
 
     -- Prune old versions beyond max_versions
-    DELETE FROM shared.secret_versions
-    WHERE secret_id = v_secret_id
-      AND version <= (v_new_version - p_max_versions)
-      AND destroyed = false;
+    -- Use table alias to avoid ambiguity with the RETURNS TABLE output column 'secret_id'
+    DELETE FROM shared.secret_versions sv
+    WHERE sv.secret_id = v_secret_id
+      AND sv.version <= (v_new_version - p_max_versions)
+      AND sv.destroyed = false;
 
     RETURN QUERY SELECT v_secret_id, v_new_version;
 END;

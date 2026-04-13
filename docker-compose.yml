@@ -52,7 +52,7 @@ services:
       dockerfile: deploy/docker/secret-engine/Dockerfile
     environment:
       DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
-      VAULT_CRYPTO_ENDPOINT: "http://crypto-service:50051"
+      CRYPTO_SERVICE_ENDPOINT: "http://crypto-service:50051"
       VAULT_LISTEN_ADDR: "0.0.0.0:8081"
       REGION_ID: "local"
       RUST_LOG: "info,secret_engine=debug"
@@ -88,16 +88,15 @@ services:
       context: .
       dockerfile: deploy/docker/policy-engine/Dockerfile
     environment:
-      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      # DATABASE_URL intentionally omitted: policy-engine uses in-memory store
+      # to match identity-service (tenants are in-memory; DB FK constraint would
+      # reject policies for tenants not yet persisted to system.tenants).
       VAULT_LISTEN_ADDR: "0.0.0.0:50053"
       VAULT_HEALTH_ADDR: "0.0.0.0:8083"
       RUST_LOG: "info,policy_engine=debug"
     ports:
       - "50053:50053"
       - "8083:8083"
-    depends_on:
-      postgres:
-        condition: service_healthy
 
   transit-engine:
     build:

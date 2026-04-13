@@ -13,6 +13,14 @@ CREATE INDEX idx_key_descriptors_tenant_active
     ON system.key_descriptors(tenant_id, purpose)
     WHERE state = 'active';
 
+-- Enforce uniqueness for KEK-class keys (tenant_kek, signing, transit) where
+-- only one active key per (tenant, purpose, version) should exist.
+-- data_encryption DEKs are excluded because the per-encrypt DEK model creates
+-- many DEKs per tenant and each is identified solely by its UUID primary key.
+CREATE UNIQUE INDEX idx_key_descriptors_kek_unique
+    ON system.key_descriptors(tenant_id, purpose, version)
+    WHERE purpose IN ('tenant_kek', 'root_kek', 'signing', 'transit');
+
 -- =============================================================================
 -- Shared schema indexes
 -- =============================================================================

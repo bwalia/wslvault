@@ -36,7 +36,8 @@ CREATE TABLE system.key_descriptors (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     rotated_at  TIMESTAMPTZ,
     expires_at  TIMESTAMPTZ,
-    UNIQUE (tenant_id, purpose, version)
+    -- No inline UNIQUE constraint: per-encrypt DEKs produce many rows per tenant.
+    -- Uniqueness for KEK purposes is enforced by the partial index below.
 );
 
 -- =============================================================================
