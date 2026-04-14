@@ -168,6 +168,11 @@ services:
       - secret-engine
       - identity-service
       - policy-engine
+      - crypto-service
+      - transit-engine
+      - lease-manager
+      - audit-service
+      - mcp-server
 
   # ── Monitoring Stack ─────────────────────────────────────────────────────
   prometheus:
