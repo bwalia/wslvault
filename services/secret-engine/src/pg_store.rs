@@ -17,6 +17,8 @@ use wslvault_core::VaultError;
 use wslvault_storage::pool::DbPool;
 use wslvault_storage::secret_store;
 
+use wslvault_storage::quota_store;
+
 use crate::kv_store::{RotationInfo, SecretEntry, SecretStoreBackend, VersionEntry, VersionMeta};
 
 /// PostgreSQL-backed secret store.
@@ -122,6 +124,8 @@ impl SecretStoreBackend for PgSecretBackend {
 
     /// Write a new secret version to PostgreSQL via the atomic upsert function.
     ///
+    /// Before writing, an advisory quota check is performed against
+    /// `shared.tenant_quotas` to reject obviously over-quota writes early.
     /// The `max_versions` argument defaults to 10 when not provided.  The
     /// `cas_required` flag on the secret row is set to `true` whenever a
     /// check-and-set version is supplied by the caller.
@@ -136,6 +140,20 @@ impl SecretStoreBackend for PgSecretBackend {
         max_versions: Option<u32>,
     ) -> Result<(String, u32), VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
+
+        // Advisory quota check — reject writes that would exceed tenant limits.
+        if let Err(e) = quota_store::check_write_quota(
+            &self.pool,
+            *tid.as_uuid(),
+            ciphertext.len(),
+        )
+        .await
+        {
+            return Err(VaultError::QuotaExceeded {
+                reason: e.to_string(),
+            });
+        }
+
         let (secret_id, version) = secret_store::upsert_secret_version(
             &self.pool,
             &tid,

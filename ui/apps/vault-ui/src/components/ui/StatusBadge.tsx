@@ -12,6 +12,14 @@ const statusMap: Record<string, { variant: 'success' | 'danger' | 'warning' | 'd
   success: { variant: 'success', label: 'Success' },
   failure: { variant: 'danger', label: 'Failure' },
   error: { variant: 'danger', label: 'Error' },
+  // Cluster / region statuses
+  healthy: { variant: 'success', label: 'Healthy' },
+  unhealthy: { variant: 'danger', label: 'Unhealthy' },
+  standby: { variant: 'info', label: 'Standby' },
+  degraded: { variant: 'warning', label: 'Degraded' },
+  leader: { variant: 'info', label: 'Leader' },
+  follower: { variant: 'default', label: 'Follower' },
+  candidate: { variant: 'warning', label: 'Candidate' },
 }
 
 export function StatusBadge({ status }: { status?: string | null }) {

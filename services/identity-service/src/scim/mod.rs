@@ -44,12 +44,10 @@
 
 pub mod groups;
 pub mod schemas;
+pub mod scim_store;
 pub mod users;
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
-};
+use std::sync::Arc;
 
 use axum::{
     http::StatusCode,
@@ -64,6 +62,7 @@ use crate::store::PrincipalStore;
 use self::schemas::{
     ScimGroup, ScimUser, SCHEMA_GROUP, SCHEMA_LIST_RESPONSE, SCHEMA_USER,
 };
+use self::scim_store::{MemoryScimStore, ScimStore};
 
 // ---------------------------------------------------------------------------
 // Shared state
@@ -75,11 +74,8 @@ use self::schemas::{
 /// application state via `.with_state(scim_state)`.
 #[derive(Clone)]
 pub struct ScimState {
-    /// In-memory SCIM user store keyed by server-assigned UUID.
-    pub users: Arc<RwLock<HashMap<String, ScimUser>>>,
-
-    /// In-memory SCIM group store keyed by server-assigned UUID.
-    pub groups: Arc<RwLock<HashMap<String, ScimGroup>>>,
+    /// Pluggable SCIM store: in-memory for tests, PostgreSQL in production.
+    pub store: Arc<dyn ScimStore>,
 
     /// Reference to the identity-service principal store so that SCIM
     /// provisioning events can create and modify wslvault principals.
@@ -87,13 +83,20 @@ pub struct ScimState {
 }
 
 impl ScimState {
-    /// Creates an empty `ScimState` backed by the supplied `PrincipalStore`.
+    /// Creates an empty `ScimState` with an in-memory store, backed by the
+    /// supplied `PrincipalStore`.  Used for tests and when `DATABASE_URL` is
+    /// not set.
     pub fn new(principals: PrincipalStore) -> Self {
         Self {
-            users: Arc::new(RwLock::new(HashMap::new())),
-            groups: Arc::new(RwLock::new(HashMap::new())),
+            store: Arc::new(MemoryScimStore::new()),
             principals,
         }
+    }
+
+    /// Creates a `ScimState` backed by a PostgreSQL [`ScimStore`]
+    /// implementation.
+    pub fn with_store(store: Arc<dyn ScimStore>, principals: PrincipalStore) -> Self {
+        Self { store, principals }
     }
 }
 

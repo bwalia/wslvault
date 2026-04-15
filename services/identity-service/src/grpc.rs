@@ -17,6 +17,8 @@ use uuid::Uuid;
 use wslvault_core::{types::principal::AuthMethod, VaultError};
 
 use crate::{
+    aws_iam::AwsIamManager,
+    azure_workload::AzureWorkloadManager,
     mtls::MtlsManager,
     oidc::OidcManager,
     // `include_proto!("wslvault.identity.v1")` inlines the generated file at
@@ -71,6 +73,10 @@ pub struct IdentityServiceImpl {
     /// set at startup; `None` causes mTLS auth attempts to return
     /// `Status::unavailable`.
     mtls_manager: Option<Arc<MtlsManager>>,
+    /// Optional AWS IAM auth manager.
+    aws_iam_manager: Option<Arc<AwsIamManager>>,
+    /// Optional Azure Workload Identity manager.
+    azure_workload_manager: Option<Arc<AzureWorkloadManager>>,
 }
 
 impl IdentityServiceImpl {
@@ -79,6 +85,8 @@ impl IdentityServiceImpl {
         store: PrincipalStore,
         oidc_manager: Option<Arc<OidcManager>>,
         mtls_manager: Option<Arc<MtlsManager>>,
+        aws_iam_manager: Option<Arc<AwsIamManager>>,
+        azure_workload_manager: Option<Arc<AzureWorkloadManager>>,
     ) -> Self {
         Self {
             token_manager,
@@ -86,6 +94,8 @@ impl IdentityServiceImpl {
             revoked_tokens: Arc::new(RwLock::new(HashSet::new())),
             oidc_manager,
             mtls_manager,
+            aws_iam_manager,
+            azure_workload_manager,
         }
     }
 
@@ -205,6 +215,129 @@ impl IdentityService for IdentityServiceImpl {
                     Err(VaultError::ValidationError { .. }) => {}
                     Err(other) => return Err(vault_err_to_status(other)),
                 }
+
+                (principal_id, result.policies)
+            }
+            Method::AwsIam(aws_auth) => {
+                let manager = self.aws_iam_manager.as_ref().ok_or_else(|| {
+                    Status::unavailable("AWS IAM authentication is not configured")
+                })?;
+
+                let result = manager
+                    .validate(
+                        &aws_auth.iam_request_url,
+                        &aws_auth.iam_request_body,
+                        &aws_auth.iam_request_headers,
+                        &aws_auth.bound_iam_role_arn,
+                        &req.tenant_id,
+                    )
+                    .await
+                    .map_err(|e| {
+                        Status::unauthenticated(format!("AWS IAM validation failed: {e}"))
+                    })?;
+
+                // Cross-check tenant.
+                if result.tenant_id != req.tenant_id {
+                    warn!(
+                        arn = %result.arn,
+                        resolved_tenant = %result.tenant_id,
+                        request_tenant = %req.tenant_id,
+                        "AWS IAM tenant does not match requested tenant"
+                    );
+                    return Err(Status::permission_denied(
+                        "AWS account does not map to the requested tenant",
+                    ));
+                }
+
+                let principal_id = format!("aws:{}", result.arn);
+
+                // Upsert the principal record.
+                let record = PrincipalRecord {
+                    id: principal_id.clone(),
+                    tenant_id: result.tenant_id.clone(),
+                    display_name: result.display_name.clone(),
+                    auth_method: AuthMethod::AwsIam {
+                        account_id: result.account_id.clone(),
+                        arn: result.arn.clone(),
+                    },
+                    policies: result.policies.clone(),
+                    created_at: Utc::now(),
+                };
+
+                match self.store.create_principal(record) {
+                    Ok(()) => {}
+                    Err(VaultError::ValidationError { .. }) => {}
+                    Err(other) => return Err(vault_err_to_status(other)),
+                }
+
+                info!(
+                    principal_id = %principal_id,
+                    arn = %result.arn,
+                    account_id = %result.account_id,
+                    "AWS IAM principal authenticated"
+                );
+
+                (principal_id, result.policies)
+            }
+            Method::AzureWorkload(azure_auth) => {
+                let manager = self.azure_workload_manager.as_ref().ok_or_else(|| {
+                    Status::unavailable("Azure Workload Identity authentication is not configured")
+                })?;
+
+                let result = manager
+                    .validate(
+                        &azure_auth.jwt,
+                        &azure_auth.azure_tenant_id,
+                        &azure_auth.subscription_id,
+                        &req.tenant_id,
+                    )
+                    .await
+                    .map_err(|e| {
+                        Status::unauthenticated(format!(
+                            "Azure Workload Identity validation failed: {e}"
+                        ))
+                    })?;
+
+                // Cross-check tenant.
+                if result.tenant_id != req.tenant_id {
+                    warn!(
+                        object_id = %result.object_id,
+                        resolved_tenant = %result.tenant_id,
+                        request_tenant = %req.tenant_id,
+                        "Azure tenant does not match requested tenant"
+                    );
+                    return Err(Status::permission_denied(
+                        "Azure AD tenant does not map to the requested tenant",
+                    ));
+                }
+
+                let principal_id = format!("azure:{}", result.object_id);
+
+                // Upsert the principal record.
+                let record = PrincipalRecord {
+                    id: principal_id.clone(),
+                    tenant_id: result.tenant_id.clone(),
+                    display_name: result.display_name.clone(),
+                    auth_method: AuthMethod::AzureWorkload {
+                        object_id: result.object_id.clone(),
+                        azure_tenant_id: result.azure_tenant_id.clone(),
+                    },
+                    policies: result.policies.clone(),
+                    created_at: Utc::now(),
+                };
+
+                match self.store.create_principal(record) {
+                    Ok(()) => {}
+                    Err(VaultError::ValidationError { .. }) => {}
+                    Err(other) => return Err(vault_err_to_status(other)),
+                }
+
+                info!(
+                    principal_id = %principal_id,
+                    object_id = %result.object_id,
+                    azure_tenant = %result.azure_tenant_id,
+                    "Azure Workload Identity principal authenticated"
+                );
 
                 (principal_id, result.policies)
             }

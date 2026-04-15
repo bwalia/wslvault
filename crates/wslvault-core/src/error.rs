@@ -54,6 +54,9 @@ pub enum VaultError {
     #[error("invalid operation: {reason}")]
     InvalidOperation { reason: String },
 
+    #[error("quota exceeded: {reason}")]
+    QuotaExceeded { reason: String },
+
     // Storage errors
     #[error("database error: {reason}")]
     Database { reason: String },
@@ -100,6 +103,7 @@ impl VaultError {
             VaultError::VersionDestroyed { .. } => "version_destroyed",
             VaultError::ValidationError { .. } => "validation_error",
             VaultError::InvalidOperation { .. } => "invalid_operation",
+            VaultError::QuotaExceeded { .. } => "quota_exceeded",
             VaultError::Database { .. } => "database_error",
             VaultError::Storage { .. } => "storage_error",
             VaultError::ServiceUnavailable { .. } => "service_unavailable",
@@ -121,6 +125,7 @@ impl VaultError {
             | VaultError::LeaseNotFound { .. } => 404,
             VaultError::CasConflict { .. } => 409,
             VaultError::VersionDestroyed { .. } => 410,
+            VaultError::QuotaExceeded { .. } => 429,
             VaultError::ValidationError { .. }
             | VaultError::InvalidPath { .. }
             | VaultError::InvalidOperation { .. } => 400,

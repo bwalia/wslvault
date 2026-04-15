@@ -14,11 +14,14 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod api_keys;
+mod aws_iam;
+mod azure_workload;
 mod grpc;
 mod health;
 mod mtls;
 mod oidc;
 mod openapi;
+mod quota_handlers;
 mod scim;
 mod store;
 mod tenant_handlers;
@@ -259,8 +262,98 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
-    let identity_svc =
-        IdentityServiceImpl::new(token_manager, principal_store, oidc_manager, mtls_manager);
+    // Build the optional AWS IAM manager from environment variables.
+    let aws_iam_manager: Option<Arc<aws_iam::AwsIamManager>> = {
+        let enabled = matches!(
+            std::env::var("VAULT_AWS_IAM_ENABLED")
+                .unwrap_or_default()
+                .to_lowercase()
+                .as_str(),
+            "true" | "1" | "yes"
+        );
+        if enabled {
+            let mut config = aws_iam::AwsIamConfig::default();
+            if let Ok(endpoint) = std::env::var("VAULT_AWS_STS_ENDPOINT") {
+                config.sts_endpoint = endpoint;
+            }
+            if let Ok(policies) = std::env::var("VAULT_AWS_IAM_DEFAULT_POLICIES") {
+                config.default_policies = policies
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            if let Ok(arns) = std::env::var("VAULT_AWS_IAM_BOUND_ROLE_ARNS") {
+                config.bound_iam_role_arns = arns
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            // Parse account→tenant mapping from JSON: {"123456789012":"tenant-uuid",...}
+            if let Ok(mapping_json) = std::env::var("VAULT_AWS_ACCOUNT_TENANT_MAP") {
+                if let Ok(map) = serde_json::from_str(&mapping_json) {
+                    config.account_tenant_map = map;
+                }
+            }
+            info!("AWS IAM authentication enabled");
+            Some(Arc::new(aws_iam::AwsIamManager::new(config)))
+        } else {
+            warn!("AWS IAM authentication disabled (set VAULT_AWS_IAM_ENABLED=true to enable)");
+            None
+        }
+    };
+
+    // Build the optional Azure Workload Identity manager.
+    let azure_workload_manager: Option<Arc<azure_workload::AzureWorkloadManager>> = {
+        let enabled = matches!(
+            std::env::var("VAULT_AZURE_WORKLOAD_ENABLED")
+                .unwrap_or_default()
+                .to_lowercase()
+                .as_str(),
+            "true" | "1" | "yes"
+        );
+        if enabled {
+            let mut config = azure_workload::AzureWorkloadConfig::default();
+            if let Ok(audience) = std::env::var("VAULT_AZURE_EXPECTED_AUDIENCE") {
+                config.expected_audience = audience;
+            }
+            if let Ok(policies) = std::env::var("VAULT_AZURE_DEFAULT_POLICIES") {
+                config.default_policies = policies
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            if let Ok(subs) = std::env::var("VAULT_AZURE_BOUND_SUBSCRIPTION_IDS") {
+                config.bound_subscription_ids = subs
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+            }
+            // Parse Azure tenant→wslvault tenant mapping from JSON
+            if let Ok(mapping_json) = std::env::var("VAULT_AZURE_TENANT_MAP") {
+                if let Ok(map) = serde_json::from_str(&mapping_json) {
+                    config.azure_tenant_map = map;
+                }
+            }
+            info!("Azure Workload Identity authentication enabled");
+            Some(Arc::new(azure_workload::AzureWorkloadManager::new(config)))
+        } else {
+            warn!("Azure Workload Identity disabled (set VAULT_AZURE_WORKLOAD_ENABLED=true to enable)");
+            None
+        }
+    };
+
+    let identity_svc = IdentityServiceImpl::new(
+        token_manager,
+        principal_store,
+        oidc_manager,
+        mtls_manager,
+        aws_iam_manager,
+        azure_workload_manager,
+    );
     let grpc_service = IdentityServiceServer::new(identity_svc);
 
     // Build the tenant store (database-backed when DATABASE_URL is set,
@@ -275,11 +368,55 @@ async fn main() -> Result<(), anyhow::Error> {
         token_manager: token_manager_for_api_keys,
     };
 
-    // Construct the SCIM shared state backed by the principal store.
-    let scim_state = scim::ScimState::new(principal_store_for_scim);
+    // Construct the SCIM shared state.  When DATABASE_URL is set, use
+    // PostgreSQL for durable SCIM persistence; otherwise fall back to the
+    // in-memory store (suitable for tests and single-instance dev).
+    let scim_state = match std::env::var("DATABASE_URL") {
+        Ok(database_url) if !database_url.is_empty() => {
+            info!("SCIM: connecting to PostgreSQL for persistent storage");
+            let scim_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&database_url)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to connect to PostgreSQL for SCIM: {e}")
+                })?;
+            let pg_store = scim::scim_store::PgScimStore::new(scim_pool);
+            scim::ScimState::with_store(
+                std::sync::Arc::new(pg_store),
+                principal_store_for_scim,
+            )
+        }
+        _ => {
+            warn!("SCIM: DATABASE_URL not set; using in-memory store (data lost on restart)");
+            scim::ScimState::new(principal_store_for_scim)
+        }
+    };
+
+    // Build the quota management state.  Requires DATABASE_URL for the
+    // PostgreSQL-backed tenant_quotas table; falls back to None (endpoints
+    // return 503) when no database is configured.
+    let quota_state = quota_handlers::QuotaState {
+        pool: match std::env::var("DATABASE_URL") {
+            Ok(url) if !url.is_empty() => {
+                let quota_pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(&url)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!("failed to connect to PostgreSQL for quotas: {e}")
+                    })?;
+                Some(wslvault_storage::pool::DbPool::from_pool(quota_pool))
+            }
+            _ => {
+                warn!("Quota management disabled: DATABASE_URL not set");
+                None
+            }
+        },
+    };
 
     // Build the HTTP router: health probes + tenant CRUD + API key endpoints
-    // + SCIM 2.0 provisioning endpoints.
+    // + SCIM 2.0 provisioning + quota management endpoints.
     //
     // Swagger UI is served at /swagger-ui (OpenAPI JSON at
     // /api-docs/openapi.json) for interactive API exploration.
@@ -291,6 +428,7 @@ async fn main() -> Result<(), anyhow::Error> {
     let http_app: Router = health::router()
         .merge(tenant_handlers::router(tenant_store))
         .merge(api_keys::router(api_key_state))
+        .merge(quota_handlers::router(quota_state))
         .merge(scim::router().with_state(scim_state))
         .merge(
             SwaggerUi::new("/swagger-ui")

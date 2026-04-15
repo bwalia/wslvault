@@ -1,8 +1,7 @@
 //! SCIM 2.0 User endpoint handlers (RFC 7644 §3).
 //!
-//! Provides the five standard SCIM user operations backed by an in-memory
-//! `HashMap<String, ScimUser>` protected by an `Arc<RwLock<…>>` that is
-//! shared via `ScimState`.
+//! Provides the five standard SCIM user operations backed by a pluggable
+//! [`ScimStore`] (in-memory or PostgreSQL) that is shared via `ScimState`.
 //!
 //! When a user is created via SCIM, a matching `PrincipalRecord` is also
 //! inserted into the identity-service's `PrincipalStore` so that wslvault
@@ -124,23 +123,18 @@ pub async fn create_user(
     }
 
     // Enforce uniqueness of userName across the store.
-    {
-        let users = match state.users.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(error = %e, "user store lock poisoned");
-                return internal_error("user store unavailable").into_response();
-            }
-        };
-        let already_exists = users
-            .values()
-            .any(|u| u.user_name.eq_ignore_ascii_case(&body.user_name));
-        if already_exists {
+    match state.store.user_exists_by_username(&body.user_name).await {
+        Ok(true) => {
             return conflict(format!(
                 "User with userName '{}' already exists",
                 body.user_name
             ))
             .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(error = %e, "SCIM store error checking username uniqueness");
+            return internal_error("user store unavailable").into_response();
         }
     }
 
@@ -181,27 +175,19 @@ pub async fn create_user(
         warn!(user_id = %user_id, error = %e, "could not create principal record for SCIM user");
     }
 
-    let user = body.clone();
-
-    {
-        let mut users = match state.users.write() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(error = %e, "user store lock poisoned on write");
-                return internal_error("user store unavailable").into_response();
-            }
-        };
-        users.insert(user_id.clone(), user.clone());
+    if let Err(e) = state.store.insert_user(&body).await {
+        warn!(error = %e, "SCIM store error inserting user");
+        return internal_error("user store unavailable").into_response();
     }
 
-    info!(user_id = %user_id, user_name = %user.user_name, "SCIM user created");
+    info!(user_id = %user_id, user_name = %body.user_name, "SCIM user created");
 
     let mut headers = HeaderMap::new();
     if let Ok(location) = user_location(&user_id).parse() {
         headers.insert("Location", location);
     }
 
-    (StatusCode::CREATED, headers, Json(user)).into_response()
+    (StatusCode::CREATED, headers, Json(body)).into_response()
 }
 
 /// `GET /scim/v2/Users/:id` — retrieve a single user by its server-assigned ID.
@@ -212,17 +198,13 @@ pub async fn get_user(
     State(state): State<ScimState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let users = match state.users.read() {
-        Ok(guard) => guard,
+    match state.store.get_user(&id).await {
+        Ok(Some(user)) => (StatusCode::OK, Json(user)).into_response(),
+        Ok(None) => not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "user store lock poisoned");
-            return internal_error("user store unavailable").into_response();
+            warn!(error = %e, "SCIM store error getting user");
+            internal_error("user store unavailable").into_response()
         }
-    };
-
-    match users.get(&id) {
-        Some(user) => (StatusCode::OK, Json(user.clone())).into_response(),
-        None => not_found(&id).into_response(),
     }
 }
 
@@ -234,41 +216,31 @@ pub async fn list_users(
     State(state): State<ScimState>,
     Query(params): Query<ScimListParams>,
 ) -> impl IntoResponse {
-    let users = match state.users.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            warn!(error = %e, "user store lock poisoned");
-            return internal_error("user store unavailable").into_response();
-        }
-    };
+    // Parse optional userName filter.
+    let filter_username = params
+        .filter
+        .as_deref()
+        .and_then(parse_username_filter);
 
-    // Collect all users then apply optional userName filter.
-    let mut matched: Vec<ScimUser> = users.values().cloned().collect();
-
-    if let Some(filter_str) = &params.filter {
-        if let Some(target_username) = parse_username_filter(filter_str) {
-            matched.retain(|u| u.user_name.eq_ignore_ascii_case(&target_username));
-        }
-        // Unsupported filter expressions return all results (permissive).
-    }
-
-    let total = matched.len();
     let start_index = params.start_index.unwrap_or(1).max(1);
     let page_size = params.count.unwrap_or(100);
-
-    // Convert 1-based SCIM startIndex to 0-based Rust slice offset.
     let offset = start_index.saturating_sub(1);
-    let page: Vec<ScimUser> = matched
-        .into_iter()
-        .skip(offset)
-        .take(page_size)
-        .collect();
 
-    (
-        StatusCode::OK,
-        Json(ScimListResponse::new(page, total, start_index)),
-    )
-        .into_response()
+    match state
+        .store
+        .list_users(filter_username.as_deref(), offset, page_size)
+        .await
+    {
+        Ok((page, total)) => (
+            StatusCode::OK,
+            Json(ScimListResponse::new(page, total, start_index)),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(error = %e, "SCIM store error listing users");
+            internal_error("user store unavailable").into_response()
+        }
+    }
 }
 
 /// `PUT /scim/v2/Users/:id` — fully replace a user resource.
@@ -283,17 +255,13 @@ pub async fn replace_user(
         return bad_request("userName must not be empty").into_response();
     }
 
-    let mut users = match state.users.write() {
-        Ok(guard) => guard,
+    let existing = match state.store.get_user(&id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "user store lock poisoned");
+            warn!(error = %e, "SCIM store error getting user for replace");
             return internal_error("user store unavailable").into_response();
         }
-    };
-
-    let existing = match users.get(&id) {
-        Some(u) => u.clone(),
-        None => return not_found(&id).into_response(),
     };
 
     // Preserve the server-assigned id and creation timestamp.
@@ -312,7 +280,10 @@ pub async fn replace_user(
     // Preserve group membership (managed by group handlers only).
     body.groups = existing.groups;
 
-    users.insert(id.clone(), body.clone());
+    if let Err(e) = state.store.update_user(&body).await {
+        warn!(error = %e, "SCIM store error replacing user");
+        return internal_error("user store unavailable").into_response();
+    }
 
     info!(user_id = %id, "SCIM user replaced");
     (StatusCode::OK, Json(body)).into_response()
@@ -331,27 +302,23 @@ pub async fn update_user(
     Path(id): Path<String>,
     Json(patch): Json<super::schemas::ScimPatchOp>,
 ) -> impl IntoResponse {
-    let mut users = match state.users.write() {
-        Ok(guard) => guard,
+    let mut user = match state.store.get_user(&id).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "user store lock poisoned");
+            warn!(error = %e, "SCIM store error getting user for patch");
             return internal_error("user store unavailable").into_response();
         }
-    };
-
-    let user = match users.get_mut(&id) {
-        Some(u) => u,
-        None => return not_found(&id).into_response(),
     };
 
     for op in patch.operations {
         match op.op {
             PatchOpType::Replace | PatchOpType::Add => {
-                apply_user_patch(user, op.path.as_deref(), op.value);
+                apply_user_patch(&mut user, op.path.as_deref(), op.value);
             }
             PatchOpType::Remove => {
                 if let Some(path) = op.path.as_deref() {
-                    apply_user_remove(user, path);
+                    apply_user_remove(&mut user, path);
                 }
             }
         }
@@ -362,9 +329,13 @@ pub async fn update_user(
         meta.last_modified = Utc::now().to_rfc3339();
     }
 
-    let patched = user.clone();
+    if let Err(e) = state.store.update_user(&user).await {
+        warn!(error = %e, "SCIM store error patching user");
+        return internal_error("user store unavailable").into_response();
+    }
+
     info!(user_id = %id, "SCIM user patched");
-    (StatusCode::OK, Json(patched)).into_response()
+    (StatusCode::OK, Json(user)).into_response()
 }
 
 /// Applies an `add` or `replace` patch operation to a mutable user.
@@ -443,20 +414,17 @@ pub async fn delete_user(
     State(state): State<ScimState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut users = match state.users.write() {
-        Ok(guard) => guard,
-        Err(e) => {
-            warn!(error = %e, "user store lock poisoned");
-            return internal_error("user store unavailable").into_response();
+    match state.store.delete_user(&id).await {
+        Ok(true) => {
+            info!(user_id = %id, "SCIM user deleted");
+            StatusCode::NO_CONTENT.into_response()
         }
-    };
-
-    if users.remove(&id).is_none() {
-        return not_found(&id).into_response();
+        Ok(false) => not_found(&id).into_response(),
+        Err(e) => {
+            warn!(error = %e, "SCIM store error deleting user");
+            internal_error("user store unavailable").into_response()
+        }
     }
-
-    info!(user_id = %id, "SCIM user deleted");
-    StatusCode::NO_CONTENT.into_response()
 }
 
 // ---------------------------------------------------------------------------

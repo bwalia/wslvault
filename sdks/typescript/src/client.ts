@@ -118,7 +118,7 @@ class BaseSection {
 class SecretsSection extends BaseSection {
   /** Read a secret at *path*. */
   async get(path: string): Promise<SecretData> {
-    return this.get<SecretData>(`/v1/secret/data/${path}`);
+    return super.get<SecretData>(`/v1/secret/data/${path}`);
   }
 
   /** Write *data* to a secret at *path*. */
@@ -136,7 +136,7 @@ class SecretsSection extends BaseSection {
 
   /** List secret paths under *prefix*. */
   async list(prefix: string): Promise<ListResponse> {
-    return this.get<ListResponse>("/v1/secret/list", { prefix });
+    return super.get<ListResponse>("/v1/secret/list", { prefix });
   }
 }
 

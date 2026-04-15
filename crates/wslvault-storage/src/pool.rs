@@ -50,6 +50,15 @@ impl DbPool {
         Ok(Self { inner: pool })
     }
 
+    /// Wrap an existing sqlx `PgPool` in a `DbPool`.
+    ///
+    /// Useful when the caller already has a pool (e.g. created via
+    /// `PgPoolOptions::new().connect(...)` directly) and needs the `DbPool`
+    /// newtype for compatibility with the storage layer.
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { inner: pool }
+    }
+
     /// Access the underlying sqlx pool for direct queries.
     pub fn inner(&self) -> &PgPool {
         &self.inner

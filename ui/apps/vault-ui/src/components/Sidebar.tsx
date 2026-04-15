@@ -15,6 +15,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ShieldCheck,
+  Globe,
+  Server,
+  UserCog,
 } from 'lucide-react'
 
 // FileText is imported to keep the icon list complete; used for future extensions
@@ -35,6 +38,14 @@ const navGroups = [
       { href: '/policies', label: 'Policies', icon: Shield },
       { href: '/identity', label: 'Identity', icon: Users },
       { href: '/leases', label: 'Leases', icon: Key },
+      { href: '/scim', label: 'SCIM Admin', icon: UserCog },
+    ],
+  },
+  {
+    label: 'Infrastructure',
+    items: [
+      { href: '/regions', label: 'Regions', icon: Globe },
+      { href: '/cluster', label: 'Cluster Health', icon: Server },
     ],
   },
   {

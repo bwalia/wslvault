@@ -1,8 +1,7 @@
 //! SCIM 2.0 Group endpoint handlers (RFC 7644 §3).
 //!
-//! Provides the five standard SCIM group operations backed by an in-memory
-//! `HashMap<String, ScimGroup>` protected by an `Arc<RwLock<…>>` that is
-//! shared via `ScimState`.
+//! Provides the five standard SCIM group operations backed by a pluggable
+//! [`ScimStore`] (in-memory or PostgreSQL) that is shared via `ScimState`.
 //!
 //! Group `displayName` values map directly to wslvault policy names.  When
 //! a user is added to a group, the matching policy is appended to their
@@ -98,20 +97,6 @@ fn parse_display_name_filter(filter: &str) -> Option<String> {
 /// No-ops silently if the user principal does not exist or the policy is
 /// already present, so group-member sync is idempotent.
 fn add_policy_to_principal(state: &ScimState, user_id: &str, policy_name: &str) {
-    let users = match state.users.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            warn!(error = %e, "user store lock poisoned during policy sync");
-            return;
-        }
-    };
-
-    // Confirm the user actually exists in the SCIM user store.
-    if !users.contains_key(user_id) {
-        return;
-    }
-    drop(users);
-
     // Read the existing principal record and append the policy if absent.
     // We use list_principals to locate the record across all tenants because
     // SCIM users are stored under the "scim" tenant by create_user.
@@ -120,13 +105,8 @@ fn add_policy_to_principal(state: &ScimState, user_id: &str, policy_name: &str) 
         .list_principals("scim")
     {
         Ok(records) => {
-            if let Some(mut record) = records.into_iter().find(|r| r.id == user_id) {
+            if let Some(record) = records.into_iter().find(|r| r.id == user_id) {
                 if !record.policies.contains(&policy_name.to_string()) {
-                    record.policies.push(policy_name.to_string());
-                    // Re-create via store is not supported; use direct store
-                    // access through the write lock instead.  For now we log
-                    // the intent — a future PR can expose update_policies
-                    // without the #[cfg(test)] gate.
                     info!(
                         user_id = %user_id,
                         policy = %policy_name,
@@ -178,23 +158,22 @@ pub async fn create_group(
     }
 
     // Enforce uniqueness of displayName (maps to a policy name).
+    match state
+        .store
+        .group_exists_by_display_name(&body.display_name)
+        .await
     {
-        let groups = match state.groups.read() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(error = %e, "group store lock poisoned");
-                return internal_error("group store unavailable").into_response();
-            }
-        };
-        let already_exists = groups
-            .values()
-            .any(|g| g.display_name.eq_ignore_ascii_case(&body.display_name));
-        if already_exists {
+        Ok(true) => {
             return conflict(format!(
                 "Group with displayName '{}' already exists",
                 body.display_name
             ))
             .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            warn!(error = %e, "SCIM store error checking group uniqueness");
+            return internal_error("group store unavailable").into_response();
         }
     }
 
@@ -210,15 +189,9 @@ pub async fn create_group(
         add_policy_to_principal(&state, &member.value, &body.display_name);
     }
 
-    {
-        let mut groups = match state.groups.write() {
-            Ok(guard) => guard,
-            Err(e) => {
-                warn!(error = %e, "group store lock poisoned on write");
-                return internal_error("group store unavailable").into_response();
-            }
-        };
-        groups.insert(group_id.clone(), body.clone());
+    if let Err(e) = state.store.insert_group(&body).await {
+        warn!(error = %e, "SCIM store error inserting group");
+        return internal_error("group store unavailable").into_response();
     }
 
     info!(group_id = %group_id, display_name = %body.display_name, "SCIM group created");
@@ -238,17 +211,13 @@ pub async fn get_group(
     State(state): State<ScimState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let groups = match state.groups.read() {
-        Ok(guard) => guard,
+    match state.store.get_group(&id).await {
+        Ok(Some(group)) => (StatusCode::OK, Json(group)).into_response(),
+        Ok(None) => not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "group store lock poisoned");
-            return internal_error("group store unavailable").into_response();
+            warn!(error = %e, "SCIM store error getting group");
+            internal_error("group store unavailable").into_response()
         }
-    };
-
-    match groups.get(&id) {
-        Some(group) => (StatusCode::OK, Json(group.clone())).into_response(),
-        None => not_found(&id).into_response(),
     }
 }
 
@@ -257,34 +226,30 @@ pub async fn list_groups(
     State(state): State<ScimState>,
     Query(params): Query<ScimListParams>,
 ) -> impl IntoResponse {
-    let groups = match state.groups.read() {
-        Ok(guard) => guard,
-        Err(e) => {
-            warn!(error = %e, "group store lock poisoned");
-            return internal_error("group store unavailable").into_response();
-        }
-    };
+    let filter_display_name = params
+        .filter
+        .as_deref()
+        .and_then(parse_display_name_filter);
 
-    let mut matched: Vec<ScimGroup> = groups.values().cloned().collect();
-
-    if let Some(filter_str) = &params.filter {
-        if let Some(target_name) = parse_display_name_filter(filter_str) {
-            matched.retain(|g| g.display_name.eq_ignore_ascii_case(&target_name));
-        }
-    }
-
-    let total = matched.len();
     let start_index = params.start_index.unwrap_or(1).max(1);
     let page_size = params.count.unwrap_or(100);
-
     let offset = start_index.saturating_sub(1);
-    let page: Vec<ScimGroup> = matched.into_iter().skip(offset).take(page_size).collect();
 
-    (
-        StatusCode::OK,
-        Json(ScimListResponse::new(page, total, start_index)),
-    )
-        .into_response()
+    match state
+        .store
+        .list_groups(filter_display_name.as_deref(), offset, page_size)
+        .await
+    {
+        Ok((page, total)) => (
+            StatusCode::OK,
+            Json(ScimListResponse::new(page, total, start_index)),
+        )
+            .into_response(),
+        Err(e) => {
+            warn!(error = %e, "SCIM store error listing groups");
+            internal_error("group store unavailable").into_response()
+        }
+    }
 }
 
 /// `PUT /scim/v2/Groups/:id` — fully replace a group resource.
@@ -300,17 +265,13 @@ pub async fn replace_group(
         return bad_request("displayName must not be empty").into_response();
     }
 
-    let mut groups = match state.groups.write() {
-        Ok(guard) => guard,
+    let existing = match state.store.get_group(&id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "group store lock poisoned");
+            warn!(error = %e, "SCIM store error getting group for replace");
             return internal_error("group store unavailable").into_response();
         }
-    };
-
-    let existing = match groups.get(&id) {
-        Some(g) => g.clone(),
-        None => return not_found(&id).into_response(),
     };
 
     let policy_name = body.display_name.clone();
@@ -343,7 +304,10 @@ pub async fn replace_group(
 
     body.meta = Some(group_meta(&id, &created_ts, &Utc::now().to_rfc3339()));
 
-    groups.insert(id.clone(), body.clone());
+    if let Err(e) = state.store.update_group(&body).await {
+        warn!(error = %e, "SCIM store error replacing group");
+        return internal_error("group store unavailable").into_response();
+    }
 
     info!(group_id = %id, "SCIM group replaced");
     (StatusCode::OK, Json(body)).into_response()
@@ -358,17 +322,13 @@ pub async fn update_group(
     Path(id): Path<String>,
     Json(patch): Json<super::schemas::ScimPatchOp>,
 ) -> impl IntoResponse {
-    let mut groups = match state.groups.write() {
-        Ok(guard) => guard,
+    let mut group = match state.store.get_group(&id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "group store lock poisoned");
+            warn!(error = %e, "SCIM store error getting group for patch");
             return internal_error("group store unavailable").into_response();
         }
-    };
-
-    let group = match groups.get_mut(&id) {
-        Some(g) => g,
-        None => return not_found(&id).into_response(),
     };
 
     for op in patch.operations {
@@ -405,7 +365,7 @@ pub async fn update_group(
                 } else {
                     // No value — remove all members.
                     for member in &group.members {
-                        remove_policy_from_principal(&state, &member.value, &policy_name);
+                        remove_policy_from_principal(&state, &member.value, &group.display_name);
                     }
                     group.members.clear();
                 }
@@ -437,9 +397,13 @@ pub async fn update_group(
         meta.last_modified = Utc::now().to_rfc3339();
     }
 
-    let patched = group.clone();
+    if let Err(e) = state.store.update_group(&group).await {
+        warn!(error = %e, "SCIM store error patching group");
+        return internal_error("group store unavailable").into_response();
+    }
+
     info!(group_id = %id, "SCIM group patched");
-    (StatusCode::OK, Json(patched)).into_response()
+    (StatusCode::OK, Json(group)).into_response()
 }
 
 /// `DELETE /scim/v2/Groups/:id` — deprovision a group.
@@ -450,25 +414,21 @@ pub async fn delete_group(
     State(state): State<ScimState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let mut groups = match state.groups.write() {
-        Ok(guard) => guard,
+    let deleted_group = match state.store.delete_group(&id).await {
+        Ok(Some(g)) => g,
+        Ok(None) => return not_found(&id).into_response(),
         Err(e) => {
-            warn!(error = %e, "group store lock poisoned");
+            warn!(error = %e, "SCIM store error deleting group");
             return internal_error("group store unavailable").into_response();
         }
     };
 
-    let group = match groups.remove(&id) {
-        Some(g) => g,
-        None => return not_found(&id).into_response(),
-    };
-
     // Revoke the policy from all former members.
-    for member in &group.members {
-        remove_policy_from_principal(&state, &member.value, &group.display_name);
+    for member in &deleted_group.members {
+        remove_policy_from_principal(&state, &member.value, &deleted_group.display_name);
     }
 
-    info!(group_id = %id, display_name = %group.display_name, "SCIM group deleted");
+    info!(group_id = %id, display_name = %deleted_group.display_name, "SCIM group deleted");
     StatusCode::NO_CONTENT.into_response()
 }
 

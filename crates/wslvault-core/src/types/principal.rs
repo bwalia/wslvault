@@ -44,6 +44,16 @@ pub enum AuthMethod {
     Mtls {
         fingerprint: String,
     },
+    /// AWS IAM authentication via STS GetCallerIdentity.
+    AwsIam {
+        account_id: String,
+        arn: String,
+    },
+    /// Azure Workload / Managed Identity authentication.
+    AzureWorkload {
+        object_id: String,
+        azure_tenant_id: String,
+    },
     /// Used only for SCIM provisioning operations.
     Scim,
     /// Used by services calling each other within the cluster.
