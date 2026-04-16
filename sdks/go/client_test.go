@@ -263,7 +263,7 @@ func TestClient_RetriesOn503(t *testing.T) {
 
 func TestClient_DoesNotRetryOn404(t *testing.T) {
 	callCount := 0
-	_, client := newHandlerServer(t, func(w http.ResponseWriter, _ *http.Request) {
+	_, _ = newHandlerServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		callCount++
 		w.WriteHeader(http.StatusNotFound)
 	})
