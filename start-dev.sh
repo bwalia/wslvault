@@ -11,7 +11,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UI_DIR="$ROOT_DIR/ui/apps/vault-ui"
-UI_PORT=3001
+UI_PORT=3011
 UI_PID_FILE="$ROOT_DIR/.ui.pid"
 
 # Colors
@@ -90,7 +90,7 @@ start_ui() {
 
     log "Starting Web UI on port $UI_PORT..."
     cd "$UI_DIR"
-    npx next dev --turbopack -p "$UI_PORT" > "$ROOT_DIR/.ui.log" 2>&1 &
+    npx next dev --turbopack -p "$UI_PORT" -H 0.0.0.0 > "$ROOT_DIR/.ui.log" 2>&1 &
     echo $! > "$UI_PID_FILE"
 
     # Wait for UI to respond
