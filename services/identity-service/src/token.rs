@@ -18,11 +18,21 @@ pub struct TokenClaims {
     pub tenant_id: String,
     /// Policy names granted to this principal at issuance time.
     pub policies: Vec<String>,
+    /// Issuer — identifies the WSLVault deployment that minted the token.
+    /// Validated on decode to prevent cross-environment token replay.
+    pub iss: String,
+    /// Audience — the intended recipient of the token. Validated on decode.
+    pub aud: String,
     /// Issued-at time as a Unix timestamp.
     pub iat: i64,
     /// Expiry time as a Unix timestamp.
     pub exp: i64,
 }
+
+/// Default issuer claim when `VAULT_JWT_ISSUER` is not configured.
+pub const DEFAULT_ISSUER: &str = "wslvault";
+/// Default audience claim when `VAULT_JWT_AUDIENCE` is not configured.
+pub const DEFAULT_AUDIENCE: &str = "wslvault";
 
 /// Manages JWT issuance and validation using HMAC-SHA256 (HS256).
 ///
@@ -34,22 +44,42 @@ pub struct TokenManager {
     decoding_key: DecodingKey,
     /// Validation config cached here to avoid re-constructing on every call.
     validation: Validation,
+    /// Issuer stamped into every issued token's `iss` claim.
+    issuer: String,
+    /// Audience stamped into every issued token's `aud` claim.
+    audience: String,
 }
 
 impl TokenManager {
-    /// Creates a new `TokenManager` from a raw HMAC secret byte slice.
+    /// Creates a new `TokenManager` from a raw HMAC secret byte slice, using
+    /// the default issuer and audience.
     ///
     /// The secret should be at least 32 bytes of high-entropy random data.
     pub fn new(secret: &[u8]) -> Self {
+        Self::with_issuer_audience(secret, DEFAULT_ISSUER, DEFAULT_AUDIENCE)
+    }
+
+    /// Creates a `TokenManager` with explicit issuer and audience claims.
+    ///
+    /// Issued tokens carry `iss`/`aud`, and validation rejects any token whose
+    /// claims do not match, preventing replay of tokens minted for a different
+    /// WSLVault deployment or audience.
+    pub fn with_issuer_audience(secret: &[u8], issuer: &str, audience: &str) -> Self {
         let mut validation = Validation::new(Algorithm::HS256);
         // Enforce expiry check with zero leeway so tokens expire precisely.
         validation.validate_exp = true;
         validation.leeway = 0;
+        // Bind tokens to this deployment's issuer and audience.
+        validation.set_issuer(&[issuer]);
+        validation.set_audience(&[audience]);
+        validation.validate_aud = true;
 
         Self {
             encoding_key: EncodingKey::from_secret(secret),
             decoding_key: DecodingKey::from_secret(secret),
             validation,
+            issuer: issuer.to_string(),
+            audience: audience.to_string(),
         }
     }
 
@@ -74,6 +104,8 @@ impl TokenManager {
             sub: principal_id.to_string(),
             tenant_id: tenant_id.to_string(),
             policies,
+            iss: self.issuer.clone(),
+            aud: self.audience.clone(),
             iat: now.timestamp(),
             exp,
         };
@@ -159,5 +191,39 @@ mod tests {
 
         let result = mgr.validate_token(&token);
         assert!(matches!(result, Err(VaultError::Unauthenticated { .. })));
+    }
+
+    #[test]
+    fn token_from_different_issuer_is_rejected() {
+        let secret = b"test-secret-that-is-at-least-32-bytes-long!!";
+        let minter = TokenManager::with_issuer_audience(secret, "wslvault-staging", "wslvault");
+        let verifier = TokenManager::with_issuer_audience(secret, "wslvault-prod", "wslvault");
+
+        let (token, _) = minter
+            .issue_token("p", "t", vec![], 3600)
+            .expect("issue should succeed");
+
+        let result = verifier.validate_token(&token);
+        assert!(
+            matches!(result, Err(VaultError::Unauthenticated { .. })),
+            "token minted by a different issuer must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn token_for_different_audience_is_rejected() {
+        let secret = b"test-secret-that-is-at-least-32-bytes-long!!";
+        let minter = TokenManager::with_issuer_audience(secret, "wslvault", "other-service");
+        let verifier = TokenManager::with_issuer_audience(secret, "wslvault", "wslvault");
+
+        let (token, _) = minter
+            .issue_token("p", "t", vec![], 3600)
+            .expect("issue should succeed");
+
+        let result = verifier.validate_token(&token);
+        assert!(
+            matches!(result, Err(VaultError::Unauthenticated { .. })),
+            "token for a different audience must be rejected, got {result:?}"
+        );
     }
 }

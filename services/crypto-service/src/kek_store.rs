@@ -1,7 +1,7 @@
 //! KEK hierarchy management for the crypto-service.
 //!
 //! The key hierarchy is:
-//!   RootKEK (loaded from VAULT_ROOT_KEY env var at startup)
+//!   RootKEK (loaded via a `RootKeyProvider` at startup — env var or AWS KMS)
 //!     -> TenantKEK (generated on first request per tenant, wrapped under RootKEK)
 //!       -> DEK (generated per-encrypt, wrapped under TenantKEK)
 //!
@@ -97,36 +97,70 @@ struct KekStoreInner {
 // auto-deref does not bridge Deref<Target=[u8; N]> to the unsized slice.
 #[allow(clippy::explicit_auto_deref)]
 impl KekStore {
-    /// Initialise the store by loading the root KEK from the `VAULT_ROOT_KEY` env var.
-    ///
-    /// `VAULT_ROOT_KEY` must be a standard base64-encoded 32-byte key.
-    /// Returns a `VaultError::Internal` if the variable is missing or malformed.
-    ///
-    /// This constructor creates an ephemeral (in-memory only) store with no database
-    /// connection.  Use [`KekStore::with_db`] when `DATABASE_URL` is available so that
-    /// key state survives pod restarts.
-    pub fn from_env() -> Result<Self, VaultError> {
-        let root_kek = Self::load_root_kek_from_env()?;
+    // ------------------------------------------------------------------
+    // Provider-facing constructors (preferred)
+    // ------------------------------------------------------------------
 
-        info!("Root KEK loaded from environment variable (ephemeral mode — no DB persistence)");
-
-        Ok(Self {
+    /// Create an ephemeral (in-memory only) store from an already-loaded root KEK.
+    ///
+    /// The `root_kek` value is produced by calling [`RootKeyProvider::load_root_key`]
+    /// before constructing the store.  Using an already-decoded key avoids a second
+    /// trip to whatever key backend is configured and keeps all raw-byte handling in
+    /// one place.
+    pub fn with_root_kek_ephemeral(root_kek: Zeroizing<[u8; 32]>) -> Self {
+        info!("KekStore initialised in ephemeral mode (no DB persistence)");
+        Self {
             inner: Arc::new(KekStoreInner {
                 root_kek,
                 tenant_keks: RwLock::new(HashMap::new()),
                 deks: RwLock::new(HashMap::new()),
                 db_pool: None,
             }),
+        }
+    }
+
+    /// Create a store with a database connection pool from an already-loaded root KEK.
+    ///
+    /// The `root_kek` value is produced by calling [`RootKeyProvider::load_root_key`]
+    /// before constructing the store.  Persists all newly generated and rotated keys
+    /// (wrapped form only) to PostgreSQL so that the in-memory caches can be restored
+    /// across restarts via [`load_from_db`].
+    pub fn with_root_kek(root_kek: Zeroizing<[u8; 32]>, pool: DbPool) -> Result<Self, VaultError> {
+        info!("KekStore initialised with database persistence");
+        Ok(Self {
+            inner: Arc::new(KekStoreInner {
+                root_kek,
+                tenant_keks: RwLock::new(HashMap::new()),
+                deks: RwLock::new(HashMap::new()),
+                db_pool: Some(pool),
+            }),
         })
     }
 
-    /// Initialise the store with a database connection pool.
+    // ------------------------------------------------------------------
+    // Legacy constructors (backward-compatible, still used by tests)
+    // ------------------------------------------------------------------
+
+    /// Initialise the store by loading the root KEK from the `VAULT_ROOT_KEY` env var.
     ///
-    /// Persists all newly generated and rotated keys (wrapped form only) to PostgreSQL
-    /// so that the in-memory caches can be restored across restarts via [`load_from_db`].
+    /// `VAULT_ROOT_KEY` must be a standard base64-encoded 32-byte key.
+    /// Returns a `VaultError::Internal` if the variable is missing or malformed.
     ///
-    /// `root_kek_b64` is the standard base64-encoded 32-byte root KEK (identical to
-    /// the value expected in `VAULT_ROOT_KEY`).
+    /// This constructor creates an ephemeral (in-memory only) store with no database
+    /// connection.  Prefer constructing via [`select_provider`] + [`with_root_kek_ephemeral`]
+    /// for new code; this method is retained for backward compatibility.
+    pub fn from_env() -> Result<Self, VaultError> {
+        let root_kek = Self::load_root_kek_from_env()?;
+        info!("Root KEK loaded from environment variable (ephemeral mode — no DB persistence)");
+        Ok(Self::with_root_kek_ephemeral(root_kek))
+    }
+
+    /// Initialise the store with a database connection pool, decoding the root KEK
+    /// from a base64 string.
+    ///
+    /// `root_kek_b64` is the standard base64-encoded 32-byte root KEK.  Prefer
+    /// constructing via [`select_provider`] + [`with_root_kek`] for new code; this
+    /// method is retained for tests and callers that already hold a base64-encoded key.
     pub fn with_db(root_kek_b64: &str, pool: DbPool) -> Result<Self, VaultError> {
         let raw_bytes = BASE64
             .decode(root_kek_b64.trim())
@@ -146,16 +180,22 @@ impl KekStore {
         let mut root_kek = Zeroizing::new([0u8; 32]);
         root_kek.copy_from_slice(&raw_bytes);
 
-        info!("Root KEK loaded; KekStore initialised with database persistence");
+        Self::with_root_kek(root_kek, pool)
+    }
 
-        Ok(Self {
+    /// Test-only constructor building an ephemeral store from a raw 32-byte
+    /// root KEK, with no database pool and no dependency on process env vars
+    /// (which would race across parallel tests).
+    #[cfg(test)]
+    pub(crate) fn new_ephemeral_for_test(root_kek_bytes: [u8; 32]) -> Self {
+        Self {
             inner: Arc::new(KekStoreInner {
-                root_kek,
+                root_kek: Zeroizing::new(root_kek_bytes),
                 tenant_keks: RwLock::new(HashMap::new()),
                 deks: RwLock::new(HashMap::new()),
-                db_pool: Some(pool),
+                db_pool: None,
             }),
-        })
+        }
     }
 
     /// Restore in-memory key caches from the database.
@@ -698,4 +738,200 @@ fn generate_random_32_bytes() -> Result<Zeroizing<[u8; 32]>, VaultError> {
             reason: format!("CSPRNG key generation failed: {e}"),
         })?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_store() -> KekStore {
+        // Deterministic non-zero root KEK so tests are reproducible.
+        let mut root = [0u8; 32];
+        for (i, b) in root.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(7).wrapping_add(1);
+        }
+        KekStore::new_ephemeral_for_test(root)
+    }
+
+    #[tokio::test]
+    async fn tenant_kek_is_stable_across_calls() {
+        let store = test_store();
+        let tenant = "tenant-a";
+
+        let kek1 = store.get_or_create_tenant_kek(tenant).await.unwrap();
+        let kek2 = store.get_or_create_tenant_kek(tenant).await.unwrap();
+
+        assert_eq!(&*kek1, &*kek2, "same tenant must yield the same KEK");
+    }
+
+    #[tokio::test]
+    async fn different_tenants_get_different_keks() {
+        let store = test_store();
+
+        let kek_a = store.get_or_create_tenant_kek("tenant-a").await.unwrap();
+        let kek_b = store.get_or_create_tenant_kek("tenant-b").await.unwrap();
+
+        assert_ne!(
+            &*kek_a, &*kek_b,
+            "distinct tenants must be cryptographically isolated"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_tenant_kek_creation_converges() {
+        let store = test_store();
+        let tenant = "tenant-race";
+
+        // Fire many concurrent first-touch requests for the same tenant. The
+        // double-checked write-lock path must converge on a single KEK rather
+        // than generating a different key per racing caller.
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let s = store.clone();
+            handles.push(tokio::spawn(async move {
+                let kek = s.get_or_create_tenant_kek(tenant).await.unwrap();
+                *kek
+            }));
+        }
+
+        let mut keys = Vec::new();
+        for h in handles {
+            keys.push(h.await.unwrap());
+        }
+
+        let first = keys[0];
+        assert!(
+            keys.iter().all(|k| *k == first),
+            "all concurrent callers must observe the same tenant KEK"
+        );
+    }
+
+    #[tokio::test]
+    async fn dek_generate_get_roundtrip() {
+        let store = test_store();
+        let tenant = "tenant-a";
+
+        let key_id = store
+            .generate_and_store_dek(tenant, "prod/db/password")
+            .await
+            .unwrap();
+
+        let dek1 = store.get_dek(&key_id).await.unwrap();
+        let dek2 = store.get_dek(&key_id).await.unwrap();
+        assert_eq!(&*dek1, &*dek2, "fetching a DEK must be deterministic");
+
+        let (wrapped, version) = store.get_dek_metadata(&key_id).await.unwrap();
+        assert!(!wrapped.is_empty(), "wrapped DEK envelope must be populated");
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn each_dek_is_unique() {
+        let store = test_store();
+        let tenant = "tenant-a";
+
+        let id1 = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
+        let id2 = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
+        assert_ne!(id1, id2, "each DEK must have a distinct key_id");
+
+        let dek1 = store.get_dek(&id1).await.unwrap();
+        let dek2 = store.get_dek(&id2).await.unwrap();
+        assert_ne!(&*dek1, &*dek2, "each DEK must be independent key material");
+    }
+
+    #[tokio::test]
+    async fn get_missing_dek_returns_key_not_found() {
+        let store = test_store();
+        let result = store.get_dek("nonexistent-key-id").await;
+        assert!(matches!(result, Err(VaultError::KeyNotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn rotate_dek_changes_key_and_bumps_version() {
+        let store = test_store();
+        let tenant = "tenant-a";
+
+        let key_id = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
+        let before = *store.get_dek(&key_id).await.unwrap();
+
+        let new_version = store.rotate_dek(tenant, &key_id).await.unwrap();
+        assert_eq!(new_version, 2, "rotation must increment the version");
+
+        let after = *store.get_dek(&key_id).await.unwrap();
+        assert_ne!(before, after, "rotation must replace the key material");
+
+        let (_, version) = store.get_dek_metadata(&key_id).await.unwrap();
+        assert_eq!(version, 2);
+    }
+
+    #[tokio::test]
+    async fn rotate_dek_rejects_wrong_tenant() {
+        let store = test_store();
+
+        let key_id = store
+            .generate_and_store_dek("tenant-owner", "ctx")
+            .await
+            .unwrap();
+
+        let result = store.rotate_dek("tenant-attacker", &key_id).await;
+        assert!(
+            matches!(result, Err(VaultError::PermissionDenied { .. })),
+            "cross-tenant rotation must be denied, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rotate_missing_dek_returns_key_not_found() {
+        let store = test_store();
+        let result = store.rotate_dek("tenant-a", "missing").await;
+        assert!(matches!(result, Err(VaultError::KeyNotFound { .. })));
+    }
+
+    #[tokio::test]
+    async fn unwrap_tenant_kek_roundtrips_and_binds_to_tenant() {
+        let store = test_store();
+        let tenant = "tenant-a";
+
+        // Create a tenant KEK, then reproduce its wrapped form to feed unwrap.
+        let raw = store.get_or_create_tenant_kek(tenant).await.unwrap();
+        let aad = format!("tenant-kek:{tenant}");
+        let envelope = encrypt_with_dek(&store.inner.root_kek, &*raw, aad.as_bytes()).unwrap();
+
+        let unwrapped = store
+            .unwrap_tenant_kek(tenant, &envelope.ciphertext_b64)
+            .unwrap();
+        assert_eq!(&*unwrapped, &*raw, "unwrap must recover the original KEK");
+
+        // AAD binds the wrapped KEK to its tenant: unwrapping under a different
+        // tenant id must fail authentication.
+        let wrong = store.unwrap_tenant_kek("tenant-other", &envelope.ciphertext_b64);
+        assert!(
+            wrong.is_err(),
+            "tenant-bound KEK must not unwrap under a different tenant"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_db_rejects_non_32_byte_root_key() {
+        // A lazily-created pool never opens a connection, so this test does not
+        // require a running database. `with_db` validates the root key length
+        // before ever touching the pool.
+        let pool = sqlx::postgres::PgPool::connect_lazy("postgres://invalid/none")
+            .expect("lazy pool construction should not connect");
+        let db = DbPool::from_pool(pool);
+
+        let short = BASE64.encode([0u8; 16]);
+        let result = KekStore::with_db(&short, db);
+        assert!(matches!(result, Err(VaultError::Internal { .. })));
+    }
+
+    #[tokio::test]
+    async fn with_db_rejects_invalid_base64_root_key() {
+        let pool = sqlx::postgres::PgPool::connect_lazy("postgres://invalid/none")
+            .expect("lazy pool construction should not connect");
+        let db = DbPool::from_pool(pool);
+
+        let result = KekStore::with_db("not!valid!base64!", db);
+        assert!(matches!(result, Err(VaultError::Internal { .. })));
+    }
 }

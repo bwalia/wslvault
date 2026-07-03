@@ -14,6 +14,7 @@ use tracing::{error, info, warn};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod api_keys;
+mod auth_methods;
 mod aws_iam;
 mod azure_workload;
 mod grpc;
@@ -51,6 +52,10 @@ struct Config {
     http_addr: SocketAddr,
     /// HMAC-SHA256 secret used to sign and verify JWTs.
     jwt_secret: Vec<u8>,
+    /// Issuer (`iss`) claim stamped into and validated on every JWT.
+    jwt_issuer: String,
+    /// Audience (`aud`) claim stamped into and validated on every JWT.
+    jwt_audience: String,
     /// Whether mTLS authentication is enabled (`VAULT_MTLS_ENABLED=true`).
     mtls_enabled: bool,
     /// Path to the PEM file containing trusted CA certificates
@@ -99,9 +104,22 @@ impl Config {
             anyhow::anyhow!("VAULT_JWT_SECRET environment variable is required but not set")
         })?;
 
-        if jwt_secret_str.is_empty() {
-            return Err(anyhow::anyhow!("VAULT_JWT_SECRET must not be empty"));
+        // HS256 requires a high-entropy secret. A short secret is brute-forceable
+        // offline from a single captured JWT, so enforce a 32-byte minimum.
+        const MIN_JWT_SECRET_LEN: usize = 32;
+        if jwt_secret_str.len() < MIN_JWT_SECRET_LEN {
+            return Err(anyhow::anyhow!(
+                "VAULT_JWT_SECRET must be at least {MIN_JWT_SECRET_LEN} bytes (got {})",
+                jwt_secret_str.len()
+            ));
         }
+
+        // Issuer/audience bind tokens to this deployment, preventing replay of
+        // tokens minted by a different WSLVault environment.
+        let jwt_issuer = std::env::var("VAULT_JWT_ISSUER")
+            .unwrap_or_else(|_| crate::token::DEFAULT_ISSUER.to_string());
+        let jwt_audience = std::env::var("VAULT_JWT_AUDIENCE")
+            .unwrap_or_else(|_| crate::token::DEFAULT_AUDIENCE.to_string());
 
         // mTLS is opt-in; any truthy value activates it.
         let mtls_enabled = matches!(
@@ -145,6 +163,8 @@ impl Config {
             grpc_addr,
             http_addr,
             jwt_secret: jwt_secret_str.into_bytes(),
+            jwt_issuer,
+            jwt_audience,
             mtls_enabled,
             mtls_ca_cert_path,
             mtls_tenant_field,
@@ -169,12 +189,19 @@ async fn main() -> Result<(), anyhow::Error> {
         "identity-service starting"
     );
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     let config = Config::from_env().map_err(|e| {
         error!(error = %e, "failed to load configuration");
         e
     })?;
 
-    let token_manager = TokenManager::new(&config.jwt_secret);
+    let token_manager = TokenManager::with_issuer_audience(
+        &config.jwt_secret,
+        &config.jwt_issuer,
+        &config.jwt_audience,
+    );
     // Clone the token manager before it is consumed by `IdentityServiceImpl`
     // so the same signing secret is available to the API key HTTP exchange endpoint.
     let token_manager_for_api_keys = token_manager.clone();
@@ -297,7 +324,12 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             info!("AWS IAM authentication enabled");
-            Some(Arc::new(aws_iam::AwsIamManager::new(config)))
+            Some(Arc::new(aws_iam::AwsIamManager::new(config).map_err(
+                |e| {
+                    error!(error = %e, "failed to build AWS IAM manager");
+                    e
+                },
+            )?))
         } else {
             warn!("AWS IAM authentication disabled (set VAULT_AWS_IAM_ENABLED=true to enable)");
             None
@@ -339,12 +371,21 @@ async fn main() -> Result<(), anyhow::Error> {
                 }
             }
             info!("Azure Workload Identity authentication enabled");
-            Some(Arc::new(azure_workload::AzureWorkloadManager::new(config)))
+            Some(Arc::new(
+                azure_workload::AzureWorkloadManager::new(config).map_err(|e| {
+                    error!(error = %e, "failed to build Azure Workload Identity manager");
+                    e
+                })?,
+            ))
         } else {
             warn!("Azure Workload Identity disabled (set VAULT_AZURE_WORKLOAD_ENABLED=true to enable)");
             None
         }
     };
+
+    // Clone oidc_manager before it is moved into the gRPC service, so the
+    // device-flow router can share the same OIDC validation state.
+    let oidc_manager_for_device = oidc_manager.clone();
 
     let identity_svc = IdentityServiceImpl::new(
         token_manager,
@@ -363,6 +404,9 @@ async fn main() -> Result<(), anyhow::Error> {
     // Build the API key manager and its associated HTTP state.
     // Uses the pre-cloned token manager so the API key exchange endpoint issues
     // JWTs with the same signing secret as the gRPC authentication flow.
+    // Pre-clone the token manager so the new auth-method routers can share
+    // the same signing key without re-creating the key material.
+    let token_manager_for_auth_methods = token_manager_for_api_keys.clone();
     let api_key_state = api_keys::ApiKeyState {
         manager: api_keys::ApiKeyManager::new(),
         token_manager: token_manager_for_api_keys,
@@ -415,6 +459,118 @@ async fn main() -> Result<(), anyhow::Error> {
         },
     };
 
+    // ── Build the optional LDAP manager ───────────────────────────────────────
+    //
+    // Enabled when `VAULT_LDAP_CONFIG` is set to a JSON-serialised
+    // `LdapConfig` object.
+    let ldap_router: Option<axum::Router> = match std::env::var("VAULT_LDAP_CONFIG") {
+        Ok(json) if !json.is_empty() => {
+            match serde_json::from_str::<auth_methods::ldap::LdapConfig>(&json) {
+                Ok(ldap_config) => {
+                    let manager = std::sync::Arc::new(
+                        auth_methods::ldap::LdapManager::new(ldap_config),
+                    );
+                    let state = auth_methods::ldap::LdapState {
+                        manager,
+                        token_manager: token_manager_for_auth_methods.clone(),
+                    };
+                    info!("LDAP authentication enabled");
+                    Some(auth_methods::ldap::router(state))
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to parse VAULT_LDAP_CONFIG; LDAP disabled");
+                    None
+                }
+            }
+        }
+        _ => {
+            warn!("LDAP authentication disabled (set VAULT_LDAP_CONFIG to enable)");
+            None
+        }
+    };
+
+    // ── Build the optional Kubernetes SA auth manager ─────────────────────────
+    //
+    // Enabled when `VAULT_K8S_CONFIG` is set to a JSON-serialised
+    // `KubernetesConfig` object.
+    let k8s_router: Option<axum::Router> = match std::env::var("VAULT_K8S_CONFIG") {
+        Ok(json) if !json.is_empty() => {
+            match serde_json::from_str::<auth_methods::kubernetes::KubernetesConfig>(&json) {
+                Ok(k8s_config) => {
+                    match auth_methods::kubernetes::KubernetesManager::new(k8s_config) {
+                        Ok(manager) => {
+                            let state = auth_methods::kubernetes::KubernetesState {
+                                manager: std::sync::Arc::new(manager),
+                                token_manager: token_manager_for_auth_methods.clone(),
+                            };
+                            info!("Kubernetes service-account authentication enabled");
+                            Some(auth_methods::kubernetes::router(state))
+                        }
+                        Err(e) => {
+                            error!(error = %e, "failed to build Kubernetes auth manager; K8s auth disabled");
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to parse VAULT_K8S_CONFIG; K8s auth disabled");
+                    None
+                }
+            }
+        }
+        _ => {
+            warn!(
+                "Kubernetes service-account authentication disabled \
+                 (set VAULT_K8S_CONFIG to enable)"
+            );
+            None
+        }
+    };
+
+    // ── Build the optional OAuth2 device-flow manager ─────────────────────────
+    //
+    // Enabled when `VAULT_DEVICE_OIDC_CONFIG` is set to a JSON-serialised
+    // `DeviceOidcConfig` object.  Requires OIDC to also be configured.
+    let device_router: Option<axum::Router> = match std::env::var("VAULT_DEVICE_OIDC_CONFIG") {
+        Ok(json) if !json.is_empty() => {
+            match serde_json::from_str::<auth_methods::oauth_device::DeviceOidcConfig>(&json) {
+                Ok(device_config) => {
+                    if let Some(oidc_mgr) = &oidc_manager_for_device {
+                        let manager = std::sync::Arc::new(
+                            auth_methods::oauth_device::DeviceFlowManager::new(
+                                device_config,
+                                oidc_mgr.clone(),
+                            ),
+                        );
+                        let state = auth_methods::oauth_device::DeviceFlowState {
+                            manager,
+                            token_manager: token_manager_for_auth_methods.clone(),
+                        };
+                        info!("OAuth2 device-flow authentication enabled");
+                        Some(auth_methods::oauth_device::router(state))
+                    } else {
+                        warn!(
+                            "VAULT_DEVICE_OIDC_CONFIG is set but VAULT_OIDC_PROVIDERS is not; \
+                             device flow requires OIDC to be configured — disabling"
+                        );
+                        None
+                    }
+                }
+                Err(e) => {
+                    error!(error = %e, "failed to parse VAULT_DEVICE_OIDC_CONFIG; device flow disabled");
+                    None
+                }
+            }
+        }
+        _ => {
+            warn!(
+                "OAuth2 device-flow authentication disabled \
+                 (set VAULT_DEVICE_OIDC_CONFIG to enable)"
+            );
+            None
+        }
+    };
+
     // Build the HTTP router: health probes + tenant CRUD + API key endpoints
     // + SCIM 2.0 provisioning + quota management endpoints.
     //
@@ -425,11 +581,34 @@ async fn main() -> Result<(), anyhow::Error> {
     use utoipa::OpenApi as _;
     use utoipa_swagger_ui::SwaggerUi;
 
-    let http_app: Router = health::router()
-        .merge(tenant_handlers::router(tenant_store))
+    // Business routes trust tenant-identity headers, so they require
+    // gateway-origin authentication (shared X-Gateway-Auth secret). Health
+    // probes and the Swagger docs are intentionally left open.
+    // Fold optional auth-method routers into the protected route set.
+    // Each is `Option<Router>` — absent when the feature is not configured.
+    let mut protected_routes: Router = tenant_handlers::router(tenant_store)
         .merge(api_keys::router(api_key_state))
         .merge(quota_handlers::router(quota_state))
-        .merge(scim::router().with_state(scim_state))
+        .merge(scim::router().with_state(scim_state));
+
+    if let Some(r) = ldap_router {
+        protected_routes = protected_routes.merge(r);
+    }
+    if let Some(r) = k8s_router {
+        protected_routes = protected_routes.merge(r);
+    }
+    if let Some(r) = device_router {
+        protected_routes = protected_routes.merge(r);
+    }
+
+    let protected_routes: Router = protected_routes
+        .layer(axum::middleware::from_fn_with_state(
+            wslvault_core::middleware::GatewayAuth::from_env(),
+            wslvault_core::middleware::require_gateway_auth,
+        ));
+
+    let http_app: Router = health::router()
+        .merge(protected_routes)
         .merge(
             SwaggerUi::new("/swagger-ui")
                 .url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),

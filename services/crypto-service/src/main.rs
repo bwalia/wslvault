@@ -14,9 +14,11 @@
 //!   2. `config/<VAULT_ENV>.toml`
 //!   3. `VAULT__*` environment variables
 //!
-//! The root KEK is loaded separately from the `VAULT_ROOT_KEY` environment
-//! variable (a standard base64-encoded 32-byte key) because it is sensitive
-//! key material that must never appear in config files.
+//! The root KEK is loaded via a pluggable `RootKeyProvider` selected by the
+//! `VAULT_ROOT_KEY_PROVIDER` environment variable (default: `env`).  The `env`
+//! provider reads `VAULT_ROOT_KEY` (base64, 32 bytes) for backward compatibility.
+//! Set `VAULT_ROOT_KEY_PROVIDER=aws-kms` (and rebuild with `--features aws-kms`)
+//! to decrypt the root key from AWS KMS instead.
 //!
 //! # Database persistence (optional)
 //!
@@ -32,6 +34,7 @@
 mod grpc;
 mod health;
 mod kek_store;
+mod root_key;
 mod server;
 
 use tracing::{error, info, warn};
@@ -41,6 +44,7 @@ use wslvault_core::config::{DatabaseConfig, VaultConfig};
 use wslvault_storage::pool::DbPool;
 
 use crate::kek_store::KekStore;
+use crate::root_key::select_provider;
 use crate::server::{run, ServerConfig};
 
 #[tokio::main]
@@ -83,6 +87,27 @@ async fn run_service() -> Result<(), anyhow::Error> {
         "Configuration loaded"
     );
 
+    // Select the root key provider based on VAULT_ROOT_KEY_PROVIDER (default: "env").
+    // The provider abstracts where the 32-byte root KEK comes from, enabling a
+    // drop-in swap between the env-var path and AWS KMS without changing downstream code.
+    let root_key_provider = select_provider()
+        .map_err(|err| anyhow::anyhow!("Failed to select root key provider: {}", err))?;
+
+    info!(
+        provider = std::env::var("VAULT_ROOT_KEY_PROVIDER")
+            .unwrap_or_else(|_| "env".to_string())
+            .as_str(),
+        "Root key provider selected"
+    );
+
+    // Load the root KEK via the selected provider.  This may involve a network
+    // call (e.g. AWS KMS Decrypt) so it must complete before the service opens
+    // any ports to traffic.
+    let root_kek = root_key_provider
+        .load_root_key()
+        .await
+        .map_err(|err| anyhow::anyhow!("Failed to load root KEK: {}", err))?;
+
     // Attempt to wire up optional PostgreSQL persistence.
     //
     // `DATABASE_URL` is checked directly from the environment rather than from
@@ -103,14 +128,7 @@ async fn run_service() -> Result<(), anyhow::Error> {
                 .await
                 .map_err(|err| anyhow::anyhow!("Failed to connect to database: {}", err))?;
 
-            // Read VAULT_ROOT_KEY from the environment — the same variable used by
-            // `KekStore::from_env` so there is no additional secret to manage.
-            let root_kek_b64 =
-                std::env::var("VAULT_ROOT_KEY").map_err(|_| {
-                    anyhow::anyhow!("VAULT_ROOT_KEY environment variable is not set")
-                })?;
-
-            let store = KekStore::with_db(&root_kek_b64, pool)
+            let store = KekStore::with_root_kek(root_kek, pool)
                 .map_err(|err| anyhow::anyhow!("Failed to initialise KekStore: {}", err))?;
 
             // Restore previously persisted tenant KEKs and DEKs from the database
@@ -127,8 +145,7 @@ async fn run_service() -> Result<(), anyhow::Error> {
             // This branch preserves full backward compatibility.
             warn!("DATABASE_URL is not set — KekStore running in ephemeral mode (keys lost on restart)");
 
-            KekStore::from_env()
-                .map_err(|err| anyhow::anyhow!("Failed to initialise KekStore: {}", err))?
+            KekStore::with_root_kek_ephemeral(root_kek)
         }
     };
 

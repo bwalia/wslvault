@@ -79,6 +79,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .parse::<std::net::SocketAddr>()
         .unwrap_or_else(|_| ([0, 0, 0, 0], 8091).into());
 
+    metrics::register_metrics();
+
     let app = Router::new()
         .route("/health", get(health::health_handler))
         .route("/ready", get(health::ready_handler))

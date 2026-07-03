@@ -1,0 +1,18 @@
+{{- if .Values.pkiEngine.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "pki-engine" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "pki-engine" "componentType" "core" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "pki-engine" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.pkiEngine.httpPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

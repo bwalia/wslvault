@@ -42,6 +42,30 @@ use pg_store::PgPolicyBackend;
 use proto::policy_service_server::PolicyServiceServer;
 use store::{PolicyStore, PolicyStoreBackend};
 use wslvault_core::config::DatabaseConfig;
+use wslvault_core::middleware::{GatewayAuth, GATEWAY_AUTH_HEADER};
+
+/// Verifies the shared gateway secret in gRPC request metadata.
+///
+/// When enforcement is disabled (`VAULT_GATEWAY_SECRET` unset) this is a no-op.
+/// Otherwise the request must carry a matching `x-gateway-auth` metadata entry,
+/// compared in constant time to avoid leaking the secret via timing.
+fn gateway_auth_interceptor(
+    req: tonic::Request<()>,
+    auth: &GatewayAuth,
+) -> Result<tonic::Request<()>, tonic::Status> {
+    let provided = req
+        .metadata()
+        .get(GATEWAY_AUTH_HEADER)
+        .map(|v| v.as_encoded_bytes());
+
+    if auth.is_authorized_bytes(provided) {
+        Ok(req)
+    } else {
+        Err(tonic::Status::unauthenticated(
+            "request must originate from the WSLVault gateway",
+        ))
+    }
+}
 use wslvault_storage::pool::DbPool;
 
 // ---------------------------------------------------------------------------
@@ -144,6 +168,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_thread_ids(true)
         .init();
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     let config = Config::from_env();
     info!(
         grpc_addr  = %config.grpc_listen_addr,
@@ -215,8 +242,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Build gRPC service ---
     let grpc_addr = config.grpc_listen_addr.parse()?;
     let policy_service = PolicyServiceImpl::new(Arc::clone(&store), Arc::clone(&compiled));
+
+    // Gateway-origin authentication for gRPC: the same shared secret verified
+    // on the HTTP side is expected in the `x-gateway-auth` request metadata.
+    // `GatewayAuth::from_env` logs a warning when the secret is unset (no-op).
+    let grpc_gateway_auth = GatewayAuth::from_env();
     let grpc_server = Server::builder()
-        .add_service(PolicyServiceServer::new(policy_service))
+        .add_service(PolicyServiceServer::with_interceptor(
+            policy_service,
+            move |req: tonic::Request<()>| gateway_auth_interceptor(req, &grpc_gateway_auth),
+        ))
         .serve_with_shutdown(grpc_addr, shutdown_signal());
 
     // --- Build HTTP API server (health + REST policy endpoints) ---

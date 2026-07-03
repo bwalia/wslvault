@@ -75,6 +75,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting transit-engine service");
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     // Select the key store backend based on whether DATABASE_URL is present.
     //
     // Using `Arc<dyn TransitKeyStoreBackend>` here keeps AppState a single
@@ -130,9 +133,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit_client,
     };
 
-    let router = Router::new()
-        // Health probe
-        .route("/health", get(health::health_handler))
+    // Transit operations trust tenant-identity headers, so they are gated on
+    // gateway-origin authentication (shared X-Gateway-Auth secret). The health
+    // probe is left open for orchestrators.
+    let transit_routes = Router::new()
         // Transit encryption operations
         .route("/v1/transit/encrypt/:key_name", post(encrypt_handler))
         .route("/v1/transit/decrypt/:key_name", post(decrypt_handler))
@@ -146,6 +150,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             post(rotate_key_handler),
         )
         .with_state(state)
+        .layer(axum::middleware::from_fn_with_state(
+            wslvault_core::middleware::GatewayAuth::from_env(),
+            wslvault_core::middleware::require_gateway_auth,
+        ));
+
+    let router = Router::new()
+        // Health probe
+        .route("/health", get(health::health_handler))
+        .merge(transit_routes)
         // Swagger UI is served at /swagger-ui; the OpenAPI JSON is at
         // /api-docs/openapi.json for programmatic consumption.
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));

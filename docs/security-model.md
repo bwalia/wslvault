@@ -38,10 +38,23 @@ WSLVault is designed to protect against the following threats:
 
 ## Key Material Lifecycle
 
-1. **Root KEK**: Created in AWS KMS; auto-rotated annually
-2. **Tenant KEK**: Generated on tenant creation; encrypted under Root KEK; stored in DB
+1. **Root KEK**: Loaded at startup via a pluggable `RootKeyProvider` (see below); never stored in plaintext on disk or in the database.
+2. **Tenant KEK**: Generated on tenant creation; encrypted under Root KEK; stored (wrapped) in DB
 3. **DEK**: Generated per-secret-write; encrypted under Tenant KEK; stored alongside ciphertext
 4. **Rotation**: New key version created; old versions decrypt existing data; re-encryption on access
+
+## Root Key Provider Model
+
+The root KEK source is selected via the `VAULT_ROOT_KEY_PROVIDER` environment variable:
+
+| Value | Description |
+|-------|-------------|
+| `env` (default) | Reads `VAULT_ROOT_KEY` (standard base64, 32 bytes). Backward-compatible. |
+| `aws-kms` | Decrypts an encrypted root key blob via AWS KMS `Decrypt`. Requires the `aws-kms` Cargo feature and `VAULT_KMS_KEY_ID` + `VAULT_ROOT_KEY_CIPHERTEXT` env vars. |
+
+**AWS KMS bootstrap (one-time):** Set `VAULT_KMS_GENERATE=true` (with no `VAULT_ROOT_KEY_CIPHERTEXT`) to call `GenerateDataKey(AES_256)`, log the `CiphertextBlob` in base64, and use the plaintext for the current session. The operator must persist the logged blob as `VAULT_ROOT_KEY_CIPHERTEXT` before the next restart.
+
+All plaintext key bytes returned by the provider are held in `Zeroizing<[u8; 32]>` wrappers and wiped on drop.
 
 ## Memory Safety
 

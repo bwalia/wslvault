@@ -9,6 +9,13 @@ license = "Apache-2.0"
 name = "crypto-service"
 path = "src/main.rs"
 
+[features]
+default = []
+# AWS KMS root key provider: decrypts the root KEK via AWS KMS at startup.
+# Pulls in the official AWS SDK for KMS and the SDK config loader.
+# Select at runtime via VAULT_ROOT_KEY_PROVIDER=aws-kms.
+aws-kms = ["aws-sdk-kms", "aws-config"]
+
 [dependencies]
 wslvault-core = { path = "../../crates/wslvault-core" }
 wslvault-storage = { path = "../../crates/wslvault-storage" }
@@ -38,6 +45,11 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 prometheus = { workspace = true }
+
+# AWS KMS root key provider (optional — only compiled when `aws-kms` feature is active).
+# Version matches the aws-sdk-secretsmanager version already in the workspace lock file.
+aws-sdk-kms = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

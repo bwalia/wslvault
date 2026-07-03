@@ -112,6 +112,21 @@ services:
       postgres:
         condition: service_healthy
 
+  pki-engine:
+    build:
+      context: .
+      dockerfile: deploy/docker/pki-engine/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      # Dev-only key; production must supply a KMS-managed value.
+      PKI_ROOT_KEY: "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq8M="
+      RUST_LOG: "info,pki_engine=debug"
+    ports:
+      - "18088:8088"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   lease-manager:
     build:
       context: .

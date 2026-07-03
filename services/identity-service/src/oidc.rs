@@ -183,6 +183,14 @@ pub struct OidcManager {
 }
 
 impl OidcManager {
+    /// Returns the issuer URL for the named provider, or `None` if not configured.
+    ///
+    /// Used by the device-flow module to resolve the OIDC discovery endpoint for
+    /// a provider without duplicating the provider map access pattern.
+    pub fn provider_issuer(&self, provider_name: &str) -> Option<String> {
+        self.providers.get(provider_name).map(|c| c.issuer.clone())
+    }
+
     /// Creates a new `OidcManager` backed by the supplied provider map.
     ///
     /// The HTTP client is constructed once here and reused for all outbound

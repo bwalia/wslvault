@@ -27,14 +27,110 @@
 //! ```
 
 use axum::{
-    extract::FromRequestParts,
+    extract::{FromRequestParts, Request, State},
     http::{request::Parts, StatusCode},
+    middleware::Next,
     response::{IntoResponse, Response},
     Json,
 };
 use serde::Serialize;
+use std::sync::Arc;
 
 use crate::types::tenant::{TenantContext, TenantId};
+
+/// Header the gateway stamps to prove a request originated from it.
+///
+/// Backends trust tenant-identity headers (`X-Tenant-Id`, `X-Principal-Id`,
+/// `X-Policies`) only after this header is verified, so a caller that bypasses
+/// the gateway cannot forge a tenant identity.
+pub const GATEWAY_AUTH_HEADER: &str = "x-gateway-auth";
+
+/// Environment variable holding the shared gateway secret.
+pub const GATEWAY_SECRET_ENV: &str = "VAULT_GATEWAY_SECRET";
+
+/// State for the gateway-origin authentication middleware.
+///
+/// Cloneable and cheap to share across handlers. When no secret is configured
+/// the check is disabled (development mode) — this is logged once at startup
+/// so the relaxed posture is never silent in production.
+#[derive(Clone, Debug)]
+pub struct GatewayAuth {
+    expected: Option<Arc<Vec<u8>>>,
+}
+
+impl GatewayAuth {
+    /// Builds the middleware state from `VAULT_GATEWAY_SECRET`.
+    ///
+    /// An empty or unset variable disables enforcement (dev mode); any other
+    /// value requires every request to present a matching `X-Gateway-Auth`
+    /// header.
+    pub fn from_env() -> Self {
+        let expected = std::env::var(GATEWAY_SECRET_ENV)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| Arc::new(s.into_bytes()));
+
+        if expected.is_none() {
+            tracing::warn!(
+                "{GATEWAY_SECRET_ENV} is not set — gateway-origin authentication is DISABLED. \
+                 Set it in production so backends reject requests that bypass the gateway."
+            );
+        }
+
+        Self { expected }
+    }
+
+    /// Returns `true` if the provided header value authenticates the request.
+    ///
+    /// Uses a constant-time comparison to avoid leaking the secret via timing.
+    /// When enforcement is disabled, always returns `true`.
+    pub fn is_authorized(&self, provided: Option<&str>) -> bool {
+        self.is_authorized_bytes(provided.map(str::as_bytes))
+    }
+
+    /// Byte-oriented variant of [`is_authorized`], for callers (e.g. gRPC
+    /// interceptors) whose credential is not guaranteed to be valid UTF-8.
+    ///
+    /// [`is_authorized`]: Self::is_authorized
+    pub fn is_authorized_bytes(&self, provided: Option<&[u8]>) -> bool {
+        let expected = match &self.expected {
+            Some(e) => e,
+            None => return true,
+        };
+        match provided {
+            Some(value) => {
+                ring::constant_time::verify_slices_are_equal(value, expected).is_ok()
+            }
+            None => false,
+        }
+    }
+}
+
+/// Axum middleware that enforces gateway-origin authentication.
+///
+/// Apply with `axum::middleware::from_fn_with_state(GatewayAuth::from_env(),
+/// require_gateway_auth)`. Rejects requests with `401` when a secret is
+/// configured and the `X-Gateway-Auth` header is missing or incorrect.
+pub async fn require_gateway_auth(
+    State(auth): State<GatewayAuth>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let provided = request
+        .headers()
+        .get(GATEWAY_AUTH_HEADER)
+        .and_then(|value| value.to_str().ok());
+
+    if auth.is_authorized(provided) {
+        next.run(request).await
+    } else {
+        rejection(
+            StatusCode::UNAUTHORIZED,
+            "gateway_auth_required",
+            "request must originate from the WSLVault gateway",
+        )
+    }
+}
 
 /// JSON error body returned when the extractor rejects a request.
 #[derive(Debug, Serialize)]
@@ -171,7 +267,7 @@ mod tests {
     #[tokio::test]
     async fn valid_headers_resolve_context() {
         let app = test_app();
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = uuid::Uuid::now_v7().to_string();
         let req = Request::builder()
             .uri("/test")
             .header("x-tenant-id", &uuid)
@@ -192,10 +288,71 @@ mod tests {
             "/test",
             get(|ctx: TenantContext| async move { ctx.principal_id }),
         );
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = uuid::Uuid::now_v7().to_string();
         let req = Request::builder()
             .uri("/test")
             .header("x-tenant-id", &uuid)
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn gateway_auth_disabled_allows_any_request() {
+        let auth = GatewayAuth { expected: None };
+        assert!(auth.is_authorized(None));
+        assert!(auth.is_authorized(Some("anything")));
+    }
+
+    #[test]
+    fn gateway_auth_enabled_requires_matching_secret() {
+        let auth = GatewayAuth {
+            expected: Some(std::sync::Arc::new(b"super-secret".to_vec())),
+        };
+        assert!(auth.is_authorized(Some("super-secret")));
+        assert!(!auth.is_authorized(Some("wrong-secret")));
+        assert!(!auth.is_authorized(Some("super-secre"))); // length mismatch
+        assert!(!auth.is_authorized(None)); // missing header
+    }
+
+    #[tokio::test]
+    async fn require_gateway_auth_rejects_missing_header() {
+        use axum::routing::get;
+        let auth = GatewayAuth {
+            expected: Some(std::sync::Arc::new(b"secret".to_vec())),
+        };
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                auth,
+                require_gateway_auth,
+            ));
+
+        let req = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn require_gateway_auth_allows_correct_header() {
+        use axum::routing::get;
+        let auth = GatewayAuth {
+            expected: Some(std::sync::Arc::new(b"secret".to_vec())),
+        };
+        let app = Router::new()
+            .route("/test", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                auth,
+                require_gateway_auth,
+            ));
+
+        let req = Request::builder()
+            .uri("/test")
+            .header(GATEWAY_AUTH_HEADER, "secret")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -213,7 +370,7 @@ mod tests {
                 Json(ctx.policies.len()).into_response()
             }),
         );
-        let uuid = uuid::Uuid::new_v4().to_string();
+        let uuid = uuid::Uuid::now_v7().to_string();
         let req = Request::builder()
             .uri("/test")
             .header("x-tenant-id", &uuid)

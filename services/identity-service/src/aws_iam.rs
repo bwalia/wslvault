@@ -107,19 +107,25 @@ pub enum AwsIamError {
 
     #[error("invalid request URL: {0}")]
     InvalidUrl(String),
+
+    #[error("failed to build HTTP client for AWS IAM: {0}")]
+    HttpClientBuild(String),
 }
 
 impl AwsIamManager {
-    pub fn new(config: AwsIamConfig) -> Self {
+    /// Builds a manager, returning an error if the HTTP client cannot be
+    /// constructed (e.g. invalid TLS backend). Fails startup cleanly rather
+    /// than panicking the process from within a constructor.
+    pub fn new(config: AwsIamConfig) -> Result<Self, AwsIamError> {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.sts_timeout_seconds))
             .build()
-            .expect("failed to build HTTP client for AWS IAM");
+            .map_err(|e| AwsIamError::HttpClientBuild(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             config,
             http_client,
-        }
+        })
     }
 
     /// Validates an AWS IAM identity by replaying the signed STS request.

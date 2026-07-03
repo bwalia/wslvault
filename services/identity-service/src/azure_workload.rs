@@ -123,20 +123,26 @@ pub enum AzureWorkloadError {
 
     #[error("cannot resolve wslvault tenant for Azure AD tenant '{azure_tid}'")]
     UnmappedTenant { azure_tid: String },
+
+    #[error("failed to build HTTP client for Azure: {0}")]
+    HttpClientBuild(String),
 }
 
 impl AzureWorkloadManager {
-    pub fn new(config: AzureWorkloadConfig) -> Self {
+    /// Builds a manager, returning an error if the HTTP client cannot be
+    /// constructed. Fails startup cleanly rather than panicking from within
+    /// a constructor.
+    pub fn new(config: AzureWorkloadConfig) -> Result<Self, AzureWorkloadError> {
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
             .build()
-            .expect("failed to build HTTP client for Azure");
+            .map_err(|e| AzureWorkloadError::HttpClientBuild(e.to_string()))?;
 
-        Self {
+        Ok(Self {
             config,
             http_client,
             jwks_cache: Arc::new(RwLock::new(HashMap::new())),
-        }
+        })
     }
 
     /// Validates an Azure Managed Identity / Workload Identity JWT.

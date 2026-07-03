@@ -39,6 +39,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting lease-manager service");
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     // Select the storage backend based on whether DATABASE_URL is configured.
     // When a database is available, also initialise the leader elector so that
     // coordination tasks (expiration sweeps) run on exactly one node.

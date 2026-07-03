@@ -1601,6 +1601,12 @@ pub fn build_router(
         .route("/v1/secret/rollback/*path", post(rollback_secret))
         .route("/v1/secret/versions/*path", get(list_versions))
         .with_state(app_state)
+        // Only honor tenant-identity headers on requests proven to originate
+        // from the gateway (via the shared X-Gateway-Auth secret).
+        .layer(axum::middleware::from_fn_with_state(
+            wslvault_core::middleware::GatewayAuth::from_env(),
+            wslvault_core::middleware::require_gateway_auth,
+        ))
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
 }
 

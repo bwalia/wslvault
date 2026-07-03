@@ -1,0 +1,72 @@
+---
+# Example VaultPolicy resource.
+#
+# This manifest declares an access-control policy in Kubernetes.  The
+# wslvault operator reconciles it into the policy-engine automatically,
+# enabling GitOps-driven management of secret access rules.
+#
+# Apply with:
+#   kubectl apply -f deploy/kubernetes/examples/vaultpolicy-example.yaml
+#
+# Verify sync:
+#   kubectl get vaultpolicy -n my-app
+#   kubectl describe vaultpolicy my-app-policy -n my-app
+apiVersion: wslvault.io/v1alpha1
+kind: VaultPolicy
+metadata:
+  name: my-app-policy
+  namespace: my-app
+  labels:
+    app.kubernetes.io/name: my-app
+    app.kubernetes.io/component: policy
+    app.kubernetes.io/part-of: wslvault
+spec:
+  # Name used inside wslvault; becomes PUT /v1/policies/my-app-policy.
+  policyName: my-app-policy
+
+  # Tenant this policy is scoped to.
+  tenantId: my-tenant
+
+  # Optional: override the policy-engine endpoint for this resource.
+  # policyEngineEndpoint: "http://policy-engine:8082"
+
+  # Optional: authenticate with the policy-engine using a token stored
+  # in a Kubernetes Secret.
+  # auth:
+  #   token_secret_ref:
+  #     name: my-app-vault-token
+  #     key: token
+
+  rules:
+    # Allow the application to read and list its own secrets.
+    - name: allow-app-secrets-read
+      paths:
+        - "myapp/database/*"
+        - "myapp/api-keys/*"
+      capabilities:
+        - read
+        - list
+
+    # Allow the application to write to its own configuration path.
+    - name: allow-app-config-write
+      paths:
+        - "myapp/config/*"
+      capabilities:
+        - read
+        - write
+        - update
+
+    # Allow read access to shared team secrets.
+    - name: allow-shared-read
+      paths:
+        - "shared/**"
+      capabilities:
+        - read
+        - list
+
+    # Deny all access to the production secrets path (overrides any allow).
+    - name: deny-production-override
+      paths:
+        - "production/sensitive/**"
+      capabilities:
+        - deny

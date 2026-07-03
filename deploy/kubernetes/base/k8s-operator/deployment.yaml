@@ -33,6 +33,29 @@ rules:
       - patch
       - update
 
+  # VaultPolicy custom resources — the operator watches policy events and
+  # writes back status patches.  It also needs to manage finalizers (patch
+  # metadata) so that the deletion flow can remove the policy from the
+  # policy-engine before the resource is garbage-collected.
+  - apiGroups:
+      - wslvault.io
+    resources:
+      - vaultpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - patch
+      - update
+  - apiGroups:
+      - wslvault.io
+    resources:
+      - vaultpolicies/status
+    verbs:
+      - get
+      - patch
+      - update
+
   # Kubernetes Secrets — the operator creates/patches target secrets and reads
   # token secrets referenced by spec.auth.tokenSecretRef.
   - apiGroups:
@@ -148,6 +171,11 @@ spec:
             # is running on a non-default port or outside the cluster.
             - name: VAULT_ENDPOINT
               value: "http://secret-engine:8081"
+
+            # wslvault policy-engine endpoint. Update this if the policy-engine
+            # is running on a non-default port or outside the cluster.
+            - name: POLICY_ENGINE_ENDPOINT
+              value: "http://policy-engine:8082"
 
             # Optional static vault token. In production, prefer
             # spec.auth.tokenSecretRef on individual VaultSecret resources.
