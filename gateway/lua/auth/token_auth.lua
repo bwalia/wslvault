@@ -3,6 +3,17 @@
 -- This is a fast-path check; full authorization is delegated to the policy-engine.
 
 local cjson = require "cjson.safe"
+local resty_sha256 = require "resty.sha256"
+local resty_string = require "resty.string"
+
+-- Derive a SHA-256 hex digest of the token for use as a cache key.
+-- MD5 is cryptographically broken; a collision could let a forged cache
+-- entry impersonate a valid token within the cache TTL window.
+local function hash_token(token)
+    local sha = resty_sha256:new()
+    sha:update(token)
+    return resty_string.to_hex(sha:final())
+end
 
 -- Extract Bearer token from Authorization header
 local function get_bearer_token()
@@ -56,7 +67,7 @@ if not token then
 end
 
 -- Hash the token for cache lookup (avoid storing raw tokens in shared memory)
-local token_hash = ngx.md5(token)
+local token_hash = hash_token(token)
 
 -- Check cache first
 local cached_claims = check_cache(token_hash)

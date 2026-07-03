@@ -41,6 +41,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting sync-scheduler");
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     let database_url = std::env::var("DATABASE_URL")
         .map_err(|_| anyhow::anyhow!("DATABASE_URL is required for sync-scheduler"))?;
 

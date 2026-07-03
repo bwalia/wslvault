@@ -248,10 +248,19 @@ pub static ENCRYPTION_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
 });
 
 /// Gather all registered metrics and encode them as a Prometheus text exposition.
+///
+/// Runs on every `/metrics` scrape, so it never panics: an encoding failure
+/// yields an empty exposition rather than taking down the request handler.
 pub fn gather_metrics() -> String {
     let encoder = TextEncoder::new();
     let metric_families = REGISTRY.gather();
     let mut buffer = Vec::new();
-    encoder.encode(&metric_families, &mut buffer).unwrap();
-    String::from_utf8(buffer).unwrap()
+    if let Err(e) = encoder.encode(&metric_families, &mut buffer) {
+        tracing::error!(error = %e, "failed to encode prometheus metrics");
+        return String::new();
+    }
+    String::from_utf8(buffer).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "prometheus metrics were not valid UTF-8");
+        String::new()
+    })
 }

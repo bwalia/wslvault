@@ -63,16 +63,17 @@ WSLVault is a next-generation secrets management platform designed for enterpris
 ## Envelope Encryption Hierarchy
 
 ```
-Root KEK (AWS KMS / HSM)
+Root KEK (pluggable provider — env var or AWS KMS)
   └─► Tenant KEK (per-tenant, encrypted under Root KEK)
        └─► DEK (per-secret, encrypted under Tenant KEK)
             └─► Secret Value (AES-256-GCM encrypted under DEK)
 ```
 
-- Root KEK never leaves KMS/HSM
-- Tenant KEKs are stored encrypted in PostgreSQL
-- DEKs are generated per-secret and stored alongside the ciphertext
-- Database compromise does not expose plaintext secrets
+- Root KEK is loaded at startup via a `RootKeyProvider` selected by `VAULT_ROOT_KEY_PROVIDER` (`env` or `aws-kms`). Raw bytes never leave the `crypto-service` process.
+- Tenant KEKs and DEKs are stored encrypted (wrapped) in PostgreSQL — raw key material is never persisted.
+- Database compromise does not expose plaintext secrets.
+
+See `docs/security-model.md` for the Root Key Provider configuration reference.
 
 ## Data Flow: Secret Read
 

@@ -20,12 +20,13 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::CorsLayer;
+use wslvault_core::middleware::{require_gateway_auth, GatewayAuth};
 
 use crate::evaluator::CompiledPolicies;
 use crate::model::{Capability, PolicyDocument, PolicyRule};
@@ -255,17 +256,47 @@ async fn authorize(
 // ---------------------------------------------------------------------------
 
 /// Build the Axum `Router` for the policy HTTP API.
+///
+/// Policy routes are protected by gateway-origin authentication so that only
+/// requests proxied through the WSLVault gateway (which carry the shared
+/// `X-Gateway-Auth` secret) are honored — a caller reaching this port directly
+/// cannot forge an `X-Tenant-Id`. The `/health` probe is intentionally left
+/// unauthenticated so orchestrators can reach it.
 pub fn api_router(state: AppState) -> Router {
+    // CORS origins are scoped to an explicit allowlist from
+    // `VAULT_CORS_ALLOWED_ORIGINS` (comma-separated). Absent/empty means no
+    // cross-origin access is granted, replacing the previous wildcard.
+    let allowed_origins: Vec<HeaderValue> = std::env::var("VAULT_CORS_ALLOWED_ORIGINS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .filter_map(|o| o.parse::<HeaderValue>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+
     let cors = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
-        .allow_headers(Any)
-        .allow_origin(Any);
+        .allow_headers([
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::AUTHORIZATION,
+        ])
+        .allow_origin(allowed_origins);
 
-    Router::new()
-        .route("/health", get(health_handler))
+    let policy_routes = Router::new()
         .route("/v1/policies", get(list_policies).post(create_policy))
         .route("/v1/policies/:name", get(get_policy).put(upsert_policy).delete(delete_policy))
         .route("/v1/policies/authorize", post(authorize))
+        .layer(axum::middleware::from_fn_with_state(
+            GatewayAuth::from_env(),
+            require_gateway_auth,
+        ));
+
+    Router::new()
+        .route("/health", get(health_handler))
+        .merge(policy_routes)
         .layer(cors)
         .with_state(state)
 }

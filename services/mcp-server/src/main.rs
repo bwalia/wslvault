@@ -123,6 +123,9 @@ async fn main() -> anyhow::Result<()> {
 
     info!("mcp-server starting");
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     let listen_addr: SocketAddr = std::env::var("VAULT_LISTEN_ADDR")
         .unwrap_or_else(|_| "0.0.0.0:8087".into())
         .parse()?;

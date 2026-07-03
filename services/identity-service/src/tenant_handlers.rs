@@ -682,7 +682,7 @@ mod tests {
     #[tokio::test]
     async fn http_get_nonexistent_tenant_returns_404() {
         let app = router(memory_store());
-        let fake_id = Uuid::new_v4();
+        let fake_id = Uuid::now_v7();
         let req = Request::builder()
             .method("GET")
             .uri(format!("/v1/tenants/{fake_id}"))

@@ -45,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting region-health service");
 
+    // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
+    wslvault_core::metrics::server::spawn_from_env();
+
     let local_region =
         std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
 

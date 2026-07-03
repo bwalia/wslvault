@@ -1,10 +1,13 @@
 //! CRD type definitions for the wslvault Kubernetes operator.
 //!
-//! The [`VaultSecret`] custom resource drives the operator. Each instance
-//! describes a single path in the wslvault secret-engine that should be
-//! materialised as a native Kubernetes [`Secret`].
+//! This module defines two custom resources:
 //!
-//! # Schema overview
+//! - [`VaultSecret`] — syncs a single path from the wslvault secret-engine
+//!   into a native Kubernetes [`Secret`].
+//! - [`VaultPolicy`] — declares a wslvault policy document in Kubernetes so
+//!   teams can manage access-control rules via GitOps.
+//!
+//! # VaultSecret schema overview
 //!
 //! ```text
 //! apiVersion: wslvault.io/v1alpha1
@@ -23,10 +26,33 @@
 //!     - vaultKey: DB_PASSWORD
 //!       secretKey: password
 //! ```
+//!
+//! # VaultPolicy schema overview
+//!
+//! ```text
+//! apiVersion: wslvault.io/v1alpha1
+//! kind: VaultPolicy
+//! metadata:
+//!   name: my-app-policy
+//!   namespace: production
+//! spec:
+//!   policyName: my-app-policy
+//!   tenantId: my-tenant
+//!   rules:
+//!     - name: allow-app-secrets
+//!       paths:
+//!         - "myapp/*"
+//!         - "shared/**"
+//!       capabilities:
+//!         - read
+//!         - list
+//! ```
 
 use kube::CustomResource;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+// ─── VaultPolicy CRD ─────────────────────────────────────────────────────────
 
 // ─── Main CRD ─────────────────────────────────────────────────────────────────
 
@@ -315,6 +341,203 @@ impl VaultSecretStatus {
             last_sync_time: None,
             observed_generation: Some(generation),
             secret_version: None,
+        }
+    }
+}
+
+// ─── VaultPolicy CRD ─────────────────────────────────────────────────────────
+
+/// Set of capabilities that a policy rule can grant or deny.
+///
+/// Maps 1-to-1 with the `Capability` enum in the policy-engine model.
+/// The string representation (lowercase) is what the policy-engine REST API
+/// accepts; validation is performed by [`PolicyCapability::from_str`] before
+/// any HTTP call is made.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyCapability {
+    /// Permits reading a secret at the matched path.
+    Read,
+    /// Permits writing (creating or replacing) a secret.
+    Write,
+    /// Permits soft-deletion of a secret version.
+    Delete,
+    /// Permits listing children under the matched prefix.
+    List,
+    /// Permits creating a new resource at the matched path.
+    Create,
+    /// Permits updating metadata or data on an existing resource.
+    Update,
+    /// Explicitly denies all access, overriding any other matching rules.
+    Deny,
+}
+
+impl PolicyCapability {
+    /// Return the lowercase string form expected by the policy-engine HTTP API.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PolicyCapability::Read => "read",
+            PolicyCapability::Write => "write",
+            PolicyCapability::Delete => "delete",
+            PolicyCapability::List => "list",
+            PolicyCapability::Create => "create",
+            PolicyCapability::Update => "update",
+            PolicyCapability::Deny => "deny",
+        }
+    }
+
+    /// Parse from a case-insensitive string.
+    ///
+    /// Returns `None` when the string does not match any known capability.
+    /// This is used to validate raw string values supplied via the CRD spec
+    /// before forwarding them to the policy-engine.
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "read" => Some(PolicyCapability::Read),
+            "write" => Some(PolicyCapability::Write),
+            "delete" => Some(PolicyCapability::Delete),
+            "list" => Some(PolicyCapability::List),
+            "create" => Some(PolicyCapability::Create),
+            "update" => Some(PolicyCapability::Update),
+            "deny" => Some(PolicyCapability::Deny),
+            _ => None,
+        }
+    }
+}
+
+/// A single access-control rule within a [`VaultPolicySpec`].
+///
+/// Each rule pairs a list of glob-style path patterns with the capabilities
+/// that are granted (or denied) for any path that matches.
+#[derive(Deserialize, Serialize, Clone, Debug, JsonSchema)]
+pub struct PolicyRuleSpec {
+    /// Human-readable name for this rule (e.g. `"allow-app-secrets"`).
+    ///
+    /// Used only for documentation; not transmitted to the policy-engine.
+    pub name: String,
+
+    /// Glob-style path patterns matched against the resource path in an
+    /// authorization request.
+    ///
+    /// Supports:
+    /// - `*` — matches a single path segment (no slashes)
+    /// - `**` — recursively matches zero or more segments
+    ///
+    /// Example: `["myapp/*", "shared/**"]`
+    pub paths: Vec<String>,
+
+    /// Capabilities granted (or denied) when this rule's path matches.
+    ///
+    /// Must contain at least one entry.  Valid values are:
+    /// `read`, `write`, `delete`, `list`, `create`, `update`, `deny`.
+    pub capabilities: Vec<PolicyCapability>,
+}
+
+/// Specification for the `VaultPolicy` custom resource.
+///
+/// The operator reconciles this into a `PolicyDocument` on the policy-engine
+/// via `PUT /v1/policies/<policyName>` with the tenant supplied by `tenantId`.
+#[derive(CustomResource, Deserialize, Serialize, Clone, Debug, JsonSchema)]
+#[kube(
+    group = "wslvault.io",
+    version = "v1alpha1",
+    kind = "VaultPolicy",
+    namespaced
+)]
+#[kube(status = "VaultPolicyStatus")]
+#[kube(
+    printcolumn = r#"{"name":"PolicyName","type":"string","jsonPath":".spec.policyName"}"#
+)]
+#[kube(
+    printcolumn = r#"{"name":"Tenant","type":"string","jsonPath":".spec.tenantId"}"#
+)]
+#[kube(
+    printcolumn = r#"{"name":"Synced","type":"string","jsonPath":".status.synced"}"#
+)]
+#[kube(
+    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
+)]
+pub struct VaultPolicySpec {
+    /// Name of the policy document inside wslvault.
+    ///
+    /// This becomes the `name` field of the `PolicyDocument` and is also used
+    /// as the URL path segment in `PUT /v1/policies/<policyName>`.
+    ///
+    /// Must be unique within the tenant.
+    pub policy_name: String,
+
+    /// Tenant identifier to associate this policy with.
+    ///
+    /// Sent as the `X-Tenant-Id` header on all policy-engine API calls.
+    pub tenant_id: String,
+
+    /// Override for the wslvault policy-engine HTTP endpoint.
+    ///
+    /// When omitted the operator uses the `POLICY_ENGINE_ENDPOINT` environment
+    /// variable (default: `http://policy-engine:8082`).
+    pub policy_engine_endpoint: Option<String>,
+
+    /// Authentication token for the policy-engine.
+    ///
+    /// References a Kubernetes `Secret` that holds the token under a specified
+    /// key.  When omitted the operator falls back to the `VAULT_TOKEN`
+    /// environment variable.
+    pub auth: Option<AuthSpec>,
+
+    /// Ordered list of access-control rules that make up this policy.
+    ///
+    /// At least one rule is required.
+    pub rules: Vec<PolicyRuleSpec>,
+}
+
+// ─── VaultPolicyStatus ───────────────────────────────────────────────────────
+
+/// Observed state of a `VaultPolicy` resource, written by the operator.
+#[derive(Deserialize, Serialize, Clone, Debug, Default, JsonSchema)]
+pub struct VaultPolicyStatus {
+    /// Whether the policy is currently in sync with the policy-engine.
+    ///
+    /// `true` after a successful upsert; `false` when the last reconcile
+    /// attempt failed.
+    #[serde(default)]
+    pub synced: bool,
+
+    /// RFC 3339 timestamp of the most recent successful sync.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_sync_time: Option<String>,
+
+    /// The `metadata.generation` value that was last reconciled successfully.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_generation: Option<i64>,
+
+    /// Human-readable status message.
+    ///
+    /// Contains a success confirmation on sync or a detailed error description
+    /// when `synced` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl VaultPolicyStatus {
+    /// Build a status reflecting a successful policy upsert.
+    pub fn synced(generation: i64, policy_name: &str, now: &str) -> Self {
+        VaultPolicyStatus {
+            synced: true,
+            last_sync_time: Some(now.to_string()),
+            observed_generation: Some(generation),
+            message: Some(format!(
+                "Policy '{policy_name}' successfully synced to the policy-engine."
+            )),
+        }
+    }
+
+    /// Build a status reflecting a failed reconcile attempt.
+    pub fn failed(generation: i64, message: &str) -> Self {
+        VaultPolicyStatus {
+            synced: false,
+            last_sync_time: None,
+            observed_generation: Some(generation),
+            message: Some(message.to_string()),
         }
     }
 }

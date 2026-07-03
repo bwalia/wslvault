@@ -57,6 +57,8 @@ secrets:
   rootKey: ""
   # -- JWT signing secret for identity-service token issuance
   jwtSecret: ""
+  # -- PKI root key that envelope-encrypts tenant CA private keys (base64-encoded 32-byte key)
+  pkiRootKey: ""
 
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:
@@ -250,6 +252,28 @@ transitEngine:
     minReplicas: 2
     maxReplicas: 10
     targetCPUUtilizationPercentage: 70
+
+# -- pki-engine: internal certificate authority (per-tenant CAs, cert issuance, CRL)
+pkiEngine:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/pki-engine
+    tag: ""
+  httpPort: 8088
+  # -- pki-engine does not expose a gRPC port
+  resources:
+    requests:
+      cpu: "150m"
+      memory: "128Mi"
+    limits:
+      cpu: "750m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
 
 # -- mcp-server: Model Context Protocol integration server (single replica by design)
 mcpServer:

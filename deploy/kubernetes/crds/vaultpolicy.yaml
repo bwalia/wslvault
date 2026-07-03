@@ -1,0 +1,198 @@
+---
+# VaultPolicy CRD for the wslvault Kubernetes operator.
+#
+# Install with:
+#   kubectl apply -f deploy/kubernetes/crds/vaultpolicy.yaml
+#
+# The operator will also attempt to self-install this CRD on startup if it
+# has the necessary RBAC permissions.
+#
+# Each VaultPolicy resource declares a wslvault access-control policy in
+# Kubernetes.  The operator reconciles changes into the policy-engine via its
+# REST API, enabling GitOps-driven management of secret access rules.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: vaultpolicies.wslvault.io
+  labels:
+    app.kubernetes.io/name: vaultpolicy
+    app.kubernetes.io/component: crd
+    app.kubernetes.io/part-of: wslvault
+    app.kubernetes.io/managed-by: k8s-operator.wslvault.io
+spec:
+  group: wslvault.io
+  names:
+    kind: VaultPolicy
+    listKind: VaultPolicyList
+    plural: vaultpolicies
+    singular: vaultpolicy
+    shortNames:
+      - vp
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: PolicyName
+          type: string
+          jsonPath: .spec.policyName
+        - name: Tenant
+          type: string
+          jsonPath: .spec.tenantId
+        - name: Synced
+          type: string
+          jsonPath: .status.synced
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: |
+            VaultPolicy declares a wslvault access-control policy in Kubernetes.
+            The operator reconciles each VaultPolicy into the policy-engine via
+            PUT /v1/policies/<policyName>, enabling GitOps-driven management of
+            secret access rules.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              description: Desired policy document specification.
+              required:
+                - policyName
+                - tenantId
+                - rules
+              properties:
+                policyName:
+                  type: string
+                  description: |
+                    Name of the policy document inside wslvault.
+                    Used as the URL path segment in PUT /v1/policies/<policyName>
+                    and must be unique within the tenant.
+                  minLength: 1
+                  example: "my-app-policy"
+                tenantId:
+                  type: string
+                  description: |
+                    Tenant identifier that this policy is scoped to.
+                    Sent as the X-Tenant-Id header on all policy-engine API calls.
+                  minLength: 1
+                  example: "my-tenant"
+                policyEngineEndpoint:
+                  type: string
+                  description: |
+                    Override for the wslvault policy-engine HTTP base URL.
+                    When omitted the operator uses the POLICY_ENGINE_ENDPOINT
+                    environment variable (default: http://policy-engine:8082).
+                  example: "http://policy-engine:8082"
+                auth:
+                  type: object
+                  description: Authentication configuration for the policy-engine.
+                  properties:
+                    service_account_ref:
+                      type: object
+                      description: |
+                        Reference to a Kubernetes ServiceAccount whose projected
+                        token is used to authenticate with the policy-engine.
+                      required:
+                        - name
+                      properties:
+                        name:
+                          type: string
+                          description: Name of the service account.
+                        namespace:
+                          type: string
+                          description: Namespace of the service account. Defaults to VaultPolicy namespace.
+                    token_secret_ref:
+                      type: object
+                      description: |
+                        Reference to a Kubernetes Secret that holds a vault token
+                        used to authenticate with the policy-engine.
+                      required:
+                        - name
+                      properties:
+                        name:
+                          type: string
+                          description: Name of the Kubernetes Secret holding the token.
+                        key:
+                          type: string
+                          description: Key within the Secret data map. Defaults to "token".
+                          default: token
+                rules:
+                  type: array
+                  description: |
+                    Ordered list of access-control rules that make up this policy.
+                    At least one rule is required.
+                  minItems: 1
+                  items:
+                    type: object
+                    description: A single access-control rule pairing path patterns with capabilities.
+                    required:
+                      - name
+                      - paths
+                      - capabilities
+                    properties:
+                      name:
+                        type: string
+                        description: |
+                          Human-readable name for this rule (e.g. "allow-app-secrets").
+                          Used for documentation only; not transmitted to the policy-engine.
+                        minLength: 1
+                      paths:
+                        type: array
+                        description: |
+                          Glob-style path patterns matched against the resource path.
+                          Supports:
+                            - "*"  — matches a single path segment (no slashes)
+                            - "**" — recursively matches zero or more segments
+                          Example: ["myapp/*", "shared/**"]
+                        minItems: 1
+                        items:
+                          type: string
+                          minLength: 1
+                      capabilities:
+                        type: array
+                        description: |
+                          Capabilities granted (or denied) when this rule's paths match.
+                          Must contain at least one entry.
+                        minItems: 1
+                        items:
+                          type: string
+                          enum:
+                            - read
+                            - write
+                            - delete
+                            - list
+                            - create
+                            - update
+                            - deny
+            status:
+              type: object
+              description: Observed state written by the operator.
+              properties:
+                synced:
+                  type: boolean
+                  description: |
+                    Whether the policy is currently in sync with the policy-engine.
+                    True after a successful upsert; false when the last reconcile failed.
+                lastSyncTime:
+                  type: string
+                  format: date-time
+                  description: RFC 3339 timestamp of the most recent successful sync.
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  description: The metadata.generation value last reconciled successfully.
+                message:
+                  type: string
+                  description: |
+                    Human-readable status message. Contains a success confirmation on
+                    sync or a detailed error description when synced is false.

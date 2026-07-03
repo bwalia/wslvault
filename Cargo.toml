@@ -10,6 +10,7 @@ members = [
     "services/identity-service",
     "services/policy-engine",
     "services/transit-engine",
+    "services/pki-engine",
     "services/lease-manager",
     "services/audit-service",
     "services/mcp-server",
