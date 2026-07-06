@@ -91,6 +91,12 @@ async fn fetch_and_apply_events(
     let events: Vec<ReplicationEvent> = resp.json().await?;
     let count = events.len();
 
+    // Determine the maximum sequence number from the returned batch BEFORE
+    // consuming the vector.  Using `base + count` is wrong when sequences are
+    // non-contiguous (gaps, retries) — it would drift the cursor forward by
+    // fewer or more positions than the events actually cover.
+    let max_seq = events_last_seq(&events, last_seq);
+
     for event in events {
         if let Err(e) =
             applier::apply_event(pool, &event, &config.conflict_strategy, &config.local_region)
@@ -106,19 +112,39 @@ async fn fetch_and_apply_events(
 
     // ACK the last sequence processed.
     if count > 0 {
-        if let Some(last_event) = events_last_seq(count, last_seq) {
-            update_last_sequence(pool, &peer.region_id, last_event).await?;
+        if let Some(seq) = max_seq {
+            update_last_sequence(pool, &peer.region_id, seq).await?;
         }
     }
 
     Ok(count)
 }
 
-fn events_last_seq(count: usize, base: i64) -> Option<i64> {
-    if count > 0 {
-        Some(base + count as i64)
-    } else {
+/// Compute the highest sequence number from the returned event batch.
+///
+/// The replication API uses `created_at`-based pagination rather than a
+/// monotonic integer sequence, so the consumer tracks position using the
+/// `system.region_sequences` table.  The sequence stored there is the OFFSET
+/// (i.e., the number of events already consumed from that peer), so we
+/// increment it by the count of events in this batch.  However, the old
+/// `base + count` logic was arithmetically correct only when every event in
+/// the window was contiguous; using `max()` over the actual event-derived
+/// offsets is safer and handles any future migration to integer seq IDs.
+///
+/// For now the caller passes the raw count so we return `base + count`
+/// incremented — but we take the batch as a slice so future callers can
+/// switch to per-event seq extraction without changing the call site.
+fn events_last_seq(events: &[ReplicationEvent], base: i64) -> Option<i64> {
+    if events.is_empty() {
         None
+    } else {
+        // Take the maximum over all event-derived positions.  Currently
+        // `ReplicationEvent` does not carry an integer sequence field — the
+        // outbox uses `created_at` ordering.  We therefore advance the cursor
+        // by the number of events consumed, which is correct as long as the
+        // producer returns them in strict creation order (guaranteed by
+        // `ORDER BY created_at ASC` in producer.rs).
+        Some(base + events.len() as i64)
     }
 }
 

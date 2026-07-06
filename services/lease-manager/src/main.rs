@@ -4,16 +4,24 @@
 //! - gRPC server on port 50055 (LeaseService)
 //! - HTTP health server on port 8084 (GET /health)
 //!
-//! A background Tokio task runs every 5 seconds to sweep expired leases.
+//! Background Tokio tasks:
+//! - Expiration sweep (every 5 s): transitions stale leases to Expired.
+//! - Rotation sweep (default every 60 s): fires webhooks or performs automated
+//!   rotation for ROTATION_REQUIRED secrets whose `next_rotation_at` has passed.
+//! - Deprecated version cleanup (default every 3600 s): calls
+//!   `shared.vault_revoke_deprecated_versions()` to zero out ciphertext of
+//!   old versions after their grace period expires.
 //!
-//! When the `DATABASE_URL` environment variable is set the service uses the
-//! PostgreSQL-backed store; otherwise it falls back to the in-memory store so
-//! the service can start in development without a database.
+//! When `DATABASE_URL` is set the service uses the PostgreSQL-backed store;
+//! otherwise it falls back to the in-memory store so the service can start
+//! in development without a database.
 
 mod expiration;
 mod grpc;
 mod health;
 mod pg_store;
+mod rotation;
+mod rotation_metrics;
 mod store;
 
 use std::sync::Arc;
@@ -42,40 +50,66 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Expose Prometheus metrics for scraping (address via VAULT_METRICS_ADDR).
     wslvault_core::metrics::server::spawn_from_env();
 
+    // Pre-register rotation metrics so the /metrics endpoint shows them even
+    // before the first sweep cycle runs.
+    rotation_metrics::init();
+
     // Select the storage backend based on whether DATABASE_URL is configured.
     // When a database is available, also initialise the leader elector so that
     // coordination tasks (expiration sweeps) run on exactly one node.
-    let (lease_store, elector): (Arc<dyn LeaseStoreBackend>, Option<Arc<LeaderElector>>) =
-        if let Ok(database_url) = std::env::var("DATABASE_URL") {
-            info!("DATABASE_URL found – connecting to PostgreSQL");
+    //
+    // We also retain the raw `PgPool` so that the rotation tasks — which need
+    // direct SQL access — can share the same pool without an additional connect.
+    let (lease_store, elector, pg_pool): (
+        Arc<dyn LeaseStoreBackend>,
+        Option<Arc<LeaderElector>>,
+        Option<sqlx::PgPool>,
+    ) = if let Ok(database_url) = std::env::var("DATABASE_URL") {
+        info!("DATABASE_URL found – connecting to PostgreSQL");
 
-            let config = wslvault_core::config::DatabaseConfig {
-                url: database_url,
-                ..Default::default()
-            };
-
-            let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
-            info!("PostgreSQL connection pool established; using PgLeaseBackend");
-
-            // Initialise leader election for coordination tasks.
-            let cluster_config = ClusterConfig::default();
-            let leader = Arc::new(LeaderElector::new(
-                pool.clone(),
-                &cluster_config,
-                "lease-manager",
-            ));
-            let _election_handle = leader.run();
-
-            (Arc::new(pg_store::PgLeaseBackend::new(pool)), Some(leader))
-        } else {
-            info!("DATABASE_URL not set – using in-memory lease store");
-            (Arc::new(store::InMemoryLeaseStore::new()), None)
+        let config = wslvault_core::config::DatabaseConfig {
+            url: database_url,
+            ..Default::default()
         };
+
+        let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
+        info!("PostgreSQL connection pool established; using PgLeaseBackend");
+
+        // Initialise leader election for coordination tasks.
+        let cluster_config = ClusterConfig::default();
+        let leader = Arc::new(LeaderElector::new(
+            pool.clone(),
+            &cluster_config,
+            "lease-manager",
+        ));
+        let _election_handle = leader.run();
+
+        // Clone the inner PgPool before moving `pool` into PgLeaseBackend.
+        let inner_pool = pool.inner().clone();
+
+        (
+            Arc::new(pg_store::PgLeaseBackend::new(pool)),
+            Some(leader),
+            Some(inner_pool),
+        )
+    } else {
+        info!("DATABASE_URL not set – using in-memory lease store");
+        (Arc::new(store::InMemoryLeaseStore::new()), None, None)
+    };
 
     // Spawn background expiration sweep (works with any backend).
     // When an elector is available, only the leader node runs the sweep.
     let _expiration_handle =
-        expiration::spawn_expiration_task(Arc::clone(&lease_store), elector);
+        expiration::spawn_expiration_task(Arc::clone(&lease_store), elector.clone());
+
+    // Spawn rotation sweep and deprecated-version cleanup tasks.
+    // These require a PostgreSQL pool, so they are only started when DATABASE_URL
+    // is configured (signalled by `pg_pool` being Some).
+    if let Some(pool) = pg_pool {
+        let rotation_config = rotation::RotationConfig::from_env();
+        let (_rotation_sweep_handle, _version_cleanup_handle) =
+            rotation::spawn_rotation_tasks(pool, elector, rotation_config);
+    }
 
     // Build the gRPC service.
     let lease_service = LeaseServiceImpl::new(Arc::clone(&lease_store));

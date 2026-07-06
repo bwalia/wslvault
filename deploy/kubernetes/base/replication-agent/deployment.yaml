@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: replication-agent
+  labels:
+    app: replication-agent
+    component: replication
+spec:
+  # One leader-elected replica per region. Leader election is handled by the
+  # PostgreSQL advisory lock in wslvault-cluster; additional replicas are warm
+  # standbys that become active if the leader pod is evicted.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: replication-agent
+  template:
+    metadata:
+      labels:
+        app: replication-agent
+        component: replication
+    spec:
+      serviceAccountName: replication-agent
+      containers:
+        - name: replication-agent
+          image: wslvault/replication-agent:latest
+          ports:
+            - name: http
+              containerPort: 8091
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: REGION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            - name: REPLICATION_LISTEN_ADDR
+              value: "0.0.0.0:8091"
+            - name: REPLICATION_POLL_INTERVAL_MS
+              value: "500"
+            - name: REPLICATION_BATCH_SIZE
+              value: "100"
+            - name: REPLICATION_CONFLICT_STRATEGY
+              value: "last_write_wins"
+            - name: RUST_LOG
+              value: "info,replication_agent=debug"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: replication-agent
+spec:
+  selector:
+    app: replication-agent
+  ports:
+    - name: http
+      port: 8091
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: replication-agent

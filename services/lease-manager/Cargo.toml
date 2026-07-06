@@ -30,6 +30,9 @@ chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+reqwest = { workspace = true }
+once_cell = { workspace = true }
+prometheus = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

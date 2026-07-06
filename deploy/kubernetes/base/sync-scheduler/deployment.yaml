@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sync-scheduler
+  labels:
+    app: sync-scheduler
+    component: replication
+spec:
+  # Two replicas; leader election ensures only one actively runs sync jobs.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sync-scheduler
+  template:
+    metadata:
+      labels:
+        app: sync-scheduler
+        component: replication
+    spec:
+      serviceAccountName: sync-scheduler
+      containers:
+        - name: sync-scheduler
+          image: wslvault/sync-scheduler:latest
+          ports:
+            - name: http
+              containerPort: 8093
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wslvault-db-credentials
+                  key: url
+            - name: REGION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            - name: SYNC_SCHEDULER_LISTEN_ADDR
+              value: "0.0.0.0:8093"
+            - name: RUST_LOG
+              value: "info,sync_scheduler=debug"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sync-scheduler
+spec:
+  selector:
+    app: sync-scheduler
+  ports:
+    - name: http
+      port: 8093
+      targetPort: http
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sync-scheduler

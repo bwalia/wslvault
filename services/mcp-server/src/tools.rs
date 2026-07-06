@@ -100,10 +100,13 @@ fn fire_audit_event(
     });
 }
 
-/// List all available MCP tools.
-pub async fn list_tools() -> Json<ListToolsResponse> {
-    Json(ListToolsResponse {
-        tools: vec![
+/// Return the canonical list of all tool definitions.
+///
+/// This is the single source of truth used by both the legacy REST `list_tools`
+/// handler and the new JSON-RPC `tools/list` method.  Callers should not
+/// duplicate the tool definitions — always derive from this function.
+pub fn all_tool_definitions() -> Vec<ToolDefinition> {
+    vec![
             ToolDefinition {
                 name: "read_secret".into(),
                 description: "Read a secret from WSLVault by path".into(),
@@ -300,62 +303,84 @@ pub async fn list_tools() -> Json<ListToolsResponse> {
                     "required": ["lease_id", "tenant_id"]
                 }),
             },
-        ],
-    })
+        ]
 }
 
-/// Dispatch an MCP tool call to the appropriate handler, then fire an async
-/// audit event regardless of whether the call succeeded or failed.
-pub async fn call_tool(
-    State(state): State<AppState>,
-    Json(req): Json<CallToolRequest>,
-) -> Json<CallToolResponse> {
-    // Capture tenant_id before moving req.arguments into the handler.
-    let tenant_id = req
-        .arguments
+/// Dispatch a tool call by name, returning the MCP response shape.
+///
+/// This is the central routing function for both the JSON-RPC `tools/call`
+/// handler and the legacy REST `call_tool` handler.  It fires an async audit
+/// event after every call regardless of outcome.
+pub async fn dispatch_tool(
+    state: &AppState,
+    tool_name: &str,
+    arguments: Value,
+) -> CallToolResponse {
+    // Extract tenant_id for the audit trail before moving `arguments`.
+    let tenant_id = arguments
         .get("tenant_id")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_owned();
 
-    let result = match req.name.as_str() {
-        "read_secret" => handle_read_secret(&state, req.arguments).await,
-        "write_secret" => handle_write_secret(&state, req.arguments).await,
-        "list_secrets" => handle_list_secrets(&state, req.arguments).await,
-        "encrypt_data" => handle_encrypt(&state, req.arguments).await,
-        "decrypt_data" => handle_decrypt(&state, req.arguments).await,
-        "delete_secret" => handle_delete_secret(&state, req.arguments).await,
-        "destroy_secret_version" => handle_destroy_secret_version(&state, req.arguments).await,
-        "rotate_transit_key" => handle_rotate_transit_key(&state, req.arguments).await,
-        "list_leases" => handle_list_leases(&state, req.arguments).await,
-        "revoke_lease" => handle_revoke_lease(&state, req.arguments).await,
-        _ => Err(format!("unknown tool: {}", req.name)),
+    let result = match tool_name {
+        "read_secret" => handle_read_secret(state, arguments).await,
+        "write_secret" => handle_write_secret(state, arguments).await,
+        "list_secrets" => handle_list_secrets(state, arguments).await,
+        "encrypt_data" => handle_encrypt(state, arguments).await,
+        "decrypt_data" => handle_decrypt(state, arguments).await,
+        "delete_secret" => handle_delete_secret(state, arguments).await,
+        "destroy_secret_version" => handle_destroy_secret_version(state, arguments).await,
+        "rotate_transit_key" => handle_rotate_transit_key(state, arguments).await,
+        "list_leases" => handle_list_leases(state, arguments).await,
+        "revoke_lease" => handle_revoke_lease(state, arguments).await,
+        unknown => Err(format!("unknown tool: {unknown}")),
     };
 
-    // Fire audit event asynchronously; do not block or propagate errors.
     fire_audit_event(
         state.audit_engine_url.clone(),
-        req.name.clone(),
+        tool_name.to_owned(),
         tenant_id,
         result.is_ok(),
     );
 
     match result {
-        Ok(text) => Json(CallToolResponse {
+        Ok(text) => CallToolResponse {
             content: vec![ToolContent {
                 content_type: "text".into(),
                 text,
             }],
             is_error: None,
-        }),
-        Err(err) => Json(CallToolResponse {
+        },
+        Err(err) => CallToolResponse {
             content: vec![ToolContent {
                 content_type: "text".into(),
                 text: err,
             }],
             is_error: Some(true),
-        }),
+        },
     }
+}
+
+/// List all available MCP tools (legacy REST handler).
+///
+/// Delegates to [`all_tool_definitions`] so the tool list is defined in one
+/// place and shared with the JSON-RPC `tools/list` method.
+pub async fn list_tools() -> Json<ListToolsResponse> {
+    Json(ListToolsResponse {
+        tools: all_tool_definitions(),
+    })
+}
+
+/// Legacy REST handler for `POST /v1/mcp/tools/call`.
+///
+/// Delegates to [`dispatch_tool`] so both the REST and JSON-RPC paths share
+/// identical routing and auditing logic.
+pub async fn call_tool(
+    State(state): State<AppState>,
+    Json(req): Json<CallToolRequest>,
+) -> Json<CallToolResponse> {
+    Json(dispatch_tool(&state, &req.name, req.arguments).await)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,18 @@
+{{- if .Values.syncScheduler.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "sync-scheduler" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "sync-scheduler" "componentType" "replication" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "sync-scheduler" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.syncScheduler.httpPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,18 @@
+{{- if .Values.replicationAgent.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "replication-agent" "componentType" "replication" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "replication-agent" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.replicationAgent.httpPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

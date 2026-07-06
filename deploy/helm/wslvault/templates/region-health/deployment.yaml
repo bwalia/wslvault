@@ -1,0 +1,106 @@
+{{/*
+region-health/deployment.yaml
+Polls remote region health endpoints and updates system.regions with current
+status and replication lag.  Handles region promotion requests via HTTP API.
+Leader election via PostgreSQL advisory locks.
+*/}}
+{{- if .Values.regionHealth.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "region-health" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "region-health" "componentType" "replication" "context" $) | nindent 4 }}
+  {{- with .Values.regionHealth.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.regionHealth.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "region-health" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "region-health" "componentType" "replication" "context" $) | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        {{- toYaml .Values.monitoring.scrapeAnnotations | nindent 8 }}
+        prometheus.io/port: {{ .Values.regionHealth.httpPort | quote }}
+        {{- with .Values.regionHealth.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.regionHealth.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: region-health
+          image: {{ include "wslvault.image" (dict "image" .Values.regionHealth.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.regionHealth.httpPort }}
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+            - name: REGION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            - name: REGION_HEALTH_LISTEN_ADDR
+              value: {{ printf "0.0.0.0:%d" (int .Values.regionHealth.httpPort) | quote }}
+            {{- with .Values.regionHealth.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.regionHealth.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.regionHealth.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.regionHealth.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.regionHealth.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

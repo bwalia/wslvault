@@ -14,6 +14,9 @@ resources:
   - audit-service/deployment.yaml
   - transit-engine/deployment.yaml
   - mcp-server/deployment.yaml
+  - replication-agent/deployment.yaml
+  - region-health/deployment.yaml
+  - sync-scheduler/deployment.yaml
   - network-policies.yaml
 
 commonLabels:

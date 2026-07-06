@@ -1,0 +1,106 @@
+{{/*
+sync-scheduler/deployment.yaml
+Runs scheduled and event-driven sync jobs against external secret managers
+(AWS SM, GCP SM, etc.) using the wslvault-connectors crate.  Leader election
+via PostgreSQL advisory locks ensures only one replica runs jobs at a time.
+*/}}
+{{- if .Values.syncScheduler.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "sync-scheduler" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "sync-scheduler" "componentType" "replication" "context" $) | nindent 4 }}
+  {{- with .Values.syncScheduler.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.syncScheduler.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "sync-scheduler" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "sync-scheduler" "componentType" "replication" "context" $) | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        {{- toYaml .Values.monitoring.scrapeAnnotations | nindent 8 }}
+        prometheus.io/port: {{ .Values.syncScheduler.httpPort | quote }}
+        {{- with .Values.syncScheduler.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.syncScheduler.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: sync-scheduler
+          image: {{ include "wslvault.image" (dict "image" .Values.syncScheduler.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.syncScheduler.httpPort }}
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+            - name: REGION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            - name: SYNC_SCHEDULER_LISTEN_ADDR
+              value: {{ printf "0.0.0.0:%d" (int .Values.syncScheduler.httpPort) | quote }}
+            {{- with .Values.syncScheduler.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.syncScheduler.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.syncScheduler.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.syncScheduler.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.syncScheduler.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

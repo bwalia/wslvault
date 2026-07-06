@@ -31,3 +31,8 @@ once_cell = "1.19"
 
 [dev-dependencies]
 tower = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "crypto_bench"
+harness = false
