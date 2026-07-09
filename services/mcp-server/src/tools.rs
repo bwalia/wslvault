@@ -11,11 +11,52 @@
 
 use axum::{extract::State, Json};
 use chrono::Utc;
+use reqwest::RequestBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{error, warn};
 
 use crate::AppState;
+
+/// Identity context forwarded from the caller (gateway / UI middleware or
+/// environment) on every inbound request.
+///
+/// **HTTP transport:** populated by reading the `X-Policies` and
+/// `X-Principal-Id` headers injected by the gateway after JWT validation.
+///
+/// **stdio transport (dev/local use):** populated from the
+/// `VAULT_MCP_POLICIES` and `VAULT_MCP_PRINCIPAL_ID` environment variables.
+/// In production the HTTP transport behind the gateway is authoritative.
+#[derive(Debug, Clone, Default)]
+pub struct CallerContext {
+    /// Comma-separated policy names that the caller holds, as injected by the
+    /// gateway after successful JWT validation.  Forwarded as `X-Policies` to
+    /// secret-engine / transit-engine so they can authorise the operation.
+    pub policies: Option<String>,
+    /// Stable principal identifier (user ID, service account, etc.) for the
+    /// authenticated caller.  Forwarded as `X-Principal-Id` to backends.
+    pub principal_id: Option<String>,
+}
+
+/// Apply the optional caller-context headers (`X-Tenant-Id`, `X-Policies`,
+/// `X-Principal-Id`) to a [`RequestBuilder`].
+///
+/// Only headers whose values are non-empty are attached, so backends never
+/// receive empty-valued authorization headers that could confuse them.
+fn apply_caller_headers(
+    builder: RequestBuilder,
+    tenant_id: &str,
+    ctx: &CallerContext,
+) -> RequestBuilder {
+    let mut b = builder.header("X-Tenant-Id", tenant_id);
+    if let Some(ref policies) = ctx.policies {
+        b = b.header("X-Policies", policies);
+    }
+    if let Some(ref principal_id) = ctx.principal_id {
+        b = b.header("X-Principal-Id", principal_id);
+    }
+    b
+}
 
 /// MCP Tool schema as described in the protocol.
 #[derive(Debug, Serialize)]
@@ -311,10 +352,14 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
 /// This is the central routing function for both the JSON-RPC `tools/call`
 /// handler and the legacy REST `call_tool` handler.  It fires an async audit
 /// event after every call regardless of outcome.
+///
+/// `ctx` carries the caller's identity (policies, principal) extracted from
+/// the inbound transport and forwarded verbatim to backend services.
 pub async fn dispatch_tool(
     state: &AppState,
     tool_name: &str,
     arguments: Value,
+    ctx: CallerContext,
 ) -> CallToolResponse {
     // Extract tenant_id for the audit trail before moving `arguments`.
     let tenant_id = arguments
@@ -324,16 +369,16 @@ pub async fn dispatch_tool(
         .to_owned();
 
     let result = match tool_name {
-        "read_secret" => handle_read_secret(state, arguments).await,
-        "write_secret" => handle_write_secret(state, arguments).await,
-        "list_secrets" => handle_list_secrets(state, arguments).await,
-        "encrypt_data" => handle_encrypt(state, arguments).await,
-        "decrypt_data" => handle_decrypt(state, arguments).await,
-        "delete_secret" => handle_delete_secret(state, arguments).await,
-        "destroy_secret_version" => handle_destroy_secret_version(state, arguments).await,
-        "rotate_transit_key" => handle_rotate_transit_key(state, arguments).await,
-        "list_leases" => handle_list_leases(state, arguments).await,
-        "revoke_lease" => handle_revoke_lease(state, arguments).await,
+        "read_secret" => handle_read_secret(state, arguments, &ctx).await,
+        "write_secret" => handle_write_secret(state, arguments, &ctx).await,
+        "list_secrets" => handle_list_secrets(state, arguments, &ctx).await,
+        "encrypt_data" => handle_encrypt(state, arguments, &ctx).await,
+        "decrypt_data" => handle_decrypt(state, arguments, &ctx).await,
+        "delete_secret" => handle_delete_secret(state, arguments, &ctx).await,
+        "destroy_secret_version" => handle_destroy_secret_version(state, arguments, &ctx).await,
+        "rotate_transit_key" => handle_rotate_transit_key(state, arguments, &ctx).await,
+        "list_leases" => handle_list_leases(state, arguments, &ctx).await,
+        "revoke_lease" => handle_revoke_lease(state, arguments, &ctx).await,
         unknown => Err(format!("unknown tool: {unknown}")),
     };
 
@@ -376,18 +421,42 @@ pub async fn list_tools() -> Json<ListToolsResponse> {
 ///
 /// Delegates to [`dispatch_tool`] so both the REST and JSON-RPC paths share
 /// identical routing and auditing logic.
+///
+/// `X-Policies` and `X-Principal-Id` are read from the incoming request headers
+/// and forwarded to backend services as-is (pass-through from gateway middleware).
 pub async fn call_tool(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<CallToolRequest>,
 ) -> Json<CallToolResponse> {
-    Json(dispatch_tool(&state, &req.name, req.arguments).await)
+    let ctx = caller_context_from_headers(&headers);
+    Json(dispatch_tool(&state, &req.name, req.arguments, ctx).await)
+}
+
+/// Build a [`CallerContext`] from an HTTP request's headers.
+///
+/// Reads `X-Policies` and `X-Principal-Id` which are injected by the gateway
+/// after JWT validation and must be passed through verbatim to backend services.
+pub fn caller_context_from_headers(headers: &axum::http::HeaderMap) -> CallerContext {
+    CallerContext {
+        policies: headers
+            .get("x-policies")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned()),
+        principal_id: headers
+            .get("x-principal-id")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned()),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Existing tool handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_read_secret(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_read_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -396,9 +465,7 @@ async fn handle_read_secret(state: &AppState, args: Value) -> Result<String, Str
     let url = format!("{}/v1/secret/data/{}", state.secret_engine_url, path);
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.get(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -416,7 +483,7 @@ async fn handle_read_secret(state: &AppState, args: Value) -> Result<String, Str
     Ok(body)
 }
 
-async fn handle_write_secret(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_write_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -426,9 +493,7 @@ async fn handle_write_secret(state: &AppState, args: Value) -> Result<String, St
     let url = format!("{}/v1/secret/data/{}", state.secret_engine_url, path);
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.post(&url), tenant_id, ctx)
         .json(&serde_json::json!({ "data": data }))
         .send()
         .await
@@ -447,7 +512,7 @@ async fn handle_write_secret(state: &AppState, args: Value) -> Result<String, St
     Ok(body)
 }
 
-async fn handle_list_secrets(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_list_secrets(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let prefix = args["prefix"].as_str().unwrap_or("");
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -459,9 +524,7 @@ async fn handle_list_secrets(state: &AppState, args: Value) -> Result<String, St
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.get(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -474,13 +537,16 @@ async fn handle_list_secrets(state: &AppState, args: Value) -> Result<String, St
     Ok(body)
 }
 
-async fn handle_encrypt(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_encrypt(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
     let plaintext = args["plaintext"]
         .as_str()
         .ok_or("missing 'plaintext' argument")?;
+    let tenant_id = args["tenant_id"]
+        .as_str()
+        .ok_or("missing 'tenant_id' argument")?;
 
     let url = format!(
         "{}/v1/transit/encrypt/{}",
@@ -488,8 +554,7 @@ async fn handle_encrypt(state: &AppState, args: Value) -> Result<String, String>
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
+    let resp = apply_caller_headers(client.post(&url), tenant_id, ctx)
         .json(&serde_json::json!({ "plaintext": plaintext }))
         .send()
         .await
@@ -503,13 +568,16 @@ async fn handle_encrypt(state: &AppState, args: Value) -> Result<String, String>
     Ok(body)
 }
 
-async fn handle_decrypt(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_decrypt(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
     let ciphertext = args["ciphertext"]
         .as_str()
         .ok_or("missing 'ciphertext' argument")?;
+    let tenant_id = args["tenant_id"]
+        .as_str()
+        .ok_or("missing 'tenant_id' argument")?;
 
     let url = format!(
         "{}/v1/transit/decrypt/{}",
@@ -517,8 +585,7 @@ async fn handle_decrypt(state: &AppState, args: Value) -> Result<String, String>
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
+    let resp = apply_caller_headers(client.post(&url), tenant_id, ctx)
         .json(&serde_json::json!({ "ciphertext": ciphertext }))
         .send()
         .await
@@ -537,7 +604,7 @@ async fn handle_decrypt(state: &AppState, args: Value) -> Result<String, String>
 // ---------------------------------------------------------------------------
 
 /// DELETE `/v1/secret/data/{path}` — removes all versions of a secret.
-async fn handle_delete_secret(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_delete_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -546,9 +613,7 @@ async fn handle_delete_secret(state: &AppState, args: Value) -> Result<String, S
     let url = format!("{}/v1/secret/data/{}", state.secret_engine_url, path);
 
     let client = reqwest::Client::new();
-    let resp = client
-        .delete(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.delete(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -572,7 +637,7 @@ async fn handle_delete_secret(state: &AppState, args: Value) -> Result<String, S
 
 /// POST `/v1/secret/destroy/{path}` with `{"versions":[N]}` — permanently
 /// destroys the underlying data for a specific secret version.
-async fn handle_destroy_secret_version(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_destroy_secret_version(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -584,9 +649,7 @@ async fn handle_destroy_secret_version(state: &AppState, args: Value) -> Result<
     let url = format!("{}/v1/secret/destroy/{}", state.secret_engine_url, path);
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.post(&url), tenant_id, ctx)
         .json(&serde_json::json!({ "versions": [version] }))
         .send()
         .await
@@ -611,7 +674,7 @@ async fn handle_destroy_secret_version(state: &AppState, args: Value) -> Result<
 
 /// POST `/v1/transit/keys/{key_name}/rotate` — advances the key to a new
 /// cryptographic version; existing ciphertext remains decryptable.
-async fn handle_rotate_transit_key(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_rotate_transit_key(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
@@ -625,10 +688,8 @@ async fn handle_rotate_transit_key(state: &AppState, args: Value) -> Result<Stri
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
-        // Body is empty for a rotate request
+    // Body is empty for a rotate request; only caller-context headers are needed.
+    let resp = apply_caller_headers(client.post(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -652,7 +713,7 @@ async fn handle_rotate_transit_key(state: &AppState, args: Value) -> Result<Stri
 
 /// GET `/v1/leases?tenant_id={tenant_id}` — returns all active leases for
 /// the specified tenant.
-async fn handle_list_leases(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_list_leases(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let tenant_id = args["tenant_id"]
         .as_str()
         .ok_or("missing 'tenant_id' argument")?;
@@ -663,8 +724,7 @@ async fn handle_list_leases(state: &AppState, args: Value) -> Result<String, Str
     );
 
     let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
+    let resp = apply_caller_headers(client.get(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -684,7 +744,7 @@ async fn handle_list_leases(state: &AppState, args: Value) -> Result<String, Str
 
 /// DELETE `/v1/leases/{lease_id}` — revokes the named lease immediately,
 /// invalidating any associated credentials or tokens.
-async fn handle_revoke_lease(state: &AppState, args: Value) -> Result<String, String> {
+async fn handle_revoke_lease(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
     let lease_id = args["lease_id"]
         .as_str()
         .ok_or("missing 'lease_id' argument")?;
@@ -695,9 +755,7 @@ async fn handle_revoke_lease(state: &AppState, args: Value) -> Result<String, St
     let url = format!("{}/v1/leases/{}", state.secret_engine_url, lease_id);
 
     let client = reqwest::Client::new();
-    let resp = client
-        .delete(&url)
-        .header("X-Vault-Tenant-ID", tenant_id)
+    let resp = apply_caller_headers(client.delete(&url), tenant_id, ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;

@@ -158,7 +158,9 @@ BEGIN
     VALUES
         (v_rotation_id, v_secret_id, p_tenant_id, p_path,
          v_old_version, v_new_version, p_initiated_by, p_webhook_url,
-         now() + (p_timeout_secs * INTERVAL '1 second'));
+         -- COALESCE: callers may pass an explicit NULL, which would bypass the
+         -- parameter default and violate the NOT NULL constraint on expires_at.
+         now() + (COALESCE(p_timeout_secs, 86400) * INTERVAL '1 second'));
 
     -- Update secrets table rotation_status
     UPDATE shared.secrets
@@ -185,13 +187,15 @@ DECLARE
     v_grace_secs    INTEGER;
     v_grace_end     TIMESTAMPTZ;
 BEGIN
-    -- Lock and validate the rotation record
-    SELECT secret_id, old_version, new_version
+    -- Lock and validate the rotation record. Columns are alias-qualified
+    -- because the RETURNS TABLE output names old_version/new_version would
+    -- otherwise make the references ambiguous.
+    SELECT sr.secret_id, sr.old_version, sr.new_version
     INTO v_secret_id, v_old_ver, v_new_ver
-    FROM shared.secret_rotations
-    WHERE id = p_rotation_id
-      AND status = 'pending_activation'
-      AND expires_at > now()
+    FROM shared.secret_rotations sr
+    WHERE sr.id = p_rotation_id
+      AND sr.status = 'pending_activation'
+      AND sr.expires_at > now()
     FOR UPDATE;
 
     IF NOT FOUND THEN

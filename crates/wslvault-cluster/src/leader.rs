@@ -97,8 +97,39 @@ impl LeaderElector {
 
             let mut was_leader = false;
 
+            // Advisory locks are session-scoped: the lock belongs to the
+            // specific connection that ran pg_try_advisory_lock. Running it
+            // through the pool would acquire the lock on one pooled connection
+            // and then poll a *different* connection next iteration, seeing
+            // `false` against our own idle lock-holder and demoting ourselves
+            // forever. So the elector holds one dedicated connection for its
+            // whole lifetime; if it drops, PostgreSQL releases the lock and we
+            // reconnect and re-compete.
+            let mut lock_conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>> = None;
+
             loop {
-                match elector.try_acquire_lock().await {
+                if lock_conn.is_none() {
+                    match elector.pool.inner().acquire().await {
+                        Ok(conn) => lock_conn = Some(conn),
+                        Err(e) => {
+                            warn!(error = %e, "failed to acquire election connection");
+                            elector.is_leader.store(false, Ordering::Relaxed);
+                            tokio::time::sleep(elector.heartbeat_interval).await;
+                            continue;
+                        }
+                    }
+                }
+
+                let attempt = elector
+                    .try_acquire_lock(lock_conn.as_mut().expect("connection acquired above"))
+                    .await;
+                if attempt.is_err() {
+                    // The dedicated connection is likely dead; drop it so the
+                    // lock is released server-side and reconnect next round.
+                    lock_conn = None;
+                }
+
+                match attempt {
                     Ok(true) => {
                         if !was_leader {
                             info!(
@@ -157,12 +188,19 @@ impl LeaderElector {
     /// Attempt to acquire the PostgreSQL advisory lock (non-blocking).
     ///
     /// `pg_try_advisory_lock` returns `true` if the lock was acquired, `false`
-    /// if another session holds it. It does NOT block.
-    async fn try_acquire_lock(&self) -> Result<bool, ClusterError> {
+    /// if another session holds it. It does NOT block. Must always be called
+    /// on the elector's dedicated connection — advisory locks are
+    /// session-scoped, and re-acquiring on the session that already holds the
+    /// lock succeeds (the lock is re-entrant), which is what keeps an existing
+    /// leader in power across heartbeats.
+    async fn try_acquire_lock(
+        &self,
+        conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
+    ) -> Result<bool, ClusterError> {
         let row: (bool,) =
             sqlx::query_as("SELECT pg_try_advisory_lock($1)")
                 .bind(self.lock_key)
-                .fetch_one(self.pool.inner())
+                .fetch_one(conn.as_mut())
                 .await
                 .map_err(|e| ClusterError::LockAcquisitionFailed {
                     reason: e.to_string(),

@@ -182,15 +182,14 @@ fn spawn_rotation_sweep(
     })
 }
 
-/// Execute one rotation sweep cycle: query due secrets and dispatch notifications
-/// or perform automatic rotation.
-async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config: &RotationConfig) {
-    // Query all active ROTATION_REQUIRED secrets whose next_rotation_at has passed.
-    // We join to the secrets table directly — all relevant columns were added by
-    // migration 010_secret_lifecycle.sql (webhook_url and rotation_interval_seconds
-    // live directly on shared.secrets).
-    let rows = sqlx::query_as::<_, DueSecret>(
-        r#"
+/// Sweep query for secrets due for rotation.
+///
+/// Liveness is not filtered here: `shared.secrets` has no row-level state
+/// column (per-version liveness lives on `shared.secret_versions.status`),
+/// and a secret with a pending or confirmed rotation is already excluded by
+/// the `rotation_status = 'none'` guard, which is also what prevents the
+/// sweep from re-firing for the same secret on the next cycle.
+const DUE_SECRETS_QUERY: &str = r#"
         SELECT
             s.id,
             s.path,
@@ -199,15 +198,18 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
             s.webhook_url,
             s.rotation_interval_seconds
         FROM shared.secrets s
-        WHERE s.state = 'active'
-          AND s.secret_type = 'ROTATION_REQUIRED'
+        WHERE s.secret_type = 'ROTATION_REQUIRED'
           AND s.next_rotation_at IS NOT NULL
           AND s.next_rotation_at <= NOW()
           AND s.rotation_status = 'none'
-        "#,
-    )
-    .fetch_all(pool)
-    .await;
+"#;
+
+/// Execute one rotation sweep cycle: query due secrets and dispatch notifications
+/// or perform automatic rotation.
+async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config: &RotationConfig) {
+    let rows = sqlx::query_as::<_, DueSecret>(DUE_SECRETS_QUERY)
+        .fetch_all(pool)
+        .await;
 
     let due_secrets = match rows {
         Ok(v) => v,
@@ -438,24 +440,10 @@ mod tests {
     // -------------------------------------------------------------------------
     #[test]
     fn test_due_secret_selection_query_structure() {
-        let query = r#"
-        SELECT
-            s.id,
-            s.path,
-            s.tenant_id,
-            s.secret_type,
-            s.webhook_url,
-            s.rotation_interval_seconds
-        FROM shared.secrets s
-        WHERE s.state = 'active'
-          AND s.secret_type = 'ROTATION_REQUIRED'
-          AND s.next_rotation_at IS NOT NULL
-          AND s.next_rotation_at <= NOW()
-          AND s.rotation_status = 'none'
-        "#;
+        // Assert against the real query constant so the test cannot drift from
+        // the production SQL.
+        let query = DUE_SECRETS_QUERY;
 
-        // Verify key predicates exist.
-        assert!(query.contains("s.state = 'active'"), "must filter on active state");
         assert!(
             query.contains("s.secret_type = 'ROTATION_REQUIRED'"),
             "must filter on ROTATION_REQUIRED type"
@@ -510,18 +498,8 @@ mod tests {
         let query_predicate = "AND s.rotation_status = 'none'";
 
         // The sweep query must include this guard.
-        let full_query = r#"
-        SELECT s.id, s.path, s.tenant_id, s.secret_type, s.webhook_url, s.rotation_interval_seconds
-        FROM shared.secrets s
-        WHERE s.state = 'active'
-          AND s.secret_type = 'ROTATION_REQUIRED'
-          AND s.next_rotation_at IS NOT NULL
-          AND s.next_rotation_at <= NOW()
-          AND s.rotation_status = 'none'
-        "#;
-
         assert!(
-            full_query.contains(query_predicate.trim()),
+            DUE_SECRETS_QUERY.contains(query_predicate.trim()),
             "sweep query must exclude already-pending secrets to prevent double-fire"
         );
 

@@ -29,6 +29,8 @@ mod health;
 mod jsonrpc;
 mod tools;
 
+use tools::{caller_context_from_headers, CallerContext};
+
 use std::net::SocketAddr;
 
 use axum::{
@@ -137,7 +139,18 @@ async fn bearer_auth_middleware(
 /// Accepts a JSON-RPC 2.0 request body and returns the corresponding response
 /// object.  Notifications (requests without an `id`) receive an HTTP 204 No
 /// Content because no JSON-RPC response is defined for them.
-async fn jsonrpc_handler(State(state): State<AppState>, body: Bytes) -> Response {
+///
+/// `X-Policies` and `X-Principal-Id` from the incoming request are extracted
+/// and forwarded to backend services via [`CallerContext`] (pass-through from
+/// gateway / UI middleware after JWT validation).
+async fn jsonrpc_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    // Build caller context from gateway-injected headers.
+    let ctx = caller_context_from_headers(&headers);
+
     // Step 1: parse the raw bytes as a JSON-RPC envelope.
     let req = match jsonrpc::parse_request(&body) {
         Ok(r) => r,
@@ -155,7 +168,7 @@ async fn jsonrpc_handler(State(state): State<AppState>, body: Bytes) -> Response
     debug!(method = %req.method, id = ?req.id, "JSON-RPC request received");
 
     // Step 3: dispatch to the appropriate MCP method handler.
-    match jsonrpc::dispatch(req, &state).await {
+    match jsonrpc::dispatch(req, &state, ctx).await {
         Some(resp) => Json(resp).into_response(),
         // Notifications produce no response — return HTTP 204.
         None => StatusCode::NO_CONTENT.into_response(),
@@ -175,10 +188,35 @@ async fn jsonrpc_handler(State(state): State<AppState>, body: Bytes) -> Response
 /// The vault token is sourced from `VAULT_TOKEN` (or `WSLVAULT_TOKEN` as a
 /// legacy fallback) and forwarded to backend services as `X-Vault-Token`
 /// without any transport-level auth enforcement.
+///
+/// ## Caller context in stdio mode (dev/local use)
+///
+/// Because there is no gateway to inject `X-Policies` / `X-Principal-Id`
+/// headers in stdio mode, the caller context is sourced from environment
+/// variables:
+///
+/// | Env var                    | Forwarded as      |
+/// |----------------------------|-------------------|
+/// | `VAULT_MCP_POLICIES`       | `X-Policies`      |
+/// | `VAULT_MCP_PRINCIPAL_ID`   | `X-Principal-Id`  |
+///
+/// In production the HTTP transport behind the gateway is authoritative and
+/// these environment variables are not consulted.
 async fn run_stdio(state: AppState) -> anyhow::Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     info!("MCP stdio transport started — reading JSON-RPC from stdin");
+
+    // Build a single CallerContext for all requests in this stdio session from
+    // environment variables (dev/local use; see doc comment above).
+    let stdio_ctx = CallerContext {
+        policies: std::env::var("VAULT_MCP_POLICIES")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        principal_id: std::env::var("VAULT_MCP_PRINCIPAL_ID")
+            .ok()
+            .filter(|s| !s.is_empty()),
+    };
 
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
@@ -217,7 +255,7 @@ async fn run_stdio(state: AppState) -> anyhow::Result<()> {
 
         debug!(method = %req.method, id = ?req.id, "stdio JSON-RPC request");
 
-        if let Some(resp) = jsonrpc::dispatch(req, &state).await {
+        if let Some(resp) = jsonrpc::dispatch(req, &state, stdio_ctx.clone()).await {
             write_response(&mut writer, &resp).await?;
         }
         // Notifications produce no output — continue to next line.

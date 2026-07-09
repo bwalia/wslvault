@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
-use crate::tools;
+use crate::tools::{self, CallerContext};
 use crate::AppState;
 
 // ---------------------------------------------------------------------------
@@ -177,7 +177,10 @@ pub fn validate_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
 ///
 /// Returns `None` for notifications (requests whose `id` is null or absent)
 /// because the MCP/JSON-RPC spec prohibits sending a response to a notification.
-pub async fn dispatch(req: JsonRpcRequest, state: &AppState) -> Option<JsonRpcResponse> {
+///
+/// `ctx` carries the caller's identity (policies, principal) extracted from
+/// the inbound transport and forwarded verbatim to backend services.
+pub async fn dispatch(req: JsonRpcRequest, state: &AppState, ctx: CallerContext) -> Option<JsonRpcResponse> {
     // A null id marks a notification — never respond to these.
     let is_notification = req.id.is_null();
     let id = req.id.clone();
@@ -198,7 +201,7 @@ pub async fn dispatch(req: JsonRpcRequest, state: &AppState) -> Option<JsonRpcRe
 
         "tools/list" => handle_tools_list(id),
 
-        "tools/call" => handle_tools_call(id, &req.params, state).await,
+        "tools/call" => handle_tools_call(id, &req.params, state, ctx).await,
 
         unknown_method => {
             // Unknown notifications are silently ignored per JSON-RPC spec §4.
@@ -277,6 +280,7 @@ async fn handle_tools_call(
     id: Value,
     params: &Value,
     state: &AppState,
+    ctx: CallerContext,
 ) -> JsonRpcResponse {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(name) => name.to_owned(),
@@ -296,7 +300,7 @@ async fn handle_tools_call(
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let call_response = tools::dispatch_tool(state, &tool_name, arguments).await;
+    let call_response = tools::dispatch_tool(state, &tool_name, arguments, ctx).await;
 
     // `isError` is explicitly set to false on success so callers don't have to
     // special-case its absence.
@@ -417,7 +421,7 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("initialize must return a response (not a notification)");
 
@@ -457,7 +461,7 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state).await;
+        let resp = dispatch(req, &state, CallerContext::default()).await;
         assert!(
             resp.is_none(),
             "notifications/initialized must not produce a JSON-RPC response"
@@ -477,7 +481,7 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("ping must return a response");
         assert!(resp.error.is_none(), "ping must not return an error");
@@ -497,7 +501,7 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("tools/list must return a response");
 
@@ -549,7 +553,7 @@ mod tests {
             params: json!({ "name": "completely_unknown_tool", "arguments": {} }),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("tools/call must always return a JSON-RPC response");
 
@@ -588,7 +592,7 @@ mod tests {
             }),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("tools/call must return a response even when the backend is unreachable");
 
@@ -626,7 +630,7 @@ mod tests {
             params: json!({ "arguments": { "path": "x", "tenant_id": "t" } }),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("tools/call must return a response");
         let err = resp
@@ -653,7 +657,7 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state)
+        let resp = dispatch(req, &state, CallerContext::default())
             .await
             .expect("unknown method must produce a response when id is present");
         let err = resp
@@ -677,10 +681,115 @@ mod tests {
             params: json!({}),
         };
         let state = unreachable_state();
-        let resp = dispatch(req, &state).await;
+        let resp = dispatch(req, &state, CallerContext::default()).await;
         assert!(
             resp.is_none(),
             "unknown notification must produce no response"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // CallerContext — header extraction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn caller_context_from_headers_extracts_policies_and_principal_id() {
+        use axum::http::HeaderMap;
+        use crate::tools::caller_context_from_headers;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-policies", "read_secrets,write_secrets".parse().unwrap());
+        headers.insert("x-principal-id", "user-abc-123".parse().unwrap());
+
+        let ctx = caller_context_from_headers(&headers);
+
+        assert_eq!(
+            ctx.policies.as_deref(),
+            Some("read_secrets,write_secrets"),
+            "X-Policies header must be captured in CallerContext.policies"
+        );
+        assert_eq!(
+            ctx.principal_id.as_deref(),
+            Some("user-abc-123"),
+            "X-Principal-Id header must be captured in CallerContext.principal_id"
+        );
+    }
+
+    #[test]
+    fn caller_context_from_headers_yields_none_for_absent_headers() {
+        use axum::http::HeaderMap;
+        use crate::tools::caller_context_from_headers;
+
+        let headers = HeaderMap::new();
+        let ctx = caller_context_from_headers(&headers);
+
+        assert!(
+            ctx.policies.is_none(),
+            "absent X-Policies must produce None in CallerContext.policies"
+        );
+        assert!(
+            ctx.principal_id.is_none(),
+            "absent X-Principal-Id must produce None in CallerContext.principal_id"
+        );
+    }
+
+    #[test]
+    fn caller_context_from_headers_treats_empty_value_as_none() {
+        use axum::http::HeaderMap;
+        use crate::tools::caller_context_from_headers;
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-policies", "".parse().unwrap());
+        headers.insert("x-principal-id", "".parse().unwrap());
+
+        let ctx = caller_context_from_headers(&headers);
+
+        assert!(
+            ctx.policies.is_none(),
+            "empty X-Policies must produce None (not an empty string)"
+        );
+        assert!(
+            ctx.principal_id.is_none(),
+            "empty X-Principal-Id must produce None (not an empty string)"
+        );
+    }
+
+    #[tokio::test]
+    async fn tools_call_with_caller_context_reaches_dispatch_tool() {
+        // Verify that a non-default CallerContext is accepted end-to-end by the
+        // dispatch pipeline.  The backend is unreachable, so we expect isError=true,
+        // but the call must not panic or return a protocol error.
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".into(),
+            id: json!(99),
+            method: "tools/call".into(),
+            params: json!({
+                "name": "read_secret",
+                "arguments": {
+                    "path": "prod/api-key",
+                    "tenant_id": "tenant-xyz"
+                }
+            }),
+        };
+        let state = unreachable_state();
+        let ctx = CallerContext {
+            policies: Some("read_secrets".into()),
+            principal_id: Some("svc-account-1".into()),
+        };
+        let resp = dispatch(req, &state, ctx)
+            .await
+            .expect("tools/call must return a response");
+
+        // Backend is unreachable — tool error, not protocol error.
+        assert!(
+            resp.error.is_none(),
+            "JSON-RPC envelope must not carry a protocol error when caller context is present"
+        );
+        let result = resp.result.unwrap();
+        assert_eq!(
+            result["isError"],
+            json!(true),
+            "unreachable backend must produce isError=true even with caller context"
         );
     }
 }
