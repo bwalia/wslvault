@@ -65,7 +65,7 @@ cryptoService:
   enabled: true
   replicaCount: 3
   image:
-    repository: wslvault/crypto-service
+    repository: bwalia/wslvault-crypto-service
     # -- Leave empty to use global.imageTag
     tag: ""
   # -- HTTP port for REST and health endpoints
@@ -96,7 +96,7 @@ secretEngine:
   enabled: true
   replicaCount: 3
   image:
-    repository: wslvault/secret-engine
+    repository: bwalia/wslvault-secret-engine
     tag: ""
   httpPort: 8081
   grpcPort: 50052
@@ -123,7 +123,7 @@ policyEngine:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/policy-engine
+    repository: bwalia/wslvault-policy-engine
     tag: ""
   httpPort: 8083
   grpcPort: 50053
@@ -150,7 +150,7 @@ identityService:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/identity-service
+    repository: bwalia/wslvault-identity-service
     tag: ""
   httpPort: 8082
   grpcPort: 50054
@@ -177,7 +177,7 @@ leaseManager:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/lease-manager
+    repository: bwalia/wslvault-lease-manager
     tag: ""
   httpPort: 8084
   grpcPort: 50055
@@ -204,7 +204,7 @@ auditService:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/audit-service
+    repository: bwalia/wslvault-audit-service
     tag: ""
   httpPort: 8085
   grpcPort: 50056
@@ -231,7 +231,7 @@ transitEngine:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/transit-engine
+    repository: bwalia/wslvault-transit-engine
     tag: ""
   httpPort: 8086
   # -- transit-engine does not expose a gRPC port
@@ -258,7 +258,7 @@ pkiEngine:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/pki-engine
+    repository: bwalia/wslvault-pki-engine
     tag: ""
   httpPort: 8088
   # -- pki-engine does not expose a gRPC port
@@ -280,7 +280,7 @@ mcpServer:
   enabled: true
   replicaCount: 1
   image:
-    repository: wslvault/mcp-server
+    repository: bwalia/wslvault-mcp-server
     tag: ""
   httpPort: 8087
   # -- mcp-server does not expose a gRPC port
@@ -339,7 +339,7 @@ replicationAgent:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/replication-agent
+    repository: bwalia/wslvault-replication-agent
     # -- Leave empty to use global.imageTag
     tag: ""
   # -- HTTP port for replication API, health probes, and Prometheus metrics
@@ -369,7 +369,7 @@ regionHealth:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/region-health
+    repository: bwalia/wslvault-region-health
     tag: ""
   # -- HTTP port for health API and Prometheus metrics
   httpPort: 8092
@@ -391,7 +391,7 @@ syncScheduler:
   enabled: true
   replicaCount: 2
   image:
-    repository: wslvault/sync-scheduler
+    repository: bwalia/wslvault-sync-scheduler
     tag: ""
   # -- HTTP port for status API and health probes
   httpPort: 8093
