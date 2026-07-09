@@ -325,20 +325,28 @@ pub fn select_provider() -> Result<Box<dyn RootKeyProvider>, RootKeyError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Process-wide env vars are shared across the parallel test runner, so every
+    /// test that mutates `VAULT_ROOT_KEY` or `VAULT_ROOT_KEY_PROVIDER` must hold
+    /// this lock for its full duration.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// EnvRootKeyProvider succeeds when `VAULT_ROOT_KEY` is a valid base64
-    /// 32-byte key.  We use a unique env-var per test to avoid races in the
-    /// parallel test runner; however for determinism we serialize env mutation
-    /// using a mutex guard.
+    /// 32-byte key.
     #[tokio::test]
     async fn env_provider_loads_valid_key() {
         use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine as _;
 
+        let _guard = env_guard();
         let key_bytes: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_mul(3));
         let key_b64 = BASE64.encode(key_bytes);
 
-        // SAFETY: test-only environment mutation, acceptable under single-threaded assumption.
         std::env::set_var("VAULT_ROOT_KEY", &key_b64);
         let provider = EnvRootKeyProvider;
         let loaded = provider.load_root_key().await.expect("load should succeed");
@@ -348,6 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_provider_fails_when_var_missing() {
+        let _guard = env_guard();
         // Ensure the variable is absent.
         std::env::remove_var("VAULT_ROOT_KEY");
         let provider = EnvRootKeyProvider;
@@ -360,6 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn env_provider_fails_on_invalid_base64() {
+        let _guard = env_guard();
         std::env::set_var("VAULT_ROOT_KEY", "not!valid!base64!");
         let provider = EnvRootKeyProvider;
         let result = provider.load_root_key().await;
@@ -375,6 +385,7 @@ mod tests {
         use base64::engine::general_purpose::STANDARD as BASE64;
         use base64::Engine as _;
 
+        let _guard = env_guard();
         // 16 bytes — too short.
         let short_b64 = BASE64.encode([0u8; 16]);
         std::env::set_var("VAULT_ROOT_KEY", &short_b64);
@@ -389,6 +400,7 @@ mod tests {
 
     #[test]
     fn select_provider_defaults_to_env() {
+        let _guard = env_guard();
         std::env::remove_var("VAULT_ROOT_KEY_PROVIDER");
         // select_provider() should return an EnvRootKeyProvider without error.
         assert!(
@@ -399,6 +411,7 @@ mod tests {
 
     #[test]
     fn select_provider_env_explicit() {
+        let _guard = env_guard();
         std::env::set_var("VAULT_ROOT_KEY_PROVIDER", "env");
         assert!(select_provider().is_ok(), "explicit 'env' provider must succeed");
         std::env::remove_var("VAULT_ROOT_KEY_PROVIDER");
@@ -406,6 +419,7 @@ mod tests {
 
     #[test]
     fn select_provider_unknown_name_errors() {
+        let _guard = env_guard();
         std::env::set_var("VAULT_ROOT_KEY_PROVIDER", "vault-transit");
         let result = select_provider();
         assert!(
@@ -420,6 +434,7 @@ mod tests {
     #[cfg(not(feature = "aws-kms"))]
     #[test]
     fn select_provider_aws_kms_without_feature_errors() {
+        let _guard = env_guard();
         std::env::set_var("VAULT_ROOT_KEY_PROVIDER", "aws-kms");
         let result = select_provider();
         assert!(

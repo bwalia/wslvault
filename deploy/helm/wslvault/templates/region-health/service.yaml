@@ -1,0 +1,18 @@
+{{- if .Values.regionHealth.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "region-health" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "region-health" "componentType" "replication" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "region-health" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.regionHealth.httpPort }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

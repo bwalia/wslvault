@@ -334,6 +334,80 @@ gateway:
     maxReplicas: 6
     targetCPUUtilizationPercentage: 70
 
+# -- replication-agent: cross-region secret, policy, and tenant replication
+replicationAgent:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/replication-agent
+    # -- Leave empty to use global.imageTag
+    tag: ""
+  # -- HTTP port for replication API, health probes, and Prometheus metrics
+  httpPort: 8091
+  # -- Milliseconds between peer polls
+  pollIntervalMs: 500
+  # -- Maximum events to fetch per poll batch
+  batchSize: 100
+  # -- Conflict resolution strategy: "last_write_wins", "vector_clock", or "manual"
+  conflictStrategy: "last_write_wins"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # -- Extra env vars (e.g. REPLICATION_PEERS for wiring peer URLs)
+  extraEnv: []
+
+# -- region-health: multi-region health monitor and failover coordinator
+regionHealth:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/region-health
+    tag: ""
+  # -- HTTP port for health API and Prometheus metrics
+  httpPort: 8092
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+
+# -- sync-scheduler: scheduled sync with external secret managers
+syncScheduler:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: wslvault/sync-scheduler
+    tag: ""
+  # -- HTTP port for status API and health probes
+  httpPort: 8093
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "128Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+
 # -- Bitnami PostgreSQL subchart configuration
 # See: https://github.com/bitnami/charts/tree/main/bitnami/postgresql
 postgresql:

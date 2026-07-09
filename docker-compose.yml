@@ -171,6 +171,72 @@ services:
     depends_on:
       - secret-engine
 
+  replication-agent:
+    build:
+      context: .
+      dockerfile: deploy/docker/replication-agent/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      REGION_ID: "local"
+      # No peers in single-node dev; set to "region-b=http://replication-agent-b:8091"
+      # in a multi-node compose override.
+      REPLICATION_PEERS: ""
+      REPLICATION_LISTEN_ADDR: "0.0.0.0:8091"
+      REPLICATION_POLL_INTERVAL_MS: "500"
+      REPLICATION_BATCH_SIZE: "100"
+      REPLICATION_CONFLICT_STRATEGY: "last_write_wins"
+      RUST_LOG: "info,replication_agent=debug"
+    ports:
+      - "18091:8091"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8091/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  region-health:
+    build:
+      context: .
+      dockerfile: deploy/docker/region-health/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      REGION_ID: "local"
+      REGION_HEALTH_LISTEN_ADDR: "0.0.0.0:8092"
+      RUST_LOG: "info,region_health=debug"
+    ports:
+      - "18092:8092"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8092/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  sync-scheduler:
+    build:
+      context: .
+      dockerfile: deploy/docker/sync-scheduler/Dockerfile
+    environment:
+      DATABASE_URL: "postgres://wslvault:devpassword@postgres:5432/wslvault"
+      REGION_ID: "local"
+      SYNC_SCHEDULER_LISTEN_ADDR: "0.0.0.0:8093"
+      RUST_LOG: "info,sync_scheduler=debug"
+    ports:
+      - "18093:8093"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8093/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   gateway:
     image: openresty/openresty:1.25.3.2-alpine
     ports:

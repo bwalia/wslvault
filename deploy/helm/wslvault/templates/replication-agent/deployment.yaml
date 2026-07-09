@@ -1,0 +1,112 @@
+{{/*
+replication-agent/deployment.yaml
+Consumes replication events from peer regions and applies them to the local
+database with LWW or vector-clock conflict resolution.  Leader election (via
+PostgreSQL advisory locks) ensures only one active replica per region.
+*/}}
+{{- if .Values.replicationAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "replication-agent" "componentType" "replication" "context" $) | nindent 4 }}
+  {{- with .Values.replicationAgent.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicationAgent.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "replication-agent" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "replication-agent" "componentType" "replication" "context" $) | nindent 8 }}
+      {{- if .Values.monitoring.enabled }}
+      annotations:
+        {{- toYaml .Values.monitoring.scrapeAnnotations | nindent 8 }}
+        prometheus.io/port: {{ .Values.replicationAgent.httpPort | quote }}
+        {{- with .Values.replicationAgent.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      {{- with .Values.replicationAgent.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: replication-agent
+          image: {{ include "wslvault.image" (dict "image" .Values.replicationAgent.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.replicationAgent.httpPort }}
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+            - name: REGION_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            - name: REPLICATION_LISTEN_ADDR
+              value: {{ printf "0.0.0.0:%d" (int .Values.replicationAgent.httpPort) | quote }}
+            - name: REPLICATION_POLL_INTERVAL_MS
+              value: {{ .Values.replicationAgent.pollIntervalMs | quote }}
+            - name: REPLICATION_BATCH_SIZE
+              value: {{ .Values.replicationAgent.batchSize | quote }}
+            - name: REPLICATION_CONFLICT_STRATEGY
+              value: {{ .Values.replicationAgent.conflictStrategy | quote }}
+            {{- with .Values.replicationAgent.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.replicationAgent.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.replicationAgent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.replicationAgent.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.replicationAgent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

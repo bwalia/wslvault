@@ -120,6 +120,9 @@ jobs:
           - lease-manager
           - audit-service
           - mcp-server
+          - replication-agent
+          - region-health
+          - sync-scheduler
     steps:
       - uses: actions/checkout@v4
 
