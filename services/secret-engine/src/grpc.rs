@@ -180,11 +180,7 @@ impl SecretService for SecretServiceImpl {
             return Err(vault_err_to_status(e));
         }
 
-        let ver_entry = match self
-            .store
-            .get(&req.tenant_id, &path, req.version)
-            .await
-        {
+        let ver_entry = match self.store.get(&req.tenant_id, &path, req.version).await {
             Ok(v) => v,
             Err(e) => {
                 self.audit_client
@@ -457,7 +453,13 @@ impl SecretService for SecretServiceImpl {
         let resource = format!("secret/data/{}", path);
         if let Err(e) = self
             .policy_client
-            .authorize(&req.tenant_id, &principal_id, &policies, "delete", &resource)
+            .authorize(
+                &req.tenant_id,
+                &principal_id,
+                &policies,
+                "delete",
+                &resource,
+            )
             .await
         {
             self.audit_client
@@ -544,7 +546,13 @@ impl SecretService for SecretServiceImpl {
         let resource = format!("secret/data/{}", path);
         if let Err(e) = self
             .policy_client
-            .authorize(&req.tenant_id, &principal_id, &policies, "delete", &resource)
+            .authorize(
+                &req.tenant_id,
+                &principal_id,
+                &policies,
+                "delete",
+                &resource,
+            )
             .await
         {
             self.audit_client
@@ -632,7 +640,13 @@ impl SecretService for SecretServiceImpl {
         // Authorize before listing from the store.
         if let Err(e) = self
             .policy_client
-            .authorize(&req.tenant_id, &principal_id, &policies, "list", "secret/list")
+            .authorize(
+                &req.tenant_id,
+                &principal_id,
+                &policies,
+                "list",
+                "secret/list",
+            )
             .await
         {
             self.audit_client
@@ -714,11 +728,7 @@ impl SecretService for SecretServiceImpl {
             return Err(vault_err_to_status(e));
         }
 
-        let entry = match self
-            .store
-            .get_metadata(&req.tenant_id, &path)
-            .await
-        {
+        let entry = match self.store.get_metadata(&req.tenant_id, &path).await {
             Ok(e) => e,
             Err(e) => {
                 self.audit_client

@@ -95,8 +95,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     // ── 2. Read configuration from the environment ───────────────────────────
-    let vault_endpoint = std::env::var("VAULT_ENDPOINT")
-        .unwrap_or_else(|_| DEFAULT_VAULT_ENDPOINT.to_string());
+    let vault_endpoint =
+        std::env::var("VAULT_ENDPOINT").unwrap_or_else(|_| DEFAULT_VAULT_ENDPOINT.to_string());
 
     let policy_engine_endpoint = default_policy_engine_endpoint();
 
@@ -181,10 +181,7 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// The controller watches all `VaultSecret` resources across all namespaces
 /// and calls [`reconcile`] for each event.
-async fn run_controller(
-    kube_client: Client,
-    ctx: Arc<OperatorContext>,
-) -> anyhow::Result<()> {
+async fn run_controller(kube_client: Client, ctx: Arc<OperatorContext>) -> anyhow::Result<()> {
     let vault_secrets: Api<VaultSecret> = Api::all(kube_client.clone());
 
     info!("starting VaultSecret controller");

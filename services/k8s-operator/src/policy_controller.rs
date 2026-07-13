@@ -127,11 +127,7 @@ pub async fn reconcile(
     );
 
     // ── 1. Handle deletion ───────────────────────────────────────────────────
-    if vault_policy
-        .metadata
-        .deletion_timestamp
-        .is_some()
-    {
+    if vault_policy.metadata.deletion_timestamp.is_some() {
         return handle_delete(&vault_policy, &ctx, &namespace, generation).await;
     }
 
@@ -297,7 +293,9 @@ async fn handle_delete(
             )
             .await;
 
-            return Ok(Action::requeue(Duration::from_secs(DEFAULT_ERROR_BACKOFF_SECS)));
+            return Ok(Action::requeue(Duration::from_secs(
+                DEFAULT_ERROR_BACKOFF_SECS,
+            )));
         }
     }
 
@@ -321,10 +319,7 @@ async fn handle_delete(
 pub fn validate_capabilities(spec: &VaultPolicySpec) -> Result<(), String> {
     for rule in &spec.rules {
         if rule.paths.is_empty() {
-            return Err(format!(
-                "rule '{}' must have at least one path",
-                rule.name
-            ));
+            return Err(format!("rule '{}' must have at least one path", rule.name));
         }
 
         if rule.capabilities.is_empty() {
@@ -424,9 +419,7 @@ async fn delete_policy(
 
     debug!(url = %url, tenant_id = %tenant_id, "deleting policy");
 
-    let mut request = http_client
-        .delete(&url)
-        .header("X-Tenant-Id", tenant_id);
+    let mut request = http_client.delete(&url).header("X-Tenant-Id", tenant_id);
 
     if let Some(token) = vault_token {
         request = request.bearer_auth(token);
@@ -455,10 +448,7 @@ async fn delete_policy(
 /// Resolution order:
 /// 1. `spec.policy_engine_endpoint`
 /// 2. `ctx.default_policy_engine_endpoint` (from `POLICY_ENGINE_ENDPOINT` env var)
-fn resolve_policy_engine_endpoint(
-    spec: &VaultPolicySpec,
-    ctx: &PolicyOperatorContext,
-) -> String {
+fn resolve_policy_engine_endpoint(spec: &VaultPolicySpec, ctx: &PolicyOperatorContext) -> String {
     spec.policy_engine_endpoint
         .as_deref()
         .unwrap_or(&ctx.default_policy_engine_endpoint)
@@ -581,11 +571,7 @@ async fn add_finalizer(
 ) -> Result<(), OperatorError> {
     let api: Api<VaultPolicy> = Api::namespaced(kube_client.clone(), namespace);
 
-    let mut finalizers = vault_policy
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default();
+    let mut finalizers = vault_policy.metadata.finalizers.clone().unwrap_or_default();
 
     if !finalizers.contains(&POLICY_FINALIZER.to_string()) {
         finalizers.push(POLICY_FINALIZER.to_string());
@@ -690,20 +676,18 @@ mod tests {
 
     #[test]
     fn validate_capabilities_accepts_all_valid_values() {
-        let spec = make_spec(vec![
-            make_rule(
-                "all-caps",
-                vec![
-                    PolicyCapability::Read,
-                    PolicyCapability::Write,
-                    PolicyCapability::Delete,
-                    PolicyCapability::List,
-                    PolicyCapability::Create,
-                    PolicyCapability::Update,
-                    PolicyCapability::Deny,
-                ],
-            ),
-        ]);
+        let spec = make_spec(vec![make_rule(
+            "all-caps",
+            vec![
+                PolicyCapability::Read,
+                PolicyCapability::Write,
+                PolicyCapability::Delete,
+                PolicyCapability::List,
+                PolicyCapability::Create,
+                PolicyCapability::Update,
+                PolicyCapability::Deny,
+            ],
+        )]);
 
         assert!(validate_capabilities(&spec).is_ok());
     }
@@ -760,7 +744,10 @@ mod tests {
     fn build_dto_maps_rules_and_capabilities_correctly() {
         let spec = make_spec(vec![
             make_rule("r1", vec![PolicyCapability::Read, PolicyCapability::List]),
-            make_rule("r2", vec![PolicyCapability::Write, PolicyCapability::Delete]),
+            make_rule(
+                "r2",
+                vec![PolicyCapability::Write, PolicyCapability::Delete],
+            ),
         ]);
 
         let dto = build_policy_document_dto(&spec);
@@ -868,10 +855,8 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_uses_spec_override_when_present() {
-        let endpoint = resolve_endpoint_raw(
-            Some("http://custom-engine:9999"),
-            "http://default:8082",
-        );
+        let endpoint =
+            resolve_endpoint_raw(Some("http://custom-engine:9999"), "http://default:8082");
         assert_eq!(endpoint, "http://custom-engine:9999");
     }
 
@@ -883,10 +868,7 @@ mod tests {
 
     #[test]
     fn resolve_endpoint_strips_trailing_slash() {
-        let endpoint = resolve_endpoint_raw(
-            Some("http://engine:8082/"),
-            "http://default:8082",
-        );
+        let endpoint = resolve_endpoint_raw(Some("http://engine:8082/"), "http://default:8082");
         assert_eq!(endpoint, "http://engine:8082");
     }
 }

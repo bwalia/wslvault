@@ -53,9 +53,7 @@ pub async fn execute(args: TenantArgs, ctx: &CommandContext) -> anyhow::Result<(
                 "display_name": display_name,
                 "tier": tier,
             });
-            let mut req = client
-                .post(format!("{}/v1/tenants", base))
-                .json(&body);
+            let mut req = client.post(format!("{}/v1/tenants", base)).json(&body);
             if let Some(ref t) = ctx.token {
                 req = req.bearer_auth(t);
             }

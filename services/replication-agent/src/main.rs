@@ -84,10 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = Router::new()
         .route("/health", get(health::health_handler))
         .route("/ready", get(health::ready_handler))
-        .route(
-            "/v1/replication/events",
-            get(producer::get_events_handler),
-        )
+        .route("/v1/replication/events", get(producer::get_events_handler))
         .route(
             "/v1/replication/ack",
             axum::routing::post(producer::ack_handler),

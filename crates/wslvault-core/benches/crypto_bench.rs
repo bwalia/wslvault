@@ -49,9 +49,7 @@ fn bench_aes_gcm_encrypt(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("{}_bytes", size)),
             &payload,
             |b, p| {
-                b.iter(|| {
-                    encrypt_with_dek(black_box(&dek), black_box(p), black_box(aad)).unwrap()
-                });
+                b.iter(|| encrypt_with_dek(black_box(&dek), black_box(p), black_box(aad)).unwrap());
             },
         );
     }
@@ -98,9 +96,7 @@ fn bench_hkdf_derive_key(c: &mut Criterion) {
     let info = b"tenant-bench:prod/service/api-key:dek-v1";
 
     c.bench_function("hkdf_sha256/derive_key_32b", |b| {
-        b.iter(|| {
-            derive_key(black_box(&ikm), black_box(Some(salt)), black_box(info)).unwrap()
-        });
+        b.iter(|| derive_key(black_box(&ikm), black_box(Some(salt)), black_box(info)).unwrap());
     });
 }
 

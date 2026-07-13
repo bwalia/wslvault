@@ -34,7 +34,7 @@ use crate::lease_client::LeaseClient;
 use crate::path::normalize_and_validate;
 use crate::policy_client::{extract_policies, extract_principal_id, PolicyClient};
 
-use wslvault_core::metrics::collector::{SECRET_OPERATIONS_TOTAL, SECRETS_MANAGED};
+use wslvault_core::metrics::collector::{SECRETS_MANAGED, SECRET_OPERATIONS_TOTAL};
 use wslvault_core::VaultError;
 
 // ─── Shared app state ────────────────────────────────────────────────────────
@@ -1437,7 +1437,12 @@ pub async fn rollback_secret(
 
     let new_version = match state
         .store
-        .rollback(&tenant_id, &normalized_path, body.target_version, &principal_id)
+        .rollback(
+            &tenant_id,
+            &normalized_path,
+            body.target_version,
+            &principal_id,
+        )
         .await
     {
         Ok(v) => v,
@@ -1560,7 +1565,11 @@ pub async fn list_versions(
         })
         .collect();
 
-    (StatusCode::OK, Json(ListVersionsResponse { versions: items })).into_response()
+    (
+        StatusCode::OK,
+        Json(ListVersionsResponse { versions: items }),
+    )
+        .into_response()
 }
 
 // ─── Router factory ───────────────────────────────────────────────────────────

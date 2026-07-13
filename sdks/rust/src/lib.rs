@@ -64,15 +64,14 @@ pub use client::{
     // Lease types
     LeaseRecord,
     LeaseRenewResponse,
+    // Secret types
+    ListResponse,
     // Policy types
     PolicyCreateRequest,
     PolicyListResponse,
     PolicyResponse,
     PolicyRule,
-    // Secret types
-    ListResponse,
     SecretData,
-    WriteResponse,
     // Tenant types
     TenantCreateRequest,
     TenantResponse,
@@ -85,6 +84,7 @@ pub use client::{
     TransitKeyRotateResponse,
     TransitSignResponse,
     TransitVerifyResponse,
+    WriteResponse,
 };
 pub use config::ClientConfig;
 pub use error::VaultClientError;

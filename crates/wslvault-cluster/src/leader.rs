@@ -142,12 +142,8 @@ impl LeaderElector {
                         elector.is_leader.store(true, Ordering::Relaxed);
 
                         // Update heartbeat and leader flag in cluster_nodes.
-                        if let Err(e) = store::update_heartbeat(
-                            &elector.pool,
-                            &elector.node_id,
-                            true,
-                        )
-                        .await
+                        if let Err(e) =
+                            store::update_heartbeat(&elector.pool, &elector.node_id, true).await
                         {
                             warn!(error = %e, "failed to update leader heartbeat");
                         }
@@ -164,12 +160,8 @@ impl LeaderElector {
                         elector.is_leader.store(false, Ordering::Relaxed);
 
                         // Update heartbeat as follower.
-                        if let Err(e) = store::update_heartbeat(
-                            &elector.pool,
-                            &elector.node_id,
-                            false,
-                        )
-                        .await
+                        if let Err(e) =
+                            store::update_heartbeat(&elector.pool, &elector.node_id, false).await
                         {
                             debug!(error = %e, "failed to update follower heartbeat");
                         }
@@ -197,14 +189,13 @@ impl LeaderElector {
         &self,
         conn: &mut sqlx::pool::PoolConnection<sqlx::Postgres>,
     ) -> Result<bool, ClusterError> {
-        let row: (bool,) =
-            sqlx::query_as("SELECT pg_try_advisory_lock($1)")
-                .bind(self.lock_key)
-                .fetch_one(conn.as_mut())
-                .await
-                .map_err(|e| ClusterError::LockAcquisitionFailed {
-                    reason: e.to_string(),
-                })?;
+        let row: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+            .bind(self.lock_key)
+            .fetch_one(conn.as_mut())
+            .await
+            .map_err(|e| ClusterError::LockAcquisitionFailed {
+                reason: e.to_string(),
+            })?;
 
         Ok(row.0)
     }

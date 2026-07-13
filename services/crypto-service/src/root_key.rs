@@ -253,9 +253,7 @@ async fn kms_generate_data_key(
         "Generated new root KEK. PERSIST VAULT_ROOT_KEY_CIPHERTEXT before the next restart."
     );
 
-    let plaintext_blob = response
-        .plaintext
-        .ok_or(RootKeyError::KmsNoPlaintext)?;
+    let plaintext_blob = response.plaintext.ok_or(RootKeyError::KmsNoPlaintext)?;
 
     let result = extract_32_bytes_from_blob(plaintext_blob)?;
     info!(key_id, "New root KEK generated via AWS KMS GenerateDataKey");
@@ -291,8 +289,8 @@ fn extract_32_bytes_from_blob(
 /// Fails at startup with a clear error message if `aws-kms` is requested but
 /// the feature is not compiled in.
 pub fn select_provider() -> Result<Box<dyn RootKeyProvider>, RootKeyError> {
-    let provider_name = std::env::var("VAULT_ROOT_KEY_PROVIDER")
-        .unwrap_or_else(|_| "env".to_string());
+    let provider_name =
+        std::env::var("VAULT_ROOT_KEY_PROVIDER").unwrap_or_else(|_| "env".to_string());
 
     match provider_name.trim().to_lowercase().as_str() {
         "env" => Ok(Box::new(EnvRootKeyProvider)),
@@ -333,7 +331,9 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn env_guard() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// EnvRootKeyProvider succeeds when `VAULT_ROOT_KEY` is a valid base64
@@ -413,7 +413,10 @@ mod tests {
     fn select_provider_env_explicit() {
         let _guard = env_guard();
         std::env::set_var("VAULT_ROOT_KEY_PROVIDER", "env");
-        assert!(select_provider().is_ok(), "explicit 'env' provider must succeed");
+        assert!(
+            select_provider().is_ok(),
+            "explicit 'env' provider must succeed"
+        );
         std::env::remove_var("VAULT_ROOT_KEY_PROVIDER");
     }
 

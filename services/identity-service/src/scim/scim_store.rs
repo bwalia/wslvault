@@ -133,19 +133,28 @@ impl ScimStore for MemoryScimStore {
     // -- Users ---------------------------------------------------------------
 
     async fn get_user(&self, id: &str) -> Result<Option<ScimUser>, ScimStoreError> {
-        let users = self.users.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let users = self
+            .users
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(users.get(id).cloned())
     }
 
     async fn user_exists_by_username(&self, user_name: &str) -> Result<bool, ScimStoreError> {
-        let users = self.users.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let users = self
+            .users
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(users
             .values()
             .any(|u| u.user_name.eq_ignore_ascii_case(user_name)))
     }
 
     async fn insert_user(&self, user: &ScimUser) -> Result<(), ScimStoreError> {
-        let mut users = self.users.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut users = self
+            .users
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         if let Some(id) = &user.id {
             users.insert(id.clone(), user.clone());
         }
@@ -153,7 +162,10 @@ impl ScimStore for MemoryScimStore {
     }
 
     async fn update_user(&self, user: &ScimUser) -> Result<(), ScimStoreError> {
-        let mut users = self.users.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut users = self
+            .users
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         if let Some(id) = &user.id {
             users.insert(id.clone(), user.clone());
         }
@@ -161,7 +173,10 @@ impl ScimStore for MemoryScimStore {
     }
 
     async fn delete_user(&self, id: &str) -> Result<bool, ScimStoreError> {
-        let mut users = self.users.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut users = self
+            .users
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(users.remove(id).is_some())
     }
 
@@ -171,7 +186,10 @@ impl ScimStore for MemoryScimStore {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<ScimUser>, usize), ScimStoreError> {
-        let users = self.users.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let users = self
+            .users
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         let mut matched: Vec<ScimUser> = users.values().cloned().collect();
 
         if let Some(target) = filter_username {
@@ -186,7 +204,10 @@ impl ScimStore for MemoryScimStore {
     // -- Groups --------------------------------------------------------------
 
     async fn get_group(&self, id: &str) -> Result<Option<ScimGroup>, ScimStoreError> {
-        let groups = self.groups.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let groups = self
+            .groups
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(groups.get(id).cloned())
     }
 
@@ -194,14 +215,20 @@ impl ScimStore for MemoryScimStore {
         &self,
         display_name: &str,
     ) -> Result<bool, ScimStoreError> {
-        let groups = self.groups.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let groups = self
+            .groups
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(groups
             .values()
             .any(|g| g.display_name.eq_ignore_ascii_case(display_name)))
     }
 
     async fn insert_group(&self, group: &ScimGroup) -> Result<(), ScimStoreError> {
-        let mut groups = self.groups.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut groups = self
+            .groups
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         if let Some(id) = &group.id {
             groups.insert(id.clone(), group.clone());
         }
@@ -209,7 +236,10 @@ impl ScimStore for MemoryScimStore {
     }
 
     async fn update_group(&self, group: &ScimGroup) -> Result<(), ScimStoreError> {
-        let mut groups = self.groups.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut groups = self
+            .groups
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         if let Some(id) = &group.id {
             groups.insert(id.clone(), group.clone());
         }
@@ -217,7 +247,10 @@ impl ScimStore for MemoryScimStore {
     }
 
     async fn delete_group(&self, id: &str) -> Result<Option<ScimGroup>, ScimStoreError> {
-        let mut groups = self.groups.write().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let mut groups = self
+            .groups
+            .write()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         Ok(groups.remove(id))
     }
 
@@ -227,7 +260,10 @@ impl ScimStore for MemoryScimStore {
         offset: usize,
         limit: usize,
     ) -> Result<(Vec<ScimGroup>, usize), ScimStoreError> {
-        let groups = self.groups.read().map_err(|_| ScimStoreError::LockPoisoned)?;
+        let groups = self
+            .groups
+            .read()
+            .map_err(|_| ScimStoreError::LockPoisoned)?;
         let mut matched: Vec<ScimGroup> = groups.values().cloned().collect();
 
         if let Some(target) = filter_display_name {
@@ -256,8 +292,7 @@ impl PgScimStore {
 
     /// Reconstructs a `ScimUser` from a database row.
     fn row_to_user(row: &PgUserRow) -> ScimUser {
-        let emails: Vec<ScimEmail> =
-            serde_json::from_value(row.emails.clone()).unwrap_or_default();
+        let emails: Vec<ScimEmail> = serde_json::from_value(row.emails.clone()).unwrap_or_default();
         let groups: Vec<ScimGroupRef> =
             serde_json::from_value(row.groups_ref.clone()).unwrap_or_default();
 
@@ -409,12 +444,10 @@ impl ScimStore for PgScimStore {
     // -- Users ---------------------------------------------------------------
 
     async fn get_user(&self, id: &str) -> Result<Option<ScimUser>, ScimStoreError> {
-        let row = sqlx::query_as::<_, PgUserRow>(
-            "SELECT * FROM shared.scim_users WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, PgUserRow>("SELECT * FROM shared.scim_users WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
 
         Ok(row.as_ref().map(Self::row_to_user))
     }
@@ -556,12 +589,10 @@ impl ScimStore for PgScimStore {
     // -- Groups --------------------------------------------------------------
 
     async fn get_group(&self, id: &str) -> Result<Option<ScimGroup>, ScimStoreError> {
-        let row = sqlx::query_as::<_, PgGroupRow>(
-            "SELECT * FROM shared.scim_groups WHERE id = $1",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row = sqlx::query_as::<_, PgGroupRow>("SELECT * FROM shared.scim_groups WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
 
         match row {
             Some(r) => {
@@ -592,13 +623,11 @@ impl ScimStore for PgScimStore {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "INSERT INTO shared.scim_groups (id, display_name) VALUES ($1, $2)",
-        )
-        .bind(id)
-        .bind(&group.display_name)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("INSERT INTO shared.scim_groups (id, display_name) VALUES ($1, $2)")
+            .bind(id)
+            .bind(&group.display_name)
+            .execute(&mut *tx)
+            .await?;
 
         self.sync_members(&mut tx, id, &group.members).await?;
 
@@ -611,13 +640,11 @@ impl ScimStore for PgScimStore {
 
         let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "UPDATE shared.scim_groups SET display_name = $2 WHERE id = $1",
-        )
-        .bind(id)
-        .bind(&group.display_name)
-        .execute(&mut *tx)
-        .await?;
+        sqlx::query("UPDATE shared.scim_groups SET display_name = $2 WHERE id = $1")
+            .bind(id)
+            .bind(&group.display_name)
+            .execute(&mut *tx)
+            .await?;
 
         self.sync_members(&mut tx, id, &group.members).await?;
 

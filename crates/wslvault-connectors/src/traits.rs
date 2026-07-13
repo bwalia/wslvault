@@ -82,11 +82,7 @@ pub trait SecretConnector: Send + Sync {
     /// Implementations SHOULD perform an upsert (create-or-update) rather than
     /// failing if the secret already exists, unless the connector's API does not
     /// support upsert semantics.
-    async fn push(
-        &self,
-        external_path: &str,
-        data: &SecretData,
-    ) -> Result<(), ConnectorError>;
+    async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError>;
 
     /// List the names / paths of secrets available under `prefix`.
     ///

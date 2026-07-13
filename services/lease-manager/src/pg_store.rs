@@ -197,15 +197,19 @@ impl LeaseStoreBackend for PgLeaseBackend {
             return Err(format!("lease {} is not renewable", lease_id));
         }
 
-        let max_expires_at =
-            record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
+        let max_expires_at = record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
         let proposed_expires_at = Utc::now() + chrono::Duration::seconds(increment_secs);
         let new_expires_at = proposed_expires_at.min(max_expires_at);
 
         let core_id = CoreLeaseId(lease_id.0);
-        lease_store::renew_lease(&self.pool, &core_id, new_expires_at, increment_secs.max(0) as u64)
-            .await
-            .map_err(|e| e.to_string())?;
+        lease_store::renew_lease(
+            &self.pool,
+            &core_id,
+            new_expires_at,
+            increment_secs.max(0) as u64,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Re-fetch after update so the returned record reflects the persisted state.
         self.get_lease(lease_id)
@@ -220,11 +224,7 @@ impl LeaseStoreBackend for PgLeaseBackend {
             .map_err(|e| e.to_string())
     }
 
-    async fn list_leases(
-        &self,
-        _tenant_id: &str,
-        _state_filter: Option<&str>,
-    ) -> Vec<LeaseRecord> {
+    async fn list_leases(&self, _tenant_id: &str, _state_filter: Option<&str>) -> Vec<LeaseRecord> {
         // The wslvault_storage lease_store does not expose a list operation.
         // Return an empty vec; a future migration can add the SQL query.
         //
@@ -239,10 +239,7 @@ impl LeaseStoreBackend for PgLeaseBackend {
         const BATCH_SIZE: i32 = 500;
 
         match lease_store::expire_leases(&self.pool, BATCH_SIZE).await {
-            Ok(core_ids) => core_ids
-                .into_iter()
-                .map(|cid| LeaseId(cid.0))
-                .collect(),
+            Ok(core_ids) => core_ids.into_iter().map(|cid| LeaseId(cid.0)).collect(),
             Err(err) => {
                 error!(
                     error = %err,

@@ -42,12 +42,11 @@ pub struct StoredAuditEvent {
 pub async fn insert_event(pool: &DbPool, event: &StoredAuditEvent) -> Result<(), VaultError> {
     // Parse the string tenant_id into a Uuid so we bind the correct Postgres
     // type.  The audit-service is responsible for providing a well-formed UUID.
-    let tenant_uuid = Uuid::parse_str(&event.tenant_id).map_err(|e| {
-        VaultError::ValidationError {
+    let tenant_uuid =
+        Uuid::parse_str(&event.tenant_id).map_err(|e| VaultError::ValidationError {
             field: "tenant_id".into(),
             reason: format!("invalid UUID: {}", e),
-        }
-    })?;
+        })?;
 
     sqlx::query(
         "INSERT INTO shared.audit_events

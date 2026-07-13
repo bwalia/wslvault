@@ -102,7 +102,8 @@ impl ClusterState {
     /// Record a heartbeat from a peer node.
     pub fn receive_heartbeat(&mut self, peer: NodeInfo) {
         let peer_id = peer.node_id.clone();
-        self.last_heartbeat_times.insert(peer_id.clone(), Instant::now());
+        self.last_heartbeat_times
+            .insert(peer_id.clone(), Instant::now());
 
         // Update or insert the peer info.
         self.nodes.insert(peer_id, peer);
@@ -188,8 +189,21 @@ impl ClusterState {
     /// Returns a summary of all known nodes for API/dashboard consumption.
     pub fn cluster_summary(&self) -> ClusterSummary {
         let nodes: Vec<NodeInfo> = self.nodes.values().cloned().collect();
-        let active_count = nodes.iter().filter(|n| matches!(n.state, NodeState::Active | NodeState::Leader | NodeState::Standby)).count();
-        let regions: Vec<String> = nodes.iter().map(|n| n.region.clone()).collect::<std::collections::HashSet<_>>().into_iter().collect();
+        let active_count = nodes
+            .iter()
+            .filter(|n| {
+                matches!(
+                    n.state,
+                    NodeState::Active | NodeState::Leader | NodeState::Standby
+                )
+            })
+            .count();
+        let regions: Vec<String> = nodes
+            .iter()
+            .map(|n| n.region.clone())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
 
         ClusterSummary {
             total_nodes: nodes.len(),
@@ -247,8 +261,15 @@ pub async fn run_heartbeat_loop(state: SharedClusterState) {
                     warn!(leader = %leader, "leader appears to have failed, initiating election");
                     s.election_term += 1;
                     // Simple election: node with lexicographically smallest active ID wins.
-                    let active_ids: Vec<&String> = s.nodes.iter()
-                        .filter(|(_, n)| matches!(n.state, NodeState::Active | NodeState::Leader | NodeState::Standby))
+                    let active_ids: Vec<&String> = s
+                        .nodes
+                        .iter()
+                        .filter(|(_, n)| {
+                            matches!(
+                                n.state,
+                                NodeState::Active | NodeState::Leader | NodeState::Standby
+                            )
+                        })
                         .map(|(id, _)| id)
                         .collect();
 

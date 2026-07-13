@@ -209,15 +209,12 @@ impl AzureWorkloadManager {
 
         // Extract optional subscription from xms_mirid claim.
         // Format: /subscriptions/{sub}/resourcegroups/{rg}/providers/...
-        let subscription_id = claims
-            .xms_mirid
-            .as_deref()
-            .and_then(|mirid| {
-                mirid
-                    .strip_prefix("/subscriptions/")
-                    .and_then(|rest| rest.split('/').next())
-                    .map(String::from)
-            });
+        let subscription_id = claims.xms_mirid.as_deref().and_then(|mirid| {
+            mirid
+                .strip_prefix("/subscriptions/")
+                .and_then(|rest| rest.split('/').next())
+                .map(String::from)
+        });
 
         // Check bound subscription if configured.
         if !self.config.bound_subscription_ids.is_empty() {
@@ -270,10 +267,7 @@ impl AzureWorkloadManager {
     }
 
     /// Fetches (and caches) the JWKS keys for the given Azure AD tenant.
-    async fn get_jwks(
-        &self,
-        azure_tenant_id: &str,
-    ) -> Result<Vec<JwkKey>, AzureWorkloadError> {
+    async fn get_jwks(&self, azure_tenant_id: &str) -> Result<Vec<JwkKey>, AzureWorkloadError> {
         // Check cache first.
         {
             let cache = self.jwks_cache.read().await;

@@ -330,7 +330,11 @@ mod tests {
         // We test the invariant: last_seq is always base + batch_size for a
         // full batch, and None for an empty batch.
         fn events_last_seq_test(count: usize, base: i64) -> Option<i64> {
-            if count == 0 { None } else { Some(base + count as i64) }
+            if count == 0 {
+                None
+            } else {
+                Some(base + count as i64)
+            }
         }
 
         assert_eq!(events_last_seq_test(0, 42), None);

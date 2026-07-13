@@ -156,21 +156,16 @@ impl AwsIamManager {
         }
 
         // Decode the body from base64.
-        let body_bytes = base64::Engine::decode(
-            &base64::engine::general_purpose::STANDARD,
-            iam_request_body,
-        )
-        .map_err(|e| AwsIamError::ParseError(format!("base64 decode body: {e}")))?;
+        let body_bytes =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, iam_request_body)
+                .map_err(|e| AwsIamError::ParseError(format!("base64 decode body: {e}")))?;
 
         // Parse the signed headers.
         let headers: HashMap<String, String> = serde_json::from_str(iam_request_headers_json)
             .map_err(|e| AwsIamError::ParseError(format!("parse headers JSON: {e}")))?;
 
         // Replay the signed request to STS.
-        let mut request_builder = self
-            .http_client
-            .post(iam_request_url)
-            .body(body_bytes);
+        let mut request_builder = self.http_client.post(iam_request_url).body(body_bytes);
 
         for (key, value) in &headers {
             request_builder = request_builder.header(key.as_str(), value.as_str());

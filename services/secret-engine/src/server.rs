@@ -146,7 +146,13 @@ async fn run_grpc(
     policy_client: PolicyClient,
     lease_client: LeaseClient,
 ) -> anyhow::Result<()> {
-    let service_impl = SecretServiceImpl::new(store, crypto_endpoint, audit_client, policy_client, lease_client);
+    let service_impl = SecretServiceImpl::new(
+        store,
+        crypto_endpoint,
+        audit_client,
+        policy_client,
+        lease_client,
+    );
     let svc = SecretServiceServer::new(service_impl);
 
     info!(addr = %addr, "starting gRPC server");
@@ -172,7 +178,13 @@ async fn run_http(
 ) -> anyhow::Result<()> {
     // Build the secret API router, forwarding the policy and lease clients so
     // every handler can gate operations and optionally attach TTL-based leases.
-    let secret_router = build_router(store, crypto_endpoint, audit_client, policy_client, lease_client);
+    let secret_router = build_router(
+        store,
+        crypto_endpoint,
+        audit_client,
+        policy_client,
+        lease_client,
+    );
 
     // Mount health probes alongside the secret API routes, with metrics middleware.
     let app = secret_router

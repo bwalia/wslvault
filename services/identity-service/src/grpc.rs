@@ -163,18 +163,17 @@ impl IdentityService for IdentityServiceImpl {
             Method::Oidc(oidc_auth) => {
                 // Require that an OIDC manager is configured; return a clear
                 // error if the operator has not set VAULT_OIDC_PROVIDERS.
-                let manager = self.oidc_manager.as_ref().ok_or_else(|| {
-                    Status::unavailable("OIDC authentication is not configured")
-                })?;
+                let manager = self
+                    .oidc_manager
+                    .as_ref()
+                    .ok_or_else(|| Status::unavailable("OIDC authentication is not configured"))?;
 
                 // Validate the caller-supplied ID token against the named
                 // provider and extract the wslvault principal concepts.
                 let result = manager
                     .validate_id_token(&oidc_auth.provider, &oidc_auth.id_token)
                     .await
-                    .map_err(|e| {
-                        Status::unauthenticated(format!("OIDC validation failed: {e}"))
-                    })?;
+                    .map_err(|e| Status::unauthenticated(format!("OIDC validation failed: {e}")))?;
 
                 // Confirm the OIDC-derived tenant matches the requested tenant
                 // to prevent cross-tenant token injection attacks.
@@ -193,8 +192,7 @@ impl IdentityService for IdentityServiceImpl {
                 // Construct a stable, provider-scoped principal ID so the same
                 // OIDC user always maps to the same wslvault principal across
                 // logins.
-                let principal_id =
-                    format!("oidc:{}:{}", oidc_auth.provider, result.subject);
+                let principal_id = format!("oidc:{}:{}", oidc_auth.provider, result.subject);
 
                 // Upsert the principal record — create on first login, silently
                 // ignore the duplicate-key error on subsequent logins so the
@@ -343,15 +341,14 @@ impl IdentityService for IdentityServiceImpl {
             }
             Method::Mtls(mtls_auth) => {
                 // Require that the mTLS manager was configured at startup.
-                let manager = self.mtls_manager.as_ref().ok_or_else(|| {
-                    Status::unavailable("mTLS authentication is not configured")
-                })?;
+                let manager = self
+                    .mtls_manager
+                    .as_ref()
+                    .ok_or_else(|| Status::unavailable("mTLS authentication is not configured"))?;
 
                 let result = manager
                     .validate_certificate(&mtls_auth.certificate_pem)
-                    .map_err(|e| {
-                        Status::unauthenticated(format!("mTLS validation failed: {e}"))
-                    })?;
+                    .map_err(|e| Status::unauthenticated(format!("mTLS validation failed: {e}")))?;
 
                 // Prefix the principal id so it is distinguishable from other
                 // auth methods in audit logs and policy evaluation.

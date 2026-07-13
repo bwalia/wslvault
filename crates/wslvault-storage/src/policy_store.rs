@@ -104,11 +104,7 @@ pub async fn get_policy(
 /// Succeeds silently when no matching row exists, matching the behaviour of
 /// the in-memory `PolicyStore::delete_policy` which returns `None` rather than
 /// an error on a missing key.
-pub async fn delete_policy(
-    pool: &DbPool,
-    tenant_id: &Uuid,
-    name: &str,
-) -> Result<(), VaultError> {
+pub async fn delete_policy(pool: &DbPool, tenant_id: &Uuid, name: &str) -> Result<(), VaultError> {
     sqlx::query(
         "DELETE FROM shared.policies
          WHERE tenant_id = $1 AND name = $2",
@@ -126,10 +122,7 @@ pub async fn delete_policy(
 
 /// Return the names of all policies belonging to a tenant, ordered
 /// alphabetically.
-pub async fn list_policies(
-    pool: &DbPool,
-    tenant_id: &Uuid,
-) -> Result<Vec<String>, VaultError> {
+pub async fn list_policies(pool: &DbPool, tenant_id: &Uuid) -> Result<Vec<String>, VaultError> {
     let rows = sqlx::query(
         "SELECT name FROM shared.policies
          WHERE tenant_id = $1

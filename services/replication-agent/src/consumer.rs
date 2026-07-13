@@ -81,11 +81,7 @@ async fn fetch_and_apply_events(
 
     let resp = client.get(&url).send().await?;
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "peer {} returned status {}",
-            peer.region_id,
-            resp.status()
-        );
+        anyhow::bail!("peer {} returned status {}", peer.region_id, resp.status());
     }
 
     let events: Vec<ReplicationEvent> = resp.json().await?;
@@ -98,9 +94,13 @@ async fn fetch_and_apply_events(
     let max_seq = events_last_seq(&events, last_seq);
 
     for event in events {
-        if let Err(e) =
-            applier::apply_event(pool, &event, &config.conflict_strategy, &config.local_region)
-                .await
+        if let Err(e) = applier::apply_event(
+            pool,
+            &event,
+            &config.conflict_strategy,
+            &config.local_region,
+        )
+        .await
         {
             error!(
                 event_id = %event.id,
@@ -149,21 +149,16 @@ fn events_last_seq(events: &[ReplicationEvent], base: i64) -> Option<i64> {
 }
 
 async fn get_last_sequence(pool: &DbPool, region_id: &str) -> anyhow::Result<i64> {
-    let row: Option<(i64,)> = sqlx::query_as(
-        "SELECT sequence FROM system.region_sequences WHERE region_id = $1",
-    )
-    .bind(region_id)
-    .fetch_optional(pool.inner())
-    .await?;
+    let row: Option<(i64,)> =
+        sqlx::query_as("SELECT sequence FROM system.region_sequences WHERE region_id = $1")
+            .bind(region_id)
+            .fetch_optional(pool.inner())
+            .await?;
 
     Ok(row.map(|r| r.0).unwrap_or(0))
 }
 
-async fn update_last_sequence(
-    pool: &DbPool,
-    region_id: &str,
-    sequence: i64,
-) -> anyhow::Result<()> {
+async fn update_last_sequence(pool: &DbPool, region_id: &str, sequence: i64) -> anyhow::Result<()> {
     sqlx::query(
         r#"
         INSERT INTO system.region_sequences (region_id, sequence, updated_at)

@@ -123,9 +123,10 @@ async fn bearer_auth_middleware(
 
     // Inject the raw token as X-Vault-Token for upstream services to validate,
     // mirroring the gateway Lua auth middleware token-forward path.
-    request
-        .headers_mut()
-        .insert("x-vault-token", token.parse().expect("token is valid header value"));
+    request.headers_mut().insert(
+        "x-vault-token",
+        token.parse().expect("token is valid header value"),
+    );
 
     next.run(request).await
 }

@@ -57,13 +57,19 @@ pub async fn execute(ctx: &CommandContext) -> anyhow::Result<()> {
             Ok(resp) => {
                 any_unhealthy = true;
                 (
-                    format!("degraded ({})", resp.status()).red().bold().to_string(),
+                    format!("degraded ({})", resp.status())
+                        .red()
+                        .bold()
+                        .to_string(),
                     "unknown".to_string(),
                 )
             }
             Err(_) => {
                 any_unhealthy = true;
-                ("unreachable".red().bold().to_string(), "unknown".to_string())
+                (
+                    "unreachable".red().bold().to_string(),
+                    "unknown".to_string(),
+                )
             }
         };
 

@@ -121,11 +121,7 @@ pub trait LeaseStoreBackend: Send + Sync {
     async fn revoke_lease(&self, lease_id: &LeaseId) -> Result<(), String>;
 
     /// List all leases for a tenant, optionally filtered by state string.
-    async fn list_leases(
-        &self,
-        tenant_id: &str,
-        state_filter: Option<&str>,
-    ) -> Vec<LeaseRecord>;
+    async fn list_leases(&self, tenant_id: &str, state_filter: Option<&str>) -> Vec<LeaseRecord>;
 
     /// Sweep active leases whose wall-clock expiry has passed, transitioning
     /// them to Expired.  Returns the IDs of all leases that were expired.
@@ -194,8 +190,7 @@ impl LeaseStoreBackend for InMemoryLeaseStore {
             return Err(format!("lease {} is not renewable", lease_id));
         }
 
-        let max_expires_at =
-            record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
+        let max_expires_at = record.issued_at + chrono::Duration::seconds(record.max_ttl_seconds);
         let proposed_expires_at = Utc::now() + chrono::Duration::seconds(increment_secs);
         // Clamp proposed expiry to the hard upper bound.
         let new_expires_at = proposed_expires_at.min(max_expires_at);
@@ -217,11 +212,7 @@ impl LeaseStoreBackend for InMemoryLeaseStore {
         Ok(())
     }
 
-    async fn list_leases(
-        &self,
-        tenant_id: &str,
-        state_filter: Option<&str>,
-    ) -> Vec<LeaseRecord> {
+    async fn list_leases(&self, tenant_id: &str, state_filter: Option<&str>) -> Vec<LeaseRecord> {
         let guard = self.inner.read().await;
         guard
             .values()

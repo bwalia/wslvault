@@ -103,10 +103,7 @@ mod inner {
         /// This constructor is intentionally non-public because `CredentialSource`
         /// is a private type containing sensitive credential material.  External
         /// callers should use [`AzureKeyVaultConnector::from_env`] instead.
-        fn new(
-            vault_url: String,
-            credential: CredentialSource,
-        ) -> Result<Self, ConnectorError> {
+        fn new(vault_url: String, credential: CredentialSource) -> Result<Self, ConnectorError> {
             let vault_url = vault_url.trim_end_matches('/').to_string();
             let http_client = reqwest::Client::builder()
                 .use_rustls_tls()
@@ -180,7 +177,8 @@ mod inner {
         async fn fetch_access_token(&self) -> Result<CachedToken, ConnectorError> {
             match &self.credential {
                 CredentialSource::ManagedIdentity { client_id } => {
-                    self.fetch_managed_identity_token(client_id.as_deref()).await
+                    self.fetch_managed_identity_token(client_id.as_deref())
+                        .await
                 }
                 CredentialSource::ClientSecret {
                     tenant_id,
@@ -326,11 +324,8 @@ mod inner {
             let value = serde_json::from_str::<serde_json::Value>(&body.value)
                 .unwrap_or_else(|_| serde_json::Value::String(body.value));
 
-            let metadata: HashMap<String, String> = body
-                .tags
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
+            let metadata: HashMap<String, String> =
+                body.tags.unwrap_or_default().into_iter().collect();
 
             debug!(?version, "successfully pulled secret");
             Ok(SecretData {
@@ -342,19 +337,14 @@ mod inner {
         }
 
         #[instrument(skip(self, data), fields(connector = CONNECTOR_NAME, path = external_path))]
-        async fn push(
-            &self,
-            external_path: &str,
-            data: &SecretData,
-        ) -> Result<(), ConnectorError> {
+        async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError> {
             debug!("pushing secret to Azure Key Vault");
 
-            let secret_value = serde_json::to_string(&data.value).map_err(|e| {
-                ConnectorError::Serialise {
+            let secret_value =
+                serde_json::to_string(&data.value).map_err(|e| ConnectorError::Serialise {
                     connector: CONNECTOR_NAME.to_string(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             // Azure Key Vault uses a PUT /secrets/<name> to upsert.
             let body = serde_json::json!({
@@ -385,10 +375,7 @@ mod inner {
                 }
 
                 let token = self.access_token().await?;
-                let mut req = self
-                    .http_client
-                    .get(&current_url)
-                    .bearer_auth(&token);
+                let mut req = self.http_client.get(&current_url).bearer_auth(&token);
 
                 // Only append api-version if this is not a nextLink (which already contains it).
                 if next_link.is_none() {
@@ -569,9 +556,7 @@ mod inner {
     }
 
     /// Parse a JSON token response (shared between IMDS and client-secret flows).
-    async fn parse_token_response(
-        resp: reqwest::Response,
-    ) -> Result<CachedToken, ConnectorError> {
+    async fn parse_token_response(resp: reqwest::Response) -> Result<CachedToken, ConnectorError> {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();

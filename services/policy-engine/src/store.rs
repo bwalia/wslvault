@@ -35,7 +35,8 @@ pub trait PolicyStoreBackend: Send + Sync + std::fmt::Debug {
     /// Returns the previous document if one existed. Backends that cannot
     /// cheaply retrieve the old value (e.g. a Postgres upsert) SHOULD return
     /// `None`.
-    async fn put_policy(&self, tenant_id: &str, document: PolicyDocument) -> Option<PolicyDocument>;
+    async fn put_policy(&self, tenant_id: &str, document: PolicyDocument)
+        -> Option<PolicyDocument>;
 
     /// Retrieve a single policy by tenant and name.
     ///
@@ -170,7 +171,11 @@ impl Default for PolicyStore {
 /// fully interchangeable behind `Arc<dyn PolicyStoreBackend>`.
 #[async_trait]
 impl PolicyStoreBackend for PolicyStore {
-    async fn put_policy(&self, tenant_id: &str, document: PolicyDocument) -> Option<PolicyDocument> {
+    async fn put_policy(
+        &self,
+        tenant_id: &str,
+        document: PolicyDocument,
+    ) -> Option<PolicyDocument> {
         PolicyStore::put_policy(self, tenant_id, document).await
     }
 

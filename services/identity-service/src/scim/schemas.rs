@@ -255,11 +255,7 @@ pub struct ScimListResponse<T> {
 
 impl<T> ScimListResponse<T> {
     /// Constructs a list response from a pre-paginated resource slice.
-    pub fn new(
-        resources: Vec<T>,
-        total_results: usize,
-        start_index: usize,
-    ) -> Self {
+    pub fn new(resources: Vec<T>, total_results: usize, start_index: usize) -> Self {
         let items_per_page = resources.len();
         Self {
             schemas: vec![SCHEMA_LIST_RESPONSE.to_string()],

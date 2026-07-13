@@ -34,7 +34,10 @@ pub async fn apply_event(
         }
         "region_promote" => apply_region_promote(pool, event, local_region).await,
         other => {
-            warn!(event_type = other, "unknown replication event type, skipping");
+            warn!(
+                event_type = other,
+                "unknown replication event type, skipping"
+            );
             Ok(())
         }
     }
@@ -267,7 +270,9 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     let name = event.payload["name"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing name in policy_update payload"))?;
-    let document = event.payload.get("document")
+    let document = event
+        .payload
+        .get("document")
         .ok_or_else(|| anyhow::anyhow!("missing document in policy_update payload"))?
         .clone();
 
@@ -365,12 +370,11 @@ async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     let remote_updated_at = event.created_at;
 
     // LWW check against local `updated_at`.
-    let local_updated_at: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
-        "SELECT updated_at FROM system.tenants WHERE id = $1::uuid",
-    )
-    .bind(tenant_id)
-    .fetch_optional(pool.inner())
-    .await?;
+    let local_updated_at: Option<(chrono::DateTime<chrono::Utc>,)> =
+        sqlx::query_as("SELECT updated_at FROM system.tenants WHERE id = $1::uuid")
+            .bind(tenant_id)
+            .fetch_optional(pool.inner())
+            .await?;
 
     if let Some((local_ts,)) = local_updated_at {
         if local_ts > remote_updated_at {

@@ -137,10 +137,7 @@ impl LeaseService for LeaseServiceImpl {
             Some(req.state_filter.as_str())
         };
 
-        let records = self
-            .store
-            .list_leases(&req.tenant_id, state_filter)
-            .await;
+        let records = self.store.list_leases(&req.tenant_id, state_filter).await;
 
         let leases: Vec<LeaseInfo> = records
             .into_iter()

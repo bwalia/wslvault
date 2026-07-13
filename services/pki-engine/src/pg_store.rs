@@ -255,14 +255,12 @@ impl PkiStore for PgPkiStore {
 
     async fn delete_role(&self, tenant_id: &str, name: &str) -> Result<(), PkiError> {
         let tenant_uuid = tenant_id_to_uuid(tenant_id);
-        let result = sqlx::query(
-            "DELETE FROM pki.pki_roles WHERE tenant_id = $1 AND name = $2",
-        )
-        .bind(tenant_uuid)
-        .bind(name)
-        .execute(self.pool())
-        .await
-        .map_err(db_err)?;
+        let result = sqlx::query("DELETE FROM pki.pki_roles WHERE tenant_id = $1 AND name = $2")
+            .bind(tenant_uuid)
+            .bind(name)
+            .execute(self.pool())
+            .await
+            .map_err(db_err)?;
 
         if result.rows_affected() == 0 {
             return Err(PkiError::RoleNotFound {

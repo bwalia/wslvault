@@ -22,8 +22,7 @@ use crate::store::PrincipalRecord;
 
 use super::{
     schemas::{
-        PatchOpType, ScimError, ScimListParams, ScimListResponse, ScimMeta, ScimUser,
-        SCHEMA_USER,
+        PatchOpType, ScimError, ScimListParams, ScimListResponse, ScimMeta, ScimUser, SCHEMA_USER,
     },
     ScimState,
 };
@@ -52,10 +51,7 @@ fn user_meta(id: &str, created: &str, last_modified: &str) -> ScimMeta {
 fn not_found(id: &str) -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
-        Json(ScimError::new(
-            404,
-            format!("User '{id}' not found"),
-        )),
+        Json(ScimError::new(404, format!("User '{id}' not found"))),
     )
 }
 
@@ -69,10 +65,7 @@ fn conflict(detail: impl Into<String>) -> impl IntoResponse {
 
 /// Returns a 400 SCIM error response for bad requests.
 fn bad_request(detail: impl Into<String>) -> impl IntoResponse {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ScimError::new(400, detail)),
-    )
+    (StatusCode::BAD_REQUEST, Json(ScimError::new(400, detail)))
 }
 
 /// Returns a 500 SCIM error response for internal errors.
@@ -194,10 +187,7 @@ pub async fn create_user(
 ///
 /// Returns 200 OK with the `ScimUser` resource, or a 404 SCIM error if no
 /// user with that ID exists.
-pub async fn get_user(
-    State(state): State<ScimState>,
-    Path(id): Path<String>,
-) -> impl IntoResponse {
+pub async fn get_user(State(state): State<ScimState>, Path(id): Path<String>) -> impl IntoResponse {
     match state.store.get_user(&id).await {
         Ok(Some(user)) => (StatusCode::OK, Json(user)).into_response(),
         Ok(None) => not_found(&id).into_response(),
@@ -217,10 +207,7 @@ pub async fn list_users(
     Query(params): Query<ScimListParams>,
 ) -> impl IntoResponse {
     // Parse optional userName filter.
-    let filter_username = params
-        .filter
-        .as_deref()
-        .and_then(parse_username_filter);
+    let filter_username = params.filter.as_deref().and_then(parse_username_filter);
 
     let start_index = params.start_index.unwrap_or(1).max(1);
     let page_size = params.count.unwrap_or(100);
@@ -339,11 +326,7 @@ pub async fn update_user(
 }
 
 /// Applies an `add` or `replace` patch operation to a mutable user.
-fn apply_user_patch(
-    user: &mut ScimUser,
-    path: Option<&str>,
-    value: Option<serde_json::Value>,
-) {
+fn apply_user_patch(user: &mut ScimUser, path: Option<&str>, value: Option<serde_json::Value>) {
     let Some(val) = value else { return };
 
     match path {

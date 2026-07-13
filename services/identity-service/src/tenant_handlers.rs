@@ -164,11 +164,11 @@ impl TenantStoreState {
                 let mut guard = map.write().map_err(|e| VaultError::Internal {
                     reason: format!("in-memory store lock poisoned: {e}"),
                 })?;
-                let tenant = guard
-                    .get_mut(tenant_id.as_uuid())
-                    .ok_or_else(|| VaultError::TenantNotFound {
+                let tenant = guard.get_mut(tenant_id.as_uuid()).ok_or_else(|| {
+                    VaultError::TenantNotFound {
                         tenant_id: tenant_id.to_string(),
-                    })?;
+                    }
+                })?;
                 if tenant.deleted_at.is_some() {
                     return Err(VaultError::TenantNotFound {
                         tenant_id: tenant_id.to_string(),
@@ -245,9 +245,7 @@ fn validate_slug(slug: &str) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
     {
-        return Err(
-            "slug must contain only lowercase letters, digits, and hyphens".into(),
-        );
+        return Err("slug must contain only lowercase letters, digits, and hyphens".into());
     }
     Ok(())
 }

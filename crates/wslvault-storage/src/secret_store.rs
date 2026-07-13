@@ -363,31 +363,29 @@ pub async fn rollback_secret(
     target_version: u32,
     rolled_back_by: &str,
 ) -> Result<u32, VaultError> {
-    let row = sqlx::query(
-        "SELECT new_version FROM shared.vault_rollback_secret($1, $2, $3, $4)",
-    )
-    .bind(tenant_id.as_uuid())
-    .bind(path)
-    .bind(target_version as i32)
-    .bind(rolled_back_by)
-    .fetch_one(pool.inner())
-    .await
-    .map_err(|e| {
-        let msg = e.to_string();
-        if msg.contains("secret not found") {
-            VaultError::SecretNotFound {
-                path: path.to_string(),
-                version: None,
+    let row = sqlx::query("SELECT new_version FROM shared.vault_rollback_secret($1, $2, $3, $4)")
+        .bind(tenant_id.as_uuid())
+        .bind(path)
+        .bind(target_version as i32)
+        .bind(rolled_back_by)
+        .fetch_one(pool.inner())
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("secret not found") {
+                VaultError::SecretNotFound {
+                    path: path.to_string(),
+                    version: None,
+                }
+            } else if msg.contains("not found or destroyed") {
+                VaultError::SecretNotFound {
+                    path: path.to_string(),
+                    version: Some(target_version),
+                }
+            } else {
+                VaultError::Database { reason: msg }
             }
-        } else if msg.contains("not found or destroyed") {
-            VaultError::SecretNotFound {
-                path: path.to_string(),
-                version: Some(target_version),
-            }
-        } else {
-            VaultError::Database { reason: msg }
-        }
-    })?;
+        })?;
 
     Ok(row.get::<i32, _>("new_version") as u32)
 }

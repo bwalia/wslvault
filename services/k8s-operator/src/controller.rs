@@ -127,10 +127,7 @@ pub async fn reconcile(
     let namespace = vault_secret
         .namespace()
         .unwrap_or_else(|| "default".to_string());
-    let generation = vault_secret
-        .metadata
-        .generation
-        .unwrap_or(0);
+    let generation = vault_secret.metadata.generation.unwrap_or(0);
 
     info!(
         path = %vault_secret.spec.path,
@@ -195,35 +192,30 @@ pub async fn reconcile(
     };
 
     // ── 4. Decode and build the Secret data map ───────────────────────────────
-    let secret_data = match build_secret_data(
-        &raw_data_b64,
-        vault_secret.spec.data_mappings.as_deref(),
-    ) {
-        Ok(d) => d,
-        Err(err) => {
-            let now = Utc::now().to_rfc3339();
-            let (reason, message) = error_to_condition_parts(&err);
-            warn!(error = %err, "failed to decode secret data");
+    let secret_data =
+        match build_secret_data(&raw_data_b64, vault_secret.spec.data_mappings.as_deref()) {
+            Ok(d) => d,
+            Err(err) => {
+                let now = Utc::now().to_rfc3339();
+                let (reason, message) = error_to_condition_parts(&err);
+                warn!(error = %err, "failed to decode secret data");
 
-            patch_status(
-                &ctx.kube_client,
-                &vault_secret,
-                VaultSecretStatus::failed(generation, &reason, &message, &now),
-                &namespace,
-            )
-            .await;
+                patch_status(
+                    &ctx.kube_client,
+                    &vault_secret,
+                    VaultSecretStatus::failed(generation, &reason, &message, &now),
+                    &namespace,
+                )
+                .await;
 
-            // This is a permanent error — do not tightly requeue.
-            return Ok(Action::requeue(Duration::from_secs(MAX_ERROR_BACKOFF_SECS)));
-        }
-    };
+                // This is a permanent error — do not tightly requeue.
+                return Ok(Action::requeue(Duration::from_secs(MAX_ERROR_BACKOFF_SECS)));
+            }
+        };
 
     // ── 5. Determine target secret name and namespace ─────────────────────────
-    let (target_name, target_namespace, secret_type_str) = resolve_target(
-        &name,
-        &namespace,
-        vault_secret.spec.target.as_ref(),
-    );
+    let (target_name, target_namespace, secret_type_str) =
+        resolve_target(&name, &namespace, vault_secret.spec.target.as_ref());
 
     // ── 6. Apply the Kubernetes Secret ───────────────────────────────────────
     let owner_ref = build_owner_reference(&vault_secret)?;
@@ -250,7 +242,9 @@ pub async fn reconcile(
         )
         .await;
 
-        return Ok(Action::requeue(Duration::from_secs(DEFAULT_ERROR_BACKOFF_SECS)));
+        return Ok(Action::requeue(Duration::from_secs(
+            DEFAULT_ERROR_BACKOFF_SECS,
+        )));
     }
 
     // ── 7. Update status to reflect successful sync ───────────────────────────
@@ -405,10 +399,7 @@ fn build_secret_data(
                 })?;
 
                 let bytes = value_to_bytes(value);
-                secret_data.insert(
-                    mapping.secret_key.clone(),
-                    k8s_openapi::ByteString(bytes),
-                );
+                secret_data.insert(mapping.secret_key.clone(), k8s_openapi::ByteString(bytes));
             }
         }
         _ => {
@@ -444,16 +435,8 @@ fn resolve_target<'a>(
 ) -> (String, String, &'a str) {
     match target {
         Some(t) => {
-            let name = t
-                .name
-                .as_deref()
-                .unwrap_or(vs_name)
-                .to_string();
-            let ns = t
-                .namespace
-                .as_deref()
-                .unwrap_or(vs_namespace)
-                .to_string();
+            let name = t.name.as_deref().unwrap_or(vs_name).to_string();
+            let ns = t.namespace.as_deref().unwrap_or(vs_namespace).to_string();
             let type_str = t.secret_type.as_str();
             (name, ns, type_str)
         }
@@ -507,10 +490,7 @@ async fn apply_kubernetes_secret(
                     "app.kubernetes.io/managed-by".to_string(),
                     "k8s-operator.wslvault.io".to_string(),
                 ),
-                (
-                    "wslvault.io/synced".to_string(),
-                    "true".to_string(),
-                ),
+                ("wslvault.io/synced".to_string(), "true".to_string()),
             ])),
             owner_references: Some(vec![owner_ref]),
             ..Default::default()
@@ -594,8 +574,7 @@ async fn resolve_auth_token(
     if let Some(auth) = &vault_secret.spec.auth {
         if let Some(token_ref) = &auth.token_secret_ref {
             let ref_namespace = namespace.to_string();
-            let secrets_api: Api<Secret> =
-                Api::namespaced(ctx.kube_client.clone(), &ref_namespace);
+            let secrets_api: Api<Secret> = Api::namespaced(ctx.kube_client.clone(), &ref_namespace);
 
             match secrets_api.get(&token_ref.name).await {
                 Ok(secret) => {

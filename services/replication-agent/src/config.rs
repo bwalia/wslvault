@@ -26,8 +26,7 @@ pub struct PeerEndpoint {
 
 impl ReplicationAgentConfig {
     pub fn from_env() -> Self {
-        let local_region =
-            std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
+        let local_region = std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
         let listen_addr =
             std::env::var("REPLICATION_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8091".to_string());
         let poll_interval_ms: u64 = std::env::var("REPLICATION_POLL_INTERVAL_MS")

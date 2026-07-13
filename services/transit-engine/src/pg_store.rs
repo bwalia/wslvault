@@ -264,9 +264,11 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
         // Both PG writes succeeded — update the in-memory cache.
         {
             let mut guard = self.cache.write().await;
-            let key = guard.get_mut(&map_key).ok_or_else(|| VaultError::KeyNotFound {
-                key_id: format!("{}/{}", tenant_id, key_name),
-            })?;
+            let key = guard
+                .get_mut(&map_key)
+                .ok_or_else(|| VaultError::KeyNotFound {
+                    key_id: format!("{}/{}", tenant_id, key_name),
+                })?;
 
             key.versions.push(KeyVersion {
                 version: new_version,

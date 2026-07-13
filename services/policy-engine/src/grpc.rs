@@ -43,7 +43,10 @@ impl PolicyServiceImpl {
     /// * `compiled` – the latest compiled snapshot, updated by the background
     ///   task. The gRPC handler reads from this under a read lock
     ///   to avoid blocking writers.
-    pub fn new(store: Arc<dyn PolicyStoreBackend>, compiled: Arc<RwLock<CompiledPolicies>>) -> Self {
+    pub fn new(
+        store: Arc<dyn PolicyStoreBackend>,
+        compiled: Arc<RwLock<CompiledPolicies>>,
+    ) -> Self {
         Self { store, compiled }
     }
 }
@@ -215,7 +218,9 @@ impl PolicyService for PolicyServiceImpl {
         let policy_id = proto_doc.name.clone();
         let domain_doc = proto_to_domain_document(proto_doc)?;
 
-        self.store.put_policy(&req.tenant_id, domain_doc.clone()).await;
+        self.store
+            .put_policy(&req.tenant_id, domain_doc.clone())
+            .await;
 
         // Eagerly update compiled snapshot — no need to wait for the background
         // compilation cycle (which may be skipped when not the leader).

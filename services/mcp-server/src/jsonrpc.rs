@@ -145,11 +145,7 @@ struct McpTool {
 /// response on failure — ready to be serialised and sent back to the caller.
 pub fn parse_request(raw: &[u8]) -> Result<JsonRpcRequest, JsonRpcResponse> {
     serde_json::from_slice::<JsonRpcRequest>(raw).map_err(|err| {
-        JsonRpcResponse::err(
-            Value::Null,
-            PARSE_ERROR,
-            format!("parse error: {err}"),
-        )
+        JsonRpcResponse::err(Value::Null, PARSE_ERROR, format!("parse error: {err}"))
     })
 }
 
@@ -180,7 +176,11 @@ pub fn validate_request(req: &JsonRpcRequest) -> Option<JsonRpcResponse> {
 ///
 /// `ctx` carries the caller's identity (policies, principal) extracted from
 /// the inbound transport and forwarded verbatim to backend services.
-pub async fn dispatch(req: JsonRpcRequest, state: &AppState, ctx: CallerContext) -> Option<JsonRpcResponse> {
+pub async fn dispatch(
+    req: JsonRpcRequest,
+    state: &AppState,
+    ctx: CallerContext,
+) -> Option<JsonRpcResponse> {
     // A null id marks a notification — never respond to these.
     let is_notification = req.id.is_null();
     let id = req.id.clone();
@@ -342,7 +342,10 @@ mod tests {
     fn parse_request_accepts_valid_envelope() {
         let raw = br#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{}}"#;
         let result = parse_request(raw);
-        assert!(result.is_ok(), "well-formed JSON-RPC should parse without error");
+        assert!(
+            result.is_ok(),
+            "well-formed JSON-RPC should parse without error"
+        );
         let req = result.unwrap();
         assert_eq!(req.method, "ping");
         assert_eq!(req.id, json!(1));
@@ -425,7 +428,11 @@ mod tests {
             .await
             .expect("initialize must return a response (not a notification)");
 
-        assert!(resp.error.is_none(), "initialize must succeed: {:?}", resp.error);
+        assert!(
+            resp.error.is_none(),
+            "initialize must succeed: {:?}",
+            resp.error
+        );
         let result = resp.result.unwrap();
 
         assert_eq!(
@@ -637,8 +644,7 @@ mod tests {
             .error
             .expect("missing params.name must produce a JSON-RPC error");
         assert_eq!(
-            err.code,
-            INVALID_PARAMS,
+            err.code, INVALID_PARAMS,
             "missing params.name must use INVALID_PARAMS (-32602), got {}",
             err.code
         );
@@ -664,8 +670,7 @@ mod tests {
             .error
             .expect("unknown method must produce a JSON-RPC error");
         assert_eq!(
-            err.code,
-            METHOD_NOT_FOUND,
+            err.code, METHOD_NOT_FOUND,
             "unknown method must use METHOD_NOT_FOUND (-32601), got {}",
             err.code
         );
@@ -694,8 +699,8 @@ mod tests {
 
     #[test]
     fn caller_context_from_headers_extracts_policies_and_principal_id() {
-        use axum::http::HeaderMap;
         use crate::tools::caller_context_from_headers;
+        use axum::http::HeaderMap;
 
         let mut headers = HeaderMap::new();
         headers.insert("x-policies", "read_secrets,write_secrets".parse().unwrap());
@@ -717,8 +722,8 @@ mod tests {
 
     #[test]
     fn caller_context_from_headers_yields_none_for_absent_headers() {
-        use axum::http::HeaderMap;
         use crate::tools::caller_context_from_headers;
+        use axum::http::HeaderMap;
 
         let headers = HeaderMap::new();
         let ctx = caller_context_from_headers(&headers);
@@ -735,8 +740,8 @@ mod tests {
 
     #[test]
     fn caller_context_from_headers_treats_empty_value_as_none() {
-        use axum::http::HeaderMap;
         use crate::tools::caller_context_from_headers;
+        use axum::http::HeaderMap;
 
         let mut headers = HeaderMap::new();
         headers.insert("x-policies", "".parse().unwrap());

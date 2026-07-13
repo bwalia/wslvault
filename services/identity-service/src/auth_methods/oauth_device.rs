@@ -51,13 +51,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -305,9 +299,7 @@ impl DeviceFlowManager {
             .map_err(|e| DeviceFlowError::DeviceAuthFailed(format!("parse response: {e}")))?;
 
         // Cap the TTL to prevent excessively long-lived codes.
-        let ttl_secs = provider_response
-            .expires_in
-            .min(MAX_DEVICE_CODE_TTL_SECS);
+        let ttl_secs = provider_response.expires_in.min(MAX_DEVICE_CODE_TTL_SECS);
 
         let min_interval_secs = provider_response.interval.unwrap_or(5);
 
@@ -418,11 +410,9 @@ impl DeviceFlowManager {
         }
 
         // Success: validate the ID token via the OIDC manager.
-        let id_token = token_response
-            .id_token
-            .ok_or_else(|| {
-                DeviceFlowError::TokenExchangeFailed("no id_token in successful response".to_string())
-            })?;
+        let id_token = token_response.id_token.ok_or_else(|| {
+            DeviceFlowError::TokenExchangeFailed("no id_token in successful response".to_string())
+        })?;
 
         let oidc_result = self
             .oidc_manager
@@ -490,7 +480,8 @@ impl DeviceFlowManager {
             }
         } else {
             // Discover via OIDC manager.
-            let issuer = self.oidc_manager
+            let issuer = self
+                .oidc_manager
                 .discover_issuer_for_provider(&self.config.provider_name)
                 .ok_or_else(|| {
                     DeviceFlowError::ProviderNotFound(self.config.provider_name.clone())
@@ -812,10 +803,7 @@ mod tests {
         let config: DeviceOidcConfig = serde_json::from_value(json).unwrap();
         assert_eq!(config.provider_name, "keycloak");
         assert_eq!(config.client_id, "wslvault-cli");
-        assert_eq!(
-            config.scopes.as_deref(),
-            Some("openid email profile")
-        );
+        assert_eq!(config.scopes.as_deref(), Some("openid email profile"));
         assert!(config.device_authorization_endpoint.is_some());
     }
 

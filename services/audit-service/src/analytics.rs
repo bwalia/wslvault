@@ -132,8 +132,14 @@ pub async fn compute_analytics(
     let mut events_by_tenant: HashMap<String, usize> = HashMap::new();
     let mut operation_categories: HashMap<String, usize> = HashMap::new();
     let mut pull_types: HashMap<String, usize> = HashMap::new();
-    let mut resource_map: HashMap<String, (usize, DateTime<Utc>, std::collections::HashSet<String>)> = HashMap::new();
-    let mut principal_map: HashMap<String, (usize, std::collections::HashSet<String>, DateTime<Utc>)> = HashMap::new();
+    let mut resource_map: HashMap<
+        String,
+        (usize, DateTime<Utc>, std::collections::HashSet<String>),
+    > = HashMap::new();
+    let mut principal_map: HashMap<
+        String,
+        (usize, std::collections::HashSet<String>, DateTime<Utc>),
+    > = HashMap::new();
     let mut reads = 0usize;
     let mut writes = 0usize;
     let mut denied = 0usize;
@@ -142,16 +148,24 @@ pub async fn compute_analytics(
     for record in &records {
         *events_by_action.entry(record.action.clone()).or_default() += 1;
         *events_by_outcome.entry(record.outcome.clone()).or_default() += 1;
-        *events_by_tenant.entry(record.tenant_id.clone()).or_default() += 1;
+        *events_by_tenant
+            .entry(record.tenant_id.clone())
+            .or_default() += 1;
 
         let category = categorise_action(&record.action);
-        *operation_categories.entry(category.to_string()).or_default() += 1;
+        *operation_categories
+            .entry(category.to_string())
+            .or_default() += 1;
 
         let pull_type = extract_pull_type(record);
         *pull_types.entry(pull_type.to_string()).or_default() += 1;
 
         // Track resource access.
-        let entry = resource_map.entry(record.resource.clone()).or_insert((0, record.timestamp, std::collections::HashSet::new()));
+        let entry = resource_map.entry(record.resource.clone()).or_insert((
+            0,
+            record.timestamp,
+            std::collections::HashSet::new(),
+        ));
         entry.0 += 1;
         if record.timestamp > entry.1 {
             entry.1 = record.timestamp;
@@ -159,7 +173,11 @@ pub async fn compute_analytics(
         entry.2.insert(record.principal_id.clone());
 
         // Track principal activity.
-        let p_entry = principal_map.entry(record.principal_id.clone()).or_insert((0, std::collections::HashSet::new(), record.timestamp));
+        let p_entry = principal_map.entry(record.principal_id.clone()).or_insert((
+            0,
+            std::collections::HashSet::new(),
+            record.timestamp,
+        ));
         p_entry.0 += 1;
         p_entry.1.insert(record.resource.clone());
         if record.timestamp > p_entry.2 {
@@ -198,12 +216,14 @@ pub async fn compute_analytics(
     // Build top principals (top 10 by action count).
     let mut top_principals: Vec<PrincipalActivity> = principal_map
         .into_iter()
-        .map(|(principal_id, (total, resources, last))| PrincipalActivity {
-            principal_id,
-            total_actions: total,
-            unique_resources: resources.len(),
-            last_active: last,
-        })
+        .map(
+            |(principal_id, (total, resources, last))| PrincipalActivity {
+                principal_id,
+                total_actions: total,
+                unique_resources: resources.len(),
+                last_active: last,
+            },
+        )
         .collect();
     top_principals.sort_by(|a, b| b.total_actions.cmp(&a.total_actions));
     top_principals.truncate(10);

@@ -150,17 +150,29 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 8. Start metrics server ──────────────────────────────
     let metrics_addr = config.observability.metrics_addr;
-    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
+    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(
+        metrics_addr,
+    ));
 
     // ── 9. Start HA heartbeat if enabled ─────────────────────
     if config.ha.enabled {
         let cluster_state = wslvault_core::ha::cluster::new_cluster_state(config.ha.clone());
-        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(cluster_state));
+        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(
+            cluster_state,
+        ));
         info!("HA mode enabled, heartbeat loop started");
     }
 
     // ── 10. Start servers ────────────────────────────────────
-    server::run(grpc_addr, http_addr, crypto_endpoint, audit_endpoint, policy_endpoint, lease_endpoint).await?;
+    server::run(
+        grpc_addr,
+        http_addr,
+        crypto_endpoint,
+        audit_endpoint,
+        policy_endpoint,
+        lease_endpoint,
+    )
+    .await?;
 
     Ok(())
 }

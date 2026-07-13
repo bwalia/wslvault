@@ -98,9 +98,7 @@ impl GatewayAuth {
             None => return true,
         };
         match provided {
-            Some(value) => {
-                ring::constant_time::verify_slices_are_equal(value, expected).is_ok()
-            }
+            Some(value) => ring::constant_time::verify_slices_are_equal(value, expected).is_ok(),
             None => false,
         }
     }
@@ -182,10 +180,7 @@ impl<S: Send + Sync> FromRequestParts<S> for TenantContext {
             rejection(
                 StatusCode::BAD_REQUEST,
                 "invalid_tenant_id",
-                format!(
-                    "X-Tenant-Id '{}' is not a valid UUID",
-                    tenant_id_str
-                ),
+                format!("X-Tenant-Id '{}' is not a valid UUID", tenant_id_str),
             )
         })?;
 
@@ -244,10 +239,7 @@ mod tests {
     #[tokio::test]
     async fn missing_tenant_id_header_returns_400() {
         let app = test_app();
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
@@ -322,17 +314,11 @@ mod tests {
         let auth = GatewayAuth {
             expected: Some(std::sync::Arc::new(b"secret".to_vec())),
         };
-        let app = Router::new()
-            .route("/test", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn_with_state(
-                auth,
-                require_gateway_auth,
-            ));
+        let app = Router::new().route("/test", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn_with_state(auth, require_gateway_auth),
+        );
 
-        let req = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
@@ -343,12 +329,9 @@ mod tests {
         let auth = GatewayAuth {
             expected: Some(std::sync::Arc::new(b"secret".to_vec())),
         };
-        let app = Router::new()
-            .route("/test", get(|| async { "ok" }))
-            .layer(axum::middleware::from_fn_with_state(
-                auth,
-                require_gateway_auth,
-            ));
+        let app = Router::new().route("/test", get(|| async { "ok" })).layer(
+            axum::middleware::from_fn_with_state(auth, require_gateway_auth),
+        );
 
         let req = Request::builder()
             .uri("/test")
@@ -379,9 +362,7 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         // "read-secrets", "write-secrets", "admin" → 3 (trailing comma dropped)
         assert_eq!(body_bytes.as_ref(), b"3");
     }

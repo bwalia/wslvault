@@ -56,20 +56,14 @@ mod inner {
         ///
         /// `prefix` is stored as the default listing prefix but is not
         /// enforced on `pull`/`push` calls — callers may address any path.
-        pub async fn new(
-            region: Option<String>,
-            prefix: String,
-        ) -> Result<Self, ConnectorError> {
+        pub async fn new(region: Option<String>, prefix: String) -> Result<Self, ConnectorError> {
             let sdk_config = build_sdk_config(region).await?;
             let client = aws_sdk_secretsmanager::Client::new(&sdk_config);
             Ok(Self { client, prefix })
         }
 
         /// Construct from an already-initialised SDK client (useful in tests).
-        pub fn from_client(
-            client: aws_sdk_secretsmanager::Client,
-            prefix: String,
-        ) -> Self {
+        pub fn from_client(client: aws_sdk_secretsmanager::Client, prefix: String) -> Self {
             Self { client, prefix }
         }
 
@@ -156,19 +150,14 @@ mod inner {
         }
 
         #[instrument(skip(self, data), fields(connector = CONNECTOR_NAME, path = external_path))]
-        async fn push(
-            &self,
-            external_path: &str,
-            data: &SecretData,
-        ) -> Result<(), ConnectorError> {
+        async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError> {
             debug!("pushing secret to AWS Secrets Manager");
 
-            let secret_string = serde_json::to_string(&data.value).map_err(|e| {
-                ConnectorError::Serialise {
+            let secret_string =
+                serde_json::to_string(&data.value).map_err(|e| ConnectorError::Serialise {
                     connector: CONNECTOR_NAME.to_string(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             // Try PutSecretValue first; if the secret does not exist, fall
             // through to CreateSecret.
@@ -191,9 +180,7 @@ mod inner {
                 }
                 Err(sdk_err) => {
                     return Err(ConnectorError::Internal {
-                        reason: format!(
-                            "PutSecretValue failed for '{external_path}': {sdk_err}"
-                        ),
+                        reason: format!("PutSecretValue failed for '{external_path}': {sdk_err}"),
                     });
                 }
             }
@@ -206,9 +193,7 @@ mod inner {
                 .send()
                 .await
                 .map_err(|sdk_err| ConnectorError::Internal {
-                    reason: format!(
-                        "CreateSecret failed for '{external_path}': {sdk_err}"
-                    ),
+                    reason: format!("CreateSecret failed for '{external_path}': {sdk_err}"),
                 })?;
 
             info!("secret created in AWS Secrets Manager");
@@ -238,9 +223,12 @@ mod inner {
                     req = req.next_token(token);
                 }
 
-                let resp = req.send().await.map_err(|sdk_err| ConnectorError::Internal {
-                    reason: format!("ListSecrets failed: {sdk_err}"),
-                })?;
+                let resp = req
+                    .send()
+                    .await
+                    .map_err(|sdk_err| ConnectorError::Internal {
+                        reason: format!("ListSecrets failed: {sdk_err}"),
+                    })?;
 
                 for entry in resp.secret_list() {
                     if let Some(name) = entry.name() {

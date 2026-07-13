@@ -68,15 +68,11 @@ use serde::{Deserialize, Serialize};
     namespaced
 )]
 #[kube(status = "VaultSecretStatus")]
-#[kube(
-    printcolumn = r#"{"name":"Path","type":"string","jsonPath":".spec.path"}"#
-)]
+#[kube(printcolumn = r#"{"name":"Path","type":"string","jsonPath":".spec.path"}"#)]
 #[kube(
     printcolumn = r#"{"name":"Synced","type":"string","jsonPath":".status.conditions[0].status"}"#
 )]
-#[kube(
-    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
-)]
+#[kube(printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#)]
 pub struct VaultSecretSpec {
     /// Path in wslvault secret engine (e.g. `"myapp/database/credentials"`).
     ///
@@ -306,11 +302,7 @@ pub enum ConditionStatus {
 impl VaultSecretStatus {
     /// Build a status with a single `Synced=True` condition at the given
     /// `generation` and RFC 3339 `now` timestamp.
-    pub fn synced(
-        generation: i64,
-        version: u32,
-        now: &str,
-    ) -> Self {
+    pub fn synced(generation: i64, version: u32, now: &str) -> Self {
         VaultSecretStatus {
             conditions: vec![Condition {
                 condition_type: "Synced".to_string(),
@@ -445,18 +437,10 @@ pub struct PolicyRuleSpec {
     namespaced
 )]
 #[kube(status = "VaultPolicyStatus")]
-#[kube(
-    printcolumn = r#"{"name":"PolicyName","type":"string","jsonPath":".spec.policyName"}"#
-)]
-#[kube(
-    printcolumn = r#"{"name":"Tenant","type":"string","jsonPath":".spec.tenantId"}"#
-)]
-#[kube(
-    printcolumn = r#"{"name":"Synced","type":"string","jsonPath":".status.synced"}"#
-)]
-#[kube(
-    printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#
-)]
+#[kube(printcolumn = r#"{"name":"PolicyName","type":"string","jsonPath":".spec.policyName"}"#)]
+#[kube(printcolumn = r#"{"name":"Tenant","type":"string","jsonPath":".spec.tenantId"}"#)]
+#[kube(printcolumn = r#"{"name":"Synced","type":"string","jsonPath":".status.synced"}"#)]
+#[kube(printcolumn = r#"{"name":"Age","type":"date","jsonPath":".metadata.creationTimestamp"}"#)]
 pub struct VaultPolicySpec {
     /// Name of the policy document inside wslvault.
     ///

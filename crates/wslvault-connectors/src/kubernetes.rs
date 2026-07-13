@@ -58,30 +58,31 @@ impl KubernetesConnector {
     pub fn from_in_cluster() -> Result<Self, ConnectorError> {
         let api_server = std::env::var("KUBERNETES_SERVICE_HOST")
             .map(|host| {
-                let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".into());
+                let port =
+                    std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".into());
                 format!("https://{}:{}", host, port)
             })
-            .map_err(|_| {
-                ConnectorError::Configuration {
-                    reason: "KUBERNETES_SERVICE_HOST not set; not running in-cluster?".into(),
-                }
+            .map_err(|_| ConnectorError::Configuration {
+                reason: "KUBERNETES_SERVICE_HOST not set; not running in-cluster?".into(),
             })?;
 
-        let token = std::fs::read_to_string(
-            "/var/run/secrets/kubernetes.io/serviceaccount/token",
-        )
-        .map_err(|e| {
-            ConnectorError::Configuration { reason: format!("failed to read SA token: {}", e) }
-        })?;
+        let token = std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/token")
+            .map_err(|e| ConnectorError::Configuration {
+                reason: format!("failed to read SA token: {}", e),
+            })?;
 
-        let namespace = std::fs::read_to_string(
-            "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
-        )
-        .unwrap_or_else(|_| "default".to_string());
+        let namespace =
+            std::fs::read_to_string("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+                .unwrap_or_else(|_| "default".to_string());
 
         let label_selector = std::env::var("K8S_LABEL_SELECTOR").ok();
 
-        Ok(Self::new(api_server, namespace, token.trim().to_string(), label_selector))
+        Ok(Self::new(
+            api_server,
+            namespace,
+            token.trim().to_string(),
+            label_selector,
+        ))
     }
 
     fn secrets_url(&self) -> String {
@@ -130,8 +131,9 @@ impl SecretConnector for KubernetesConnector {
             });
         }
 
-        let k8s_secret: K8sSecret = resp.json().await.map_err(|_| {
-            ConnectorError::Deserialise { connector: "kubernetes".into(), reason: "failed to parse K8s Secret".into() }
+        let k8s_secret: K8sSecret = resp.json().await.map_err(|_| ConnectorError::Deserialise {
+            connector: "kubernetes".into(),
+            reason: "failed to parse K8s Secret".into(),
         })?;
 
         // Base64-decode each data field.
@@ -160,11 +162,7 @@ impl SecretConnector for KubernetesConnector {
         })
     }
 
-    async fn push(
-        &self,
-        external_path: &str,
-        data: &SecretData,
-    ) -> Result<(), ConnectorError> {
+    async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError> {
         use base64::Engine;
 
         // Base64-encode each field value for Kubernetes.
@@ -274,8 +272,9 @@ impl SecretConnector for KubernetesConnector {
             });
         }
 
-        let list: K8sSecretList = resp.json().await.map_err(|_| {
-            ConnectorError::Deserialise { connector: "kubernetes".into(), reason: "failed to parse K8s SecretList".into() }
+        let list: K8sSecretList = resp.json().await.map_err(|_| ConnectorError::Deserialise {
+            connector: "kubernetes".into(),
+            reason: "failed to parse K8s SecretList".into(),
         })?;
 
         let names: Vec<String> = list

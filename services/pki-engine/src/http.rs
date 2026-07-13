@@ -301,20 +301,19 @@ pub async fn generate_ca_handler(
     let common_name = body.common_name.clone();
 
     // Certificate generation is CPU-bound; run it on the blocking thread pool.
-    let ca_output = match tokio::task::spawn_blocking(move || {
-        ca::generate_ca(&common_name, ttl, &key_type)
-    })
-    .await
-    {
-        Ok(Ok(o)) => o,
-        Ok(Err(e)) => return pki_error_response(e).into_response(),
-        Err(join_err) => {
-            return pki_error_response(PkiError::CertGenerationFailed {
-                reason: format!("spawn_blocking panic: {join_err}"),
-            })
-            .into_response()
-        }
-    };
+    let ca_output =
+        match tokio::task::spawn_blocking(move || ca::generate_ca(&common_name, ttl, &key_type))
+            .await
+        {
+            Ok(Ok(o)) => o,
+            Ok(Err(e)) => return pki_error_response(e).into_response(),
+            Err(join_err) => {
+                return pki_error_response(PkiError::CertGenerationFailed {
+                    reason: format!("spawn_blocking panic: {join_err}"),
+                })
+                .into_response()
+            }
+        };
 
     // Encrypt the CA private key at rest.
     let encrypted_key = match state.kek.encrypt_ca_key(&tenant_id, &ca_output.key_pem) {
@@ -364,7 +363,13 @@ pub async fn get_ca_handler(
     };
 
     match state.store.get_ca(&tenant_id).await {
-        Ok(ca) => (StatusCode::OK, Json(GetCaResponse { cert_pem: ca.cert_pem })).into_response(),
+        Ok(ca) => (
+            StatusCode::OK,
+            Json(GetCaResponse {
+                cert_pem: ca.cert_pem,
+            }),
+        )
+            .into_response(),
         Err(e) => pki_error_response(e).into_response(),
     }
 }
@@ -401,10 +406,7 @@ pub async fn import_ca_handler(
 
     let encrypted_key = {
         let key_pem_zeroized = Zeroizing::new(body.key_pem.clone());
-        match state
-            .kek
-            .encrypt_ca_key(&tenant_id, &key_pem_zeroized)
-        {
+        match state.kek.encrypt_ca_key(&tenant_id, &key_pem_zeroized) {
             Ok(e) => e,
             Err(e) => return pki_error_response(e).into_response(),
         }
@@ -602,7 +604,10 @@ pub async fn issue_handler(
     };
 
     // Decrypt CA private key.
-    let ca_key_bytes = match state.kek.decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64) {
+    let ca_key_bytes = match state
+        .kek
+        .decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64)
+    {
         Ok(b) => b,
         Err(e) => return pki_error_response(e).into_response(),
     };
@@ -722,7 +727,10 @@ pub async fn sign_csr_handler(
         Err(e) => return pki_error_response(e).into_response(),
     };
 
-    let ca_key_bytes = match state.kek.decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64) {
+    let ca_key_bytes = match state
+        .kek
+        .decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64)
+    {
         Ok(b) => b,
         Err(e) => return pki_error_response(e).into_response(),
     };
@@ -842,10 +850,7 @@ pub async fn revoke_handler(
     ),
     tag = "pki-revoke"
 )]
-pub async fn crl_handler(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+pub async fn crl_handler(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let tenant_id = match extract_tenant_id(&headers) {
         Ok(t) => t,
         Err(e) => return e.into_response(),
@@ -865,7 +870,10 @@ pub async fn crl_handler(
         Err(e) => return pki_error_response(e).into_response(),
     };
 
-    let ca_key_bytes = match state.kek.decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64) {
+    let ca_key_bytes = match state
+        .kek
+        .decrypt_ca_key(&tenant_id, &tenant_ca.encrypted_key_b64)
+    {
         Ok(b) => b,
         Err(e) => return pki_error_response(e).into_response(),
     };

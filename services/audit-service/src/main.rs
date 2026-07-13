@@ -61,7 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start metrics server.
     let metrics_addr: std::net::SocketAddr = "0.0.0.0:9090".parse()?;
-    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
+    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(
+        metrics_addr,
+    ));
 
     // Build the health HTTP service with metrics middleware.
     let health_router = Router::new()

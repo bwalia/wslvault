@@ -109,11 +109,12 @@ mod inner {
     impl PostgresCredentialRotator {
         /// Connect to PostgreSQL using `database_url` and create an admin pool.
         pub async fn connect(database_url: &str) -> Result<Self, ConnectorError> {
-            let pool = PgPool::connect(database_url)
-                .await
-                .map_err(|e| ConnectorError::Configuration {
-                    reason: format!("failed to connect to PostgreSQL admin pool: {e}"),
-                })?;
+            let pool =
+                PgPool::connect(database_url)
+                    .await
+                    .map_err(|e| ConnectorError::Configuration {
+                        reason: format!("failed to connect to PostgreSQL admin pool: {e}"),
+                    })?;
 
             Ok(Self { admin_pool: pool })
         }
@@ -149,10 +150,7 @@ mod inner {
             // password IS parameterisable via the `PASSWORD` clause.
             // We quote the identifier manually; sqlx does not support
             // parameterised DDL identifiers.
-            let sql = format!(
-                "ALTER ROLE {} PASSWORD $1",
-                quote_identifier(username)
-            );
+            let sql = format!("ALTER ROLE {} PASSWORD $1", quote_identifier(username));
 
             sqlx::query(&sql)
                 .bind(&new_password)
@@ -168,7 +166,11 @@ mod inner {
             // persistence without a separate state table.
             let version = self.increment_role_version(username).await?;
 
-            info!(username = username, version = version, "credential rotation completed");
+            info!(
+                username = username,
+                version = version,
+                "credential rotation completed"
+            );
 
             Ok(NewCredentials {
                 username: username.to_string(),
@@ -294,10 +296,7 @@ mod inner {
                     quote_identifier(schema),
                     quote_identifier(username)
                 );
-                if let Err(e) = sqlx::query(&revoke_seq_sql)
-                    .execute(&self.admin_pool)
-                    .await
-                {
+                if let Err(e) = sqlx::query(&revoke_seq_sql).execute(&self.admin_pool).await {
                     warn!(
                         username = username,
                         schema = schema,
@@ -308,10 +307,7 @@ mod inner {
             }
 
             // Drop the role.  `IF EXISTS` avoids an error if it was already removed.
-            let drop_sql = format!(
-                "DROP ROLE IF EXISTS {}",
-                quote_identifier(username)
-            );
+            let drop_sql = format!("DROP ROLE IF EXISTS {}", quote_identifier(username));
 
             sqlx::query(&drop_sql)
                 .execute(&self.admin_pool)
@@ -383,16 +379,15 @@ mod inner {
             // Retrieve the OID for the role.
             // Cast oid to bigint (int8) because sqlx maps PostgreSQL int8 → i64,
             // and u32 does not implement sqlx::Decode<Postgres>.
-            let row: Option<(i64,)> = sqlx::query_as(
-                "SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname = $1",
-            )
-            .bind(username)
-            .fetch_optional(&self.admin_pool)
-            .await
-            .map_err(|e| ConnectorError::Database {
-                username: username.to_string(),
-                source: e,
-            })?;
+            let row: Option<(i64,)> =
+                sqlx::query_as("SELECT oid::bigint FROM pg_catalog.pg_roles WHERE rolname = $1")
+                    .bind(username)
+                    .fetch_optional(&self.admin_pool)
+                    .await
+                    .map_err(|e| ConnectorError::Database {
+                        username: username.to_string(),
+                        source: e,
+                    })?;
 
             let role_oid: i64 = match row {
                 Some((oid,)) => oid,
@@ -427,10 +422,7 @@ mod inner {
             let comment = serde_json::json!({ "rotation_version": new_version }).to_string();
 
             // COMMENT ON ROLE requires an identifier, not a parameter.
-            let comment_sql = format!(
-                "COMMENT ON ROLE {} IS $1",
-                quote_identifier(username)
-            );
+            let comment_sql = format!("COMMENT ON ROLE {} IS $1", quote_identifier(username));
 
             sqlx::query(&comment_sql)
                 .bind(&comment)
@@ -469,9 +461,7 @@ mod inner {
         }
         if identifier.len() > 63 {
             return Err(ConnectorError::Configuration {
-                reason: format!(
-                    "PostgreSQL identifier '{identifier}' exceeds 63-byte limit"
-                ),
+                reason: format!("PostgreSQL identifier '{identifier}' exceeds 63-byte limit"),
             });
         }
         if identifier.contains('\0') {

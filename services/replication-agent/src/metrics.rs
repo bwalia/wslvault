@@ -29,9 +29,18 @@ lazy_static::lazy_static! {
 /// mistake never brings down the data path.
 pub fn register_metrics() {
     let collectors: [(&str, Box<dyn prometheus::core::Collector>); 3] = [
-        ("vault_replication_lag_ms", Box::new(REPLICATION_LAG_MS.clone())),
-        ("vault_replication_events_applied_total", Box::new(EVENTS_APPLIED.clone())),
-        ("vault_replication_conflicts_total", Box::new(CONFLICTS_TOTAL.clone())),
+        (
+            "vault_replication_lag_ms",
+            Box::new(REPLICATION_LAG_MS.clone()),
+        ),
+        (
+            "vault_replication_events_applied_total",
+            Box::new(EVENTS_APPLIED.clone()),
+        ),
+        (
+            "vault_replication_conflicts_total",
+            Box::new(CONFLICTS_TOTAL.clone()),
+        ),
     ];
     for (name, collector) in collectors {
         if let Err(e) = REGISTRY.register(collector) {

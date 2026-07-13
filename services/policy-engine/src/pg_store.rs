@@ -156,13 +156,8 @@ impl PolicyStoreBackend for PgPolicyBackend {
             None => return None,
         };
 
-        if let Err(err) = policy_store::put_policy(
-            &self.pool,
-            &tenant_uuid,
-            &document.name,
-            &json_doc,
-        )
-        .await
+        if let Err(err) =
+            policy_store::put_policy(&self.pool, &tenant_uuid, &document.name, &json_doc).await
         {
             error!(
                 %tenant_id,
@@ -252,9 +247,7 @@ impl PolicyStoreBackend for PgPolicyBackend {
         match policy_store::get_all_for_tenant(&self.pool, &tenant_uuid).await {
             Ok(stored_policies) => stored_policies
                 .iter()
-                .filter_map(|sp| {
-                    deserialize_document(&sp.document, &sp.name, tenant_id)
-                })
+                .filter_map(|sp| deserialize_document(&sp.document, &sp.name, tenant_id))
                 .collect(),
             Err(err) => {
                 error!(
@@ -292,4 +285,3 @@ impl PolicyStoreBackend for PgPolicyBackend {
         }
     }
 }
-

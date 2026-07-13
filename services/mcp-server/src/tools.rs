@@ -108,12 +108,7 @@ struct AuditEvent {
 ///
 /// This is intentionally fire-and-forget — a failure here must never
 /// propagate back to the caller or block the MCP response.
-fn fire_audit_event(
-    audit_url: String,
-    tool_name: String,
-    tenant_id: String,
-    success: bool,
-) {
+fn fire_audit_event(audit_url: String, tool_name: String, tenant_id: String, success: bool) {
     tokio::spawn(async move {
         let event = AuditEvent {
             event_type: "mcp_tool_call".into(),
@@ -148,203 +143,203 @@ fn fire_audit_event(
 /// duplicate the tool definitions — always derive from this function.
 pub fn all_tool_definitions() -> Vec<ToolDefinition> {
     vec![
-            ToolDefinition {
-                name: "read_secret".into(),
-                description: "Read a secret from WSLVault by path".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "The secret path (e.g. 'prod/database/password')"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID for multi-tenant isolation"
-                        },
-                        "version": {
-                            "type": "integer",
-                            "description": "Optional version number; omit for latest"
-                        }
+        ToolDefinition {
+            name: "read_secret".into(),
+            description: "Read a secret from WSLVault by path".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The secret path (e.g. 'prod/database/password')"
                     },
-                    "required": ["path", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "write_secret".into(),
-                description: "Write a secret to WSLVault at the given path".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "The secret path"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        },
-                        "data": {
-                            "type": "object",
-                            "description": "Key-value pairs to store as the secret"
-                        }
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID for multi-tenant isolation"
                     },
-                    "required": ["path", "tenant_id", "data"]
-                }),
-            },
-            ToolDefinition {
-                name: "list_secrets".into(),
-                description: "List secret paths under a given prefix".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "prefix": {
-                            "type": "string",
-                            "description": "Path prefix to list under"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "version": {
+                        "type": "integer",
+                        "description": "Optional version number; omit for latest"
+                    }
+                },
+                "required": ["path", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "write_secret".into(),
+            description: "Write a secret to WSLVault at the given path".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The secret path"
                     },
-                    "required": ["prefix", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "encrypt_data".into(),
-                description: "Encrypt data using a named transit key".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "key_name": {
-                            "type": "string",
-                            "description": "Name of the transit encryption key"
-                        },
-                        "plaintext": {
-                            "type": "string",
-                            "description": "Base64-encoded plaintext to encrypt"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
                     },
-                    "required": ["key_name", "plaintext", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "decrypt_data".into(),
-                description: "Decrypt data using a named transit key".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "key_name": {
-                            "type": "string",
-                            "description": "Name of the transit encryption key"
-                        },
-                        "ciphertext": {
-                            "type": "string",
-                            "description": "Ciphertext to decrypt (as returned by encrypt_data)"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "data": {
+                        "type": "object",
+                        "description": "Key-value pairs to store as the secret"
+                    }
+                },
+                "required": ["path", "tenant_id", "data"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_secrets".into(),
+            description: "List secret paths under a given prefix".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prefix": {
+                        "type": "string",
+                        "description": "Path prefix to list under"
                     },
-                    "required": ["key_name", "ciphertext", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "delete_secret".into(),
-                description: "Delete all versions of a secret at the given path".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "The secret path to delete"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["prefix", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "encrypt_data".into(),
+            description: "Encrypt data using a named transit key".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "key_name": {
+                        "type": "string",
+                        "description": "Name of the transit encryption key"
                     },
-                    "required": ["path", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "destroy_secret_version".into(),
-                description: "Permanently destroy a specific version of a secret".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "The secret path"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        },
-                        "version": {
-                            "type": "integer",
-                            "description": "The secret version number to permanently destroy"
-                        }
+                    "plaintext": {
+                        "type": "string",
+                        "description": "Base64-encoded plaintext to encrypt"
                     },
-                    "required": ["path", "tenant_id", "version"]
-                }),
-            },
-            ToolDefinition {
-                name: "rotate_transit_key".into(),
-                description: "Rotate a named transit encryption key to a new version".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "key_name": {
-                            "type": "string",
-                            "description": "Name of the transit key to rotate"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["key_name", "plaintext", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "decrypt_data".into(),
+            description: "Decrypt data using a named transit key".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "key_name": {
+                        "type": "string",
+                        "description": "Name of the transit encryption key"
                     },
-                    "required": ["key_name", "tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "list_leases".into(),
-                description: "List all active leases for a tenant".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "ciphertext": {
+                        "type": "string",
+                        "description": "Ciphertext to decrypt (as returned by encrypt_data)"
                     },
-                    "required": ["tenant_id"]
-                }),
-            },
-            ToolDefinition {
-                name: "revoke_lease".into(),
-                description: "Revoke a specific lease by lease ID".into(),
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "lease_id": {
-                            "type": "string",
-                            "description": "The lease ID to revoke"
-                        },
-                        "tenant_id": {
-                            "type": "string",
-                            "description": "Tenant ID"
-                        }
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["key_name", "ciphertext", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "delete_secret".into(),
+            description: "Delete all versions of a secret at the given path".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The secret path to delete"
                     },
-                    "required": ["lease_id", "tenant_id"]
-                }),
-            },
-        ]
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["path", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "destroy_secret_version".into(),
+            description: "Permanently destroy a specific version of a secret".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "The secret path"
+                    },
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    },
+                    "version": {
+                        "type": "integer",
+                        "description": "The secret version number to permanently destroy"
+                    }
+                },
+                "required": ["path", "tenant_id", "version"]
+            }),
+        },
+        ToolDefinition {
+            name: "rotate_transit_key".into(),
+            description: "Rotate a named transit encryption key to a new version".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "key_name": {
+                        "type": "string",
+                        "description": "Name of the transit key to rotate"
+                    },
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["key_name", "tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "list_leases".into(),
+            description: "List all active leases for a tenant".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["tenant_id"]
+            }),
+        },
+        ToolDefinition {
+            name: "revoke_lease".into(),
+            description: "Revoke a specific lease by lease ID".into(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "lease_id": {
+                        "type": "string",
+                        "description": "The lease ID to revoke"
+                    },
+                    "tenant_id": {
+                        "type": "string",
+                        "description": "Tenant ID"
+                    }
+                },
+                "required": ["lease_id", "tenant_id"]
+            }),
+        },
+    ]
 }
 
 /// Dispatch a tool call by name, returning the MCP response shape.
@@ -456,7 +451,11 @@ pub fn caller_context_from_headers(headers: &axum::http::HeaderMap) -> CallerCon
 // Existing tool handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_read_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_read_secret(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -483,7 +482,11 @@ async fn handle_read_secret(state: &AppState, args: Value, ctx: &CallerContext) 
     Ok(body)
 }
 
-async fn handle_write_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_write_secret(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -512,7 +515,11 @@ async fn handle_write_secret(state: &AppState, args: Value, ctx: &CallerContext)
     Ok(body)
 }
 
-async fn handle_list_secrets(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_list_secrets(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let prefix = args["prefix"].as_str().unwrap_or("");
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -537,7 +544,11 @@ async fn handle_list_secrets(state: &AppState, args: Value, ctx: &CallerContext)
     Ok(body)
 }
 
-async fn handle_encrypt(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_encrypt(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
@@ -568,7 +579,11 @@ async fn handle_encrypt(state: &AppState, args: Value, ctx: &CallerContext) -> R
     Ok(body)
 }
 
-async fn handle_decrypt(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_decrypt(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
@@ -604,7 +619,11 @@ async fn handle_decrypt(state: &AppState, args: Value, ctx: &CallerContext) -> R
 // ---------------------------------------------------------------------------
 
 /// DELETE `/v1/secret/data/{path}` — removes all versions of a secret.
-async fn handle_delete_secret(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_delete_secret(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -637,7 +656,11 @@ async fn handle_delete_secret(state: &AppState, args: Value, ctx: &CallerContext
 
 /// POST `/v1/secret/destroy/{path}` with `{"versions":[N]}` — permanently
 /// destroys the underlying data for a specific secret version.
-async fn handle_destroy_secret_version(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_destroy_secret_version(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let path = args["path"].as_str().ok_or("missing 'path' argument")?;
     let tenant_id = args["tenant_id"]
         .as_str()
@@ -674,7 +697,11 @@ async fn handle_destroy_secret_version(state: &AppState, args: Value, ctx: &Call
 
 /// POST `/v1/transit/keys/{key_name}/rotate` — advances the key to a new
 /// cryptographic version; existing ciphertext remains decryptable.
-async fn handle_rotate_transit_key(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_rotate_transit_key(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let key_name = args["key_name"]
         .as_str()
         .ok_or("missing 'key_name' argument")?;
@@ -713,7 +740,11 @@ async fn handle_rotate_transit_key(state: &AppState, args: Value, ctx: &CallerCo
 
 /// GET `/v1/leases?tenant_id={tenant_id}` — returns all active leases for
 /// the specified tenant.
-async fn handle_list_leases(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_list_leases(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let tenant_id = args["tenant_id"]
         .as_str()
         .ok_or("missing 'tenant_id' argument")?;
@@ -744,7 +775,11 @@ async fn handle_list_leases(state: &AppState, args: Value, ctx: &CallerContext) 
 
 /// DELETE `/v1/leases/{lease_id}` — revokes the named lease immediately,
 /// invalidating any associated credentials or tokens.
-async fn handle_revoke_lease(state: &AppState, args: Value, ctx: &CallerContext) -> Result<String, String> {
+async fn handle_revoke_lease(
+    state: &AppState,
+    args: Value,
+    ctx: &CallerContext,
+) -> Result<String, String> {
     let lease_id = args["lease_id"]
         .as_str()
         .ok_or("missing 'lease_id' argument")?;

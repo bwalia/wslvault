@@ -38,13 +38,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use ldap3::{LdapConnAsync, LdapConnSettings, Scope, SearchEntry};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -314,12 +308,7 @@ impl LdapManager {
                     .unwrap_or(DEFAULT_GROUP_ATTRIBUTE);
 
                 let (search_results, _res) = ldap
-                    .search(
-                        search_base,
-                        Scope::Subtree,
-                        &filter,
-                        vec!["dn", group_attr],
-                    )
+                    .search(search_base, Scope::Subtree, &filter, vec!["dn", group_attr])
                     .await
                     .map_err(|e| LdapError::SearchError(e.to_string()))?
                     .success()
@@ -377,12 +366,7 @@ impl LdapManager {
             .unwrap_or(DEFAULT_GROUP_ATTRIBUTE);
 
         let (search_results, _res) = ldap
-            .search(
-                &user_dn,
-                Scope::Base,
-                "(objectClass=*)",
-                vec![group_attr],
-            )
+            .search(&user_dn, Scope::Base, "(objectClass=*)", vec![group_attr])
             .await
             .map_err(|e| LdapError::SearchError(e.to_string()))?
             .success()
@@ -393,11 +377,7 @@ impl LdapManager {
             .next()
             .map(|entry| {
                 let parsed = SearchEntry::construct(entry);
-                parsed
-                    .attrs
-                    .get(group_attr)
-                    .cloned()
-                    .unwrap_or_default()
+                parsed.attrs.get(group_attr).cloned().unwrap_or_default()
             })
             .unwrap_or_default();
 
@@ -758,7 +738,10 @@ mod tests {
     #[test]
     fn map_groups_falls_back_to_default_tenant() {
         let mut group_policy_map = HashMap::new();
-        group_policy_map.insert("cn=users,dc=example,dc=com".to_string(), vec!["read".to_string()]);
+        group_policy_map.insert(
+            "cn=users,dc=example,dc=com".to_string(),
+            vec!["read".to_string()],
+        );
 
         let mgr = LdapManager::new(LdapConfig {
             url: "ldap://localhost:389".to_string(),

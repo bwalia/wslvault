@@ -49,19 +49,12 @@ pub mod users;
 
 use std::sync::Arc;
 
-use axum::{
-    http::StatusCode,
-    response::IntoResponse,
-    routing::get,
-    Json, Router,
-};
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Json, Router};
 use serde_json::json;
 
 use crate::store::PrincipalStore;
 
-use self::schemas::{
-    ScimGroup, ScimUser, SCHEMA_GROUP, SCHEMA_LIST_RESPONSE, SCHEMA_USER,
-};
+use self::schemas::{ScimGroup, ScimUser, SCHEMA_GROUP, SCHEMA_LIST_RESPONSE, SCHEMA_USER};
 use self::scim_store::{MemoryScimStore, ScimStore};
 
 // ---------------------------------------------------------------------------

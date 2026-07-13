@@ -63,9 +63,7 @@ pub async fn execute(args: ApiKeyArgs, ctx: &CommandContext) -> anyhow::Result<(
                 "tenant_id": tenant_id,
                 "policies": policies,
             });
-            let mut req = client
-                .post(format!("{}/v1/api-keys", base))
-                .json(&body);
+            let mut req = client.post(format!("{}/v1/api-keys", base)).json(&body);
             if let Some(ref t) = ctx.token {
                 req = req.bearer_auth(t);
             }
@@ -128,7 +126,10 @@ pub async fn execute(args: ApiKeyArgs, ctx: &CommandContext) -> anyhow::Result<(
                 anyhow::bail!("api-key rotate failed ({}): {}", status, body_text);
             }
             let resp_body: serde_json::Value = resp.json().await?;
-            output::success(&format!("api-key '{}' rotated — store the new secret immediately", id));
+            output::success(&format!(
+                "api-key '{}' rotated — store the new secret immediately",
+                id
+            ));
             output::print_value(&resp_body, &ctx.format)?;
         }
     }

@@ -49,16 +49,16 @@ pub async fn execute(args: PolicyArgs, ctx: &CommandContext) -> anyhow::Result<(
             capabilities,
         } => {
             if capabilities.is_empty() {
-                anyhow::bail!("at least one capability must be specified (e.g. --capabilities read,write)");
+                anyhow::bail!(
+                    "at least one capability must be specified (e.g. --capabilities read,write)"
+                );
             }
             let body = serde_json::json!({
                 "name": name,
                 "path": path,
                 "capabilities": capabilities,
             });
-            let mut req = client
-                .post(format!("{}/v1/policies", base))
-                .json(&body);
+            let mut req = client.post(format!("{}/v1/policies", base)).json(&body);
             if let Some(ref t) = ctx.token {
                 req = req.bearer_auth(t);
             }

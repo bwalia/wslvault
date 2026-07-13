@@ -65,10 +65,7 @@ pub enum QuotaStoreError {
 // ---------------------------------------------------------------------------
 
 /// Fetch the full quota record for a tenant.
-pub async fn get_quota(
-    pool: &DbPool,
-    tenant_id: Uuid,
-) -> Result<TenantQuotaRow, QuotaStoreError> {
+pub async fn get_quota(pool: &DbPool, tenant_id: Uuid) -> Result<TenantQuotaRow, QuotaStoreError> {
     let row = sqlx::query_as::<_, TenantQuotaRow>(
         "SELECT * FROM shared.tenant_quotas WHERE tenant_id = $1",
     )

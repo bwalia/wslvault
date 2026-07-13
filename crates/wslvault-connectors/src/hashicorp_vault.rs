@@ -22,15 +22,9 @@ pub enum HashiCorpAuth {
     /// Static token authentication (simplest; suitable for dev and CI).
     Token(String),
     /// AppRole authentication with role_id and secret_id.
-    AppRole {
-        role_id: String,
-        secret_id: String,
-    },
+    AppRole { role_id: String, secret_id: String },
     /// Kubernetes service account JWT authentication.
-    Kubernetes {
-        role: String,
-        jwt_path: String,
-    },
+    Kubernetes { role: String, jwt_path: String },
 }
 
 /// Cached Vault token with expiry.
@@ -76,12 +70,13 @@ impl HashiCorpVaultConnector {
     /// `HASHICORP_VAULT_TOKEN`, `HASHICORP_VAULT_ROLE_ID` + `HASHICORP_VAULT_SECRET_ID`,
     /// or `HASHICORP_VAULT_K8S_ROLE` + `HASHICORP_VAULT_K8S_JWT_PATH`.
     pub fn from_env() -> Result<Self, ConnectorError> {
-        let base_url = std::env::var("HASHICORP_VAULT_ADDR").map_err(|_| {
-            ConnectorError::Configuration { reason: "HASHICORP_VAULT_ADDR not set".into() }
-        })?;
+        let base_url =
+            std::env::var("HASHICORP_VAULT_ADDR").map_err(|_| ConnectorError::Configuration {
+                reason: "HASHICORP_VAULT_ADDR not set".into(),
+            })?;
 
-        let mount_path = std::env::var("HASHICORP_VAULT_MOUNT")
-            .unwrap_or_else(|_| "secret".to_string());
+        let mount_path =
+            std::env::var("HASHICORP_VAULT_MOUNT").unwrap_or_else(|_| "secret".to_string());
 
         let auth = if let Ok(token) = std::env::var("HASHICORP_VAULT_TOKEN") {
             HashiCorpAuth::Token(token)
@@ -91,10 +86,9 @@ impl HashiCorpVaultConnector {
         ) {
             HashiCorpAuth::AppRole { role_id, secret_id }
         } else if let Ok(role) = std::env::var("HASHICORP_VAULT_K8S_ROLE") {
-            let jwt_path = std::env::var("HASHICORP_VAULT_K8S_JWT_PATH")
-                .unwrap_or_else(|_| {
-                    "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
-                });
+            let jwt_path = std::env::var("HASHICORP_VAULT_K8S_JWT_PATH").unwrap_or_else(|_| {
+                "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
+            });
             HashiCorpAuth::Kubernetes { role, jwt_path }
         } else {
             return Err(ConnectorError::Configuration {
@@ -134,39 +128,54 @@ impl HashiCorpVaultConnector {
                     "role_id": role_id,
                     "secret_id": secret_id,
                 });
-                let resp = self.client.post(&url).json(&body).send().await.map_err(|e| {
-                    ConnectorError::Network {
+                let resp = self
+                    .client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::Network {
                         endpoint: url.clone(),
                         source: e,
-                    }
-                })?;
+                    })?;
 
-                let data: VaultAuthResponse = resp.json().await.map_err(|_| {
-                    ConnectorError::Authentication { connector: "hashicorp-vault".into(), reason: "failed to parse AppRole auth response".into() }
-                })?;
+                let data: VaultAuthResponse =
+                    resp.json()
+                        .await
+                        .map_err(|_| ConnectorError::Authentication {
+                            connector: "hashicorp-vault".into(),
+                            reason: "failed to parse AppRole auth response".into(),
+                        })?;
                 (data.auth.client_token, data.auth.lease_duration)
             }
             HashiCorpAuth::Kubernetes { role, jwt_path } => {
                 let jwt = tokio::fs::read_to_string(jwt_path).await.map_err(|e| {
-                    ConnectorError::Configuration { reason: format!("failed to read JWT: {}", e) }
+                    ConnectorError::Configuration {
+                        reason: format!("failed to read JWT: {}", e),
+                    }
                 })?;
                 let url = format!("{}/v1/auth/kubernetes/login", self.base_url);
                 let body = serde_json::json!({
                     "role": role,
                     "jwt": jwt.trim(),
                 });
-                let resp = self.client.post(&url).json(&body).send().await.map_err(|e| {
-                    ConnectorError::Network {
+                let resp = self
+                    .client
+                    .post(&url)
+                    .json(&body)
+                    .send()
+                    .await
+                    .map_err(|e| ConnectorError::Network {
                         endpoint: url.clone(),
                         source: e,
-                    }
-                })?;
-                let data: VaultAuthResponse = resp.json().await.map_err(|_| {
-                    ConnectorError::Authentication {
-                        connector: "hashicorp-vault".into(),
-                        reason: "failed to parse Kubernetes auth response".into(),
-                    }
-                })?;
+                    })?;
+                let data: VaultAuthResponse =
+                    resp.json()
+                        .await
+                        .map_err(|_| ConnectorError::Authentication {
+                            connector: "hashicorp-vault".into(),
+                            reason: "failed to parse Kubernetes auth response".into(),
+                        })?;
                 (data.auth.client_token, data.auth.lease_duration)
             }
         };
@@ -218,9 +227,11 @@ impl SecretConnector for HashiCorpVaultConnector {
             });
         }
 
-        let body: VaultKvReadResponse = resp.json().await.map_err(|_| {
-            ConnectorError::Deserialise { connector: "hashicorp-vault".into(), reason: "failed to parse KV read response".into() }
-        })?;
+        let body: VaultKvReadResponse =
+            resp.json().await.map_err(|_| ConnectorError::Deserialise {
+                connector: "hashicorp-vault".into(),
+                reason: "failed to parse KV read response".into(),
+            })?;
 
         let version = body
             .data
@@ -242,11 +253,7 @@ impl SecretConnector for HashiCorpVaultConnector {
         })
     }
 
-    async fn push(
-        &self,
-        external_path: &str,
-        data: &SecretData,
-    ) -> Result<(), ConnectorError> {
+    async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError> {
         let token = self.get_token().await?;
         let url = format!(
             "{}/v1/{}/data/{}",
@@ -311,9 +318,11 @@ impl SecretConnector for HashiCorpVaultConnector {
             });
         }
 
-        let body: VaultListResponse = resp.json().await.map_err(|_| {
-            ConnectorError::Deserialise { connector: "hashicorp-vault".into(), reason: "failed to parse list response".into() }
-        })?;
+        let body: VaultListResponse =
+            resp.json().await.map_err(|_| ConnectorError::Deserialise {
+                connector: "hashicorp-vault".into(),
+                reason: "failed to parse list response".into(),
+            })?;
 
         Ok(body.data.keys)
     }

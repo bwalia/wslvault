@@ -116,11 +116,7 @@ impl Default for FailoverConfig {
         Self {
             auto_failover: true,
             failover_cooldown_ms: 30_000,
-            region_priority: vec![
-                "us-east-1".into(),
-                "us-west-2".into(),
-                "eu-west-1".into(),
-            ],
+            region_priority: vec!["us-east-1".into(), "us-west-2".into(), "eu-west-1".into()],
             auto_failback: false,
             standby_read_percentage: 0,
         }

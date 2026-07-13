@@ -151,12 +151,16 @@ async fn run_service() -> Result<(), anyhow::Error> {
 
     // Start metrics server on the configured address.
     let metrics_addr = vault_config.observability.metrics_addr;
-    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(metrics_addr));
+    tokio::spawn(wslvault_core::metrics::server::run_metrics_server(
+        metrics_addr,
+    ));
 
     // Start HA heartbeat if enabled.
     if vault_config.ha.enabled {
         let cluster_state = wslvault_core::ha::cluster::new_cluster_state(vault_config.ha.clone());
-        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(cluster_state));
+        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(
+            cluster_state,
+        ));
         info!("HA mode enabled, heartbeat loop started");
     }
 

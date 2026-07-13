@@ -25,9 +25,24 @@ pub struct SyncJob {
 }
 
 pub async fn list_sync_jobs(pool: &DbPool) -> anyhow::Result<Vec<SyncJob>> {
-    let rows: Vec<(Uuid, String, String, String, String, Option<String>, Option<DateTime<Utc>>, Option<String>, Option<serde_json::Value>, i32, i32, bool, Uuid, DateTime<Utc>, DateTime<Utc>)> =
-        sqlx::query_as(
-            r#"
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Option<DateTime<Utc>>,
+        Option<String>,
+        Option<serde_json::Value>,
+        i32,
+        i32,
+        bool,
+        Uuid,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        r#"
             SELECT id, integration_id, connector_type, direction, prefix, schedule,
                    last_run_at, last_run_status, last_run_result,
                    consecutive_failures, max_failures, enabled, tenant_id,
@@ -35,20 +50,49 @@ pub async fn list_sync_jobs(pool: &DbPool) -> anyhow::Result<Vec<SyncJob>> {
             FROM system.sync_jobs
             ORDER BY integration_id
             "#,
-        )
-        .fetch_all(pool.inner())
-        .await?;
+    )
+    .fetch_all(pool.inner())
+    .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(id, integration_id, connector_type, direction, prefix, schedule, last_run_at, last_run_status, last_run_result, consecutive_failures, max_failures, enabled, tenant_id, created_at, updated_at)| {
-            SyncJob {
-                id, integration_id, connector_type, direction, prefix, schedule,
-                last_run_at, last_run_status, last_run_result,
-                consecutive_failures, max_failures, enabled, tenant_id,
-                created_at, updated_at,
-            }
-        })
+        .map(
+            |(
+                id,
+                integration_id,
+                connector_type,
+                direction,
+                prefix,
+                schedule,
+                last_run_at,
+                last_run_status,
+                last_run_result,
+                consecutive_failures,
+                max_failures,
+                enabled,
+                tenant_id,
+                created_at,
+                updated_at,
+            )| {
+                SyncJob {
+                    id,
+                    integration_id,
+                    connector_type,
+                    direction,
+                    prefix,
+                    schedule,
+                    last_run_at,
+                    last_run_status,
+                    last_run_result,
+                    consecutive_failures,
+                    max_failures,
+                    enabled,
+                    tenant_id,
+                    created_at,
+                    updated_at,
+                }
+            },
+        )
         .collect())
 }
 

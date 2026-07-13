@@ -74,8 +74,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState { pool };
 
-    let listen_addr = std::env::var("SYNC_SCHEDULER_LISTEN_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8093".to_string());
+    let listen_addr =
+        std::env::var("SYNC_SCHEDULER_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8093".to_string());
     let addr: std::net::SocketAddr = listen_addr.parse()?;
 
     let app = Router::new()

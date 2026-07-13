@@ -38,8 +38,7 @@ pub struct PgSecretBackend {
 impl PgSecretBackend {
     /// Create a new backend from an existing connection pool.
     pub fn new(pool: DbPool) -> Self {
-        let region_id =
-            std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
+        let region_id = std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
         Self { pool, region_id }
     }
 
@@ -142,12 +141,8 @@ impl SecretStoreBackend for PgSecretBackend {
         let tid = Self::parse_tenant_id(tenant_id)?;
 
         // Advisory quota check — reject writes that would exceed tenant limits.
-        if let Err(e) = quota_store::check_write_quota(
-            &self.pool,
-            *tid.as_uuid(),
-            ciphertext.len(),
-        )
-        .await
+        if let Err(e) =
+            quota_store::check_write_quota(&self.pool, *tid.as_uuid(), ciphertext.len()).await
         {
             return Err(VaultError::QuotaExceeded {
                 reason: e.to_string(),
@@ -235,11 +230,7 @@ impl SecretStoreBackend for PgSecretBackend {
     /// The returned `SecretEntry` has an empty `versions` vec because the
     /// PostgreSQL backend does not eagerly load all versions — callers that
     /// need version data should call `get` with a specific version number.
-    async fn get_metadata(
-        &self,
-        tenant_id: &str,
-        path: &str,
-    ) -> Result<SecretEntry, VaultError> {
+    async fn get_metadata(&self, tenant_id: &str, path: &str) -> Result<SecretEntry, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
         let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
 

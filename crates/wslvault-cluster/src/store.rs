@@ -71,7 +71,16 @@ pub async fn list_nodes(
     pool: &DbPool,
     service_name: Option<&str>,
 ) -> Result<Vec<NodeInfo>, ClusterError> {
-    let rows: Vec<(Uuid, String, String, String, bool, DateTime<Utc>, DateTime<Utc>, serde_json::Value)> = if let Some(svc) = service_name {
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        bool,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        serde_json::Value,
+    )> = if let Some(svc) = service_name {
         sqlx::query_as(
             r#"
             SELECT id, service_name, node_id, region, is_leader, last_heartbeat, started_at, metadata
@@ -97,18 +106,29 @@ pub async fn list_nodes(
 
     Ok(rows
         .into_iter()
-        .map(|(id, service_name, node_id, region, is_leader, last_heartbeat, started_at, metadata)| {
-            NodeInfo {
+        .map(
+            |(
                 id,
                 service_name,
-                node_id: NodeId(node_id),
+                node_id,
                 region,
                 is_leader,
                 last_heartbeat,
                 started_at,
                 metadata,
-            }
-        })
+            )| {
+                NodeInfo {
+                    id,
+                    service_name,
+                    node_id: NodeId(node_id),
+                    region,
+                    is_leader,
+                    last_heartbeat,
+                    started_at,
+                    metadata,
+                }
+            },
+        )
         .collect())
 }
 

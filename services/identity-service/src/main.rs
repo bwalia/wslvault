@@ -217,9 +217,7 @@ async fn main() -> Result<(), anyhow::Error> {
         let ca_cert_path = config.mtls_ca_cert_path.as_deref().unwrap();
 
         let trusted_ca_pem = std::fs::read_to_string(ca_cert_path).map_err(|e| {
-            anyhow::anyhow!(
-                "failed to read mTLS CA certificate from '{ca_cert_path}': {e}"
-            )
+            anyhow::anyhow!("failed to read mTLS CA certificate from '{ca_cert_path}': {e}")
         })?;
 
         let mtls_config = MtlsConfig {
@@ -231,9 +229,8 @@ async fn main() -> Result<(), anyhow::Error> {
             },
         };
 
-        let manager = MtlsManager::new(mtls_config).map_err(|e| {
-            anyhow::anyhow!("failed to initialise mTLS manager: {e}")
-        })?;
+        let manager = MtlsManager::new(mtls_config)
+            .map_err(|e| anyhow::anyhow!("failed to initialise mTLS manager: {e}"))?;
 
         info!("mTLS authentication is enabled");
         Some(Arc::new(manager))
@@ -263,9 +260,7 @@ async fn main() -> Result<(), anyhow::Error> {
         Some(ref json) => {
             let providers: std::collections::HashMap<String, OidcProviderConfig> =
                 serde_json::from_str(json).map_err(|e| {
-                    anyhow::anyhow!(
-                        "failed to parse VAULT_OIDC_PROVIDERS JSON: {e}"
-                    )
+                    anyhow::anyhow!("failed to parse VAULT_OIDC_PROVIDERS JSON: {e}")
                 })?;
 
             if providers.is_empty() {
@@ -422,14 +417,9 @@ async fn main() -> Result<(), anyhow::Error> {
                 .max_connections(5)
                 .connect(&database_url)
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to connect to PostgreSQL for SCIM: {e}")
-                })?;
+                .map_err(|e| anyhow::anyhow!("failed to connect to PostgreSQL for SCIM: {e}"))?;
             let pg_store = scim::scim_store::PgScimStore::new(scim_pool);
-            scim::ScimState::with_store(
-                std::sync::Arc::new(pg_store),
-                principal_store_for_scim,
-            )
+            scim::ScimState::with_store(std::sync::Arc::new(pg_store), principal_store_for_scim)
         }
         _ => {
             warn!("SCIM: DATABASE_URL not set; using in-memory store (data lost on restart)");
@@ -467,9 +457,8 @@ async fn main() -> Result<(), anyhow::Error> {
         Ok(json) if !json.is_empty() => {
             match serde_json::from_str::<auth_methods::ldap::LdapConfig>(&json) {
                 Ok(ldap_config) => {
-                    let manager = std::sync::Arc::new(
-                        auth_methods::ldap::LdapManager::new(ldap_config),
-                    );
+                    let manager =
+                        std::sync::Arc::new(auth_methods::ldap::LdapManager::new(ldap_config));
                     let state = auth_methods::ldap::LdapState {
                         manager,
                         token_manager: token_manager_for_auth_methods.clone(),
@@ -601,18 +590,14 @@ async fn main() -> Result<(), anyhow::Error> {
         protected_routes = protected_routes.merge(r);
     }
 
-    let protected_routes: Router = protected_routes
-        .layer(axum::middleware::from_fn_with_state(
-            wslvault_core::middleware::GatewayAuth::from_env(),
-            wslvault_core::middleware::require_gateway_auth,
-        ));
+    let protected_routes: Router = protected_routes.layer(axum::middleware::from_fn_with_state(
+        wslvault_core::middleware::GatewayAuth::from_env(),
+        wslvault_core::middleware::require_gateway_auth,
+    ));
 
-    let http_app: Router = health::router()
-        .merge(protected_routes)
-        .merge(
-            SwaggerUi::new("/swagger-ui")
-                .url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
-        );
+    let http_app: Router = health::router().merge(protected_routes).merge(
+        SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", openapi::ApiDoc::openapi()),
+    );
 
     // Shared shutdown channel: either server can trigger graceful shutdown.
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();

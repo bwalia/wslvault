@@ -51,13 +51,11 @@ pub async fn provision_schema(
     tenant_id: Uuid,
     tier: &str,
 ) -> Result<String, SchemaStoreError> {
-    let row: (String,) = sqlx::query_as(
-        "SELECT system.provision_tenant_schema($1, $2)",
-    )
-    .bind(tenant_id)
-    .bind(tier)
-    .fetch_one(pool.inner())
-    .await?;
+    let row: (String,) = sqlx::query_as("SELECT system.provision_tenant_schema($1, $2)")
+        .bind(tenant_id)
+        .bind(tier)
+        .fetch_one(pool.inner())
+        .await?;
 
     Ok(row.0)
 }
@@ -65,10 +63,7 @@ pub async fn provision_schema(
 /// Deprovision (drop) the dedicated schema for a tenant.
 ///
 /// The registry row is preserved with `deprovisioned_at` set for audit.
-pub async fn deprovision_schema(
-    pool: &DbPool,
-    tenant_id: Uuid,
-) -> Result<(), SchemaStoreError> {
+pub async fn deprovision_schema(pool: &DbPool, tenant_id: Uuid) -> Result<(), SchemaStoreError> {
     sqlx::query("SELECT system.deprovision_tenant_schema($1)")
         .bind(tenant_id)
         .execute(pool.inner())
@@ -81,16 +76,11 @@ pub async fn deprovision_schema(
 ///
 /// Returns `"shared"` for shared-tier tenants and the per-tenant schema
 /// name for dedicated/sovereign tenants.
-pub async fn resolve_schema(
-    pool: &DbPool,
-    tenant_id: Uuid,
-) -> Result<String, SchemaStoreError> {
-    let row: (String,) = sqlx::query_as(
-        "SELECT system.resolve_tenant_schema($1)",
-    )
-    .bind(tenant_id)
-    .fetch_one(pool.inner())
-    .await?;
+pub async fn resolve_schema(pool: &DbPool, tenant_id: Uuid) -> Result<String, SchemaStoreError> {
+    let row: (String,) = sqlx::query_as("SELECT system.resolve_tenant_schema($1)")
+        .bind(tenant_id)
+        .fetch_one(pool.inner())
+        .await?;
 
     Ok(row.0)
 }
@@ -112,9 +102,7 @@ pub async fn get_tenant_schema(
 }
 
 /// List all active (non-deprovisioned) dedicated/sovereign schemas.
-pub async fn list_active_schemas(
-    pool: &DbPool,
-) -> Result<Vec<TenantSchemaRow>, SchemaStoreError> {
+pub async fn list_active_schemas(pool: &DbPool) -> Result<Vec<TenantSchemaRow>, SchemaStoreError> {
     let rows = sqlx::query_as::<_, TenantSchemaRow>(
         "SELECT * FROM system.tenant_schemas \
          WHERE deprovisioned_at IS NULL \

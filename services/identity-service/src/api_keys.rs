@@ -27,10 +27,7 @@
 //! | POST   | /v1/api-keys/:id/rotate     | Rotate an API key                  |
 //! | POST   | /v1/auth/api-key            | Exchange an API key for a JWT      |
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     extract::{Path, State},
@@ -281,8 +278,10 @@ impl ApiKeyManager {
         let mut random_bytes = [0u8; KEY_SECRET_BYTES];
         // `rand::thread_rng()` uses the OS CSPRNG (via getrandom).
         rand::thread_rng().fill_bytes(&mut random_bytes);
-        let encoded =
-            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &random_bytes);
+        let encoded = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            &random_bytes,
+        );
         format!("{RAW_KEY_PREFIX}{encoded}")
     }
 
@@ -347,9 +346,9 @@ impl ApiKeyManager {
             .collect::<String>();
 
         let now = Utc::now();
-        let expires_at = req.expires_in_seconds.map(|secs| {
-            now + chrono::Duration::seconds(secs)
-        });
+        let expires_at = req
+            .expires_in_seconds
+            .map(|secs| now + chrono::Duration::seconds(secs));
 
         // Generate a random UUID using a timestamp-based v7 UUID so records
         // sort naturally by creation time (consistent with the rest of the codebase).
@@ -402,10 +401,7 @@ impl ApiKeyManager {
     ///
     /// The lookup is O(1) and uses a constant-time byte comparison to prevent
     /// timing-based key enumeration.  `last_used_at` is updated on success.
-    pub async fn validate_key(
-        &self,
-        raw_key: &str,
-    ) -> Result<ApiKeyValidationResult, ApiKeyError> {
+    pub async fn validate_key(&self, raw_key: &str) -> Result<ApiKeyValidationResult, ApiKeyError> {
         // Reject obviously malformed keys before touching the store.
         Self::parse_key_random_portion(raw_key)?;
 
@@ -453,11 +449,7 @@ impl ApiKeyManager {
     ///
     /// The caller must supply the owning `tenant_id` to prevent cross-tenant
     /// revocation (even if a key UUID is somehow leaked).
-    pub async fn revoke_key(
-        &self,
-        key_id: Uuid,
-        tenant_id: &str,
-    ) -> Result<(), ApiKeyError> {
+    pub async fn revoke_key(&self, key_id: Uuid, tenant_id: &str) -> Result<(), ApiKeyError> {
         let id_to_hash = self.id_to_hash.read().await;
         let hash = id_to_hash
             .get(&key_id)
@@ -563,9 +555,7 @@ impl ApiKeyManager {
             expires_in_seconds: None,
         };
 
-        let response = self
-            .create_key(new_req, &old_created_by)
-            .await?;
+        let response = self.create_key(new_req, &old_created_by).await?;
 
         info!(
             old_key_id = %key_id,
@@ -928,7 +918,10 @@ pub async fn handle_auth_api_key(
 /// ```
 pub fn router(state: ApiKeyState) -> Router {
     Router::new()
-        .route("/v1/api-keys", post(handle_create_api_key).get(handle_list_api_keys))
+        .route(
+            "/v1/api-keys",
+            post(handle_create_api_key).get(handle_list_api_keys),
+        )
         .route("/v1/api-keys/:id", delete(handle_revoke_api_key))
         .route("/v1/api-keys/:id/rotate", post(handle_rotate_api_key))
         .route("/v1/auth/api-key", post(handle_auth_api_key))
@@ -1166,7 +1159,10 @@ mod tests {
         let resp = mgr.create_key(req, "op").await.unwrap();
 
         // Attempt to revoke with wrong tenant id.
-        let err = mgr.revoke_key(resp.id, "tenant-attacker").await.unwrap_err();
+        let err = mgr
+            .revoke_key(resp.id, "tenant-attacker")
+            .await
+            .unwrap_err();
         assert!(matches!(err, ApiKeyError::KeyNotFound));
     }
 
@@ -1205,7 +1201,11 @@ mod tests {
         mgr.revoke_key(all_a[0].id, "tenant-a").await.unwrap();
 
         let active_a = mgr.list_keys("tenant-a").await;
-        assert_eq!(active_a.len(), 1, "only 1 active key should remain for tenant-a");
+        assert_eq!(
+            active_a.len(),
+            1,
+            "only 1 active key should remain for tenant-a"
+        );
 
         let active_b = mgr.list_keys("tenant-b").await;
         assert_eq!(active_b.len(), 1);

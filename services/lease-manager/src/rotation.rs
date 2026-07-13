@@ -36,7 +36,7 @@ use tracing::{debug, error, info, warn};
 use wslvault_cluster::leader::LeaderElector;
 
 use crate::rotation_metrics::{
-    ROTATION_SWEEP_RUNS_TOTAL, ROTATIONS_TRIGGERED_TOTAL, VERSIONS_REVOKED_TOTAL,
+    ROTATIONS_TRIGGERED_TOTAL, ROTATION_SWEEP_RUNS_TOTAL, VERSIONS_REVOKED_TOTAL,
     WEBHOOKS_DISPATCHED_TOTAL,
 };
 
@@ -224,7 +224,10 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
 
     let count = due_secrets.len();
     if count > 0 {
-        info!(due_count = count, "rotation sweep found secrets due for rotation");
+        info!(
+            due_count = count,
+            "rotation sweep found secrets due for rotation"
+        );
     } else {
         debug!("rotation sweep: no secrets due for rotation this cycle");
     }
@@ -245,13 +248,9 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
                 triggered_at: Utc::now().to_rfc3339(),
             };
 
-            let dispatched = dispatch_webhook_with_retry(
-                http_client,
-                url,
-                &payload,
-                config.webhook_max_retries,
-            )
-            .await;
+            let dispatched =
+                dispatch_webhook_with_retry(http_client, url, &payload, config.webhook_max_retries)
+                    .await;
 
             if dispatched {
                 // Mark rotation_status = 'pending' so we do not re-fire this
@@ -352,7 +351,11 @@ async fn dispatch_webhook_with_retry(
         }
     }
 
-    error!(url = url, max_retries = max_retries, "webhook delivery exhausted all retries");
+    error!(
+        url = url,
+        max_retries = max_retries,
+        "webhook delivery exhausted all retries"
+    );
     false
 }
 
@@ -371,8 +374,7 @@ fn spawn_version_cleanup(
             "deprecated version cleanup task started"
         );
 
-        let mut interval =
-            tokio::time::interval(Duration::from_secs(config.cleanup_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(config.cleanup_interval_secs));
 
         loop {
             interval.tick().await;
@@ -480,8 +482,14 @@ mod tests {
         assert_eq!(json["tenant_id"], "550e8400-e29b-41d4-a716-446655440000");
         assert_eq!(json["path"], "prod/db/password");
         assert_eq!(json["secret_type"], "ROTATION_REQUIRED");
-        assert!(json["rotation_due_at"].is_string(), "rotation_due_at must be a string");
-        assert!(json["triggered_at"].is_string(), "triggered_at must be a string");
+        assert!(
+            json["rotation_due_at"].is_string(),
+            "rotation_due_at must be a string"
+        );
+        assert!(
+            json["triggered_at"].is_string(),
+            "triggered_at must be a string"
+        );
     }
 
     // -------------------------------------------------------------------------

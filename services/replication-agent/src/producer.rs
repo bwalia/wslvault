@@ -30,9 +30,18 @@ pub async fn get_events_handler(
     // Fetch events that were NOT originated by the requesting region
     // (a region should not replicate its own events back to itself).
     let events: Vec<ReplicationEvent> = match params.source_region {
-        Some(ref requesting_region) => {
-            sqlx::query_as::<_, (uuid::Uuid, String, String, serde_json::Value, serde_json::Value, chrono::DateTime<chrono::Utc>)>(
-                r#"
+        Some(ref requesting_region) => sqlx::query_as::<
+            _,
+            (
+                uuid::Uuid,
+                String,
+                String,
+                serde_json::Value,
+                serde_json::Value,
+                chrono::DateTime<chrono::Utc>,
+            ),
+        >(
+            r#"
                 SELECT id, event_type, source_region, payload, vector_clock, created_at
                 FROM system.replication_events
                 WHERE source_region != $1
@@ -46,19 +55,25 @@ pub async fn get_events_handler(
                 ORDER BY created_at ASC
                 LIMIT $3
                 "#,
-            )
-            .bind(requesting_region)
-            .bind(after_seq)
-            .bind(limit)
-            .fetch_all(pool.inner())
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(id, event_type, source_region, payload, vector_clock, created_at)| {
-                ReplicationEvent { id, event_type, source_region, payload, vector_clock, created_at }
-            })
-            .collect()
-        }
+        )
+        .bind(requesting_region)
+        .bind(after_seq)
+        .bind(limit)
+        .fetch_all(pool.inner())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(
+            |(id, event_type, source_region, payload, vector_clock, created_at)| ReplicationEvent {
+                id,
+                event_type,
+                source_region,
+                payload,
+                vector_clock,
+                created_at,
+            },
+        )
+        .collect(),
         None => Vec::new(),
     };
 

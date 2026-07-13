@@ -31,9 +31,7 @@ use zeroize::Zeroizing;
 
 use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
 use wslvault_core::error::VaultError;
-use wslvault_core::types::key::{
-    KeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, KeyState,
-};
+use wslvault_core::types::key::{KeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, KeyState};
 
 use wslvault_storage::key_store::{
     insert_key_descriptor, list_active_keys_with_wrapped_key, update_key_state,
@@ -246,20 +244,22 @@ impl KekStore {
 
                 // Unwrap the tenant KEK using the root KEK.
                 let aad = format!("tenant-kek:{tenant_id}");
-                let plaintext =
-                    match decrypt_with_dek(&self.inner.root_kek, &row.wrapped_key, aad.as_bytes())
-                    {
-                        Ok(p) => p,
-                        Err(e) => {
-                            warn!(
-                                key_id = %row.key_id,
-                                tenant_id = %tenant_id,
-                                error = %e,
-                                "Failed to unwrap tenant KEK — skipping (investigate immediately)"
-                            );
-                            continue;
-                        }
-                    };
+                let plaintext = match decrypt_with_dek(
+                    &self.inner.root_kek,
+                    &row.wrapped_key,
+                    aad.as_bytes(),
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!(
+                            key_id = %row.key_id,
+                            tenant_id = %tenant_id,
+                            error = %e,
+                            "Failed to unwrap tenant KEK — skipping (investigate immediately)"
+                        );
+                        continue;
+                    }
+                };
 
                 if plaintext.len() != 32 {
                     warn!(
@@ -663,7 +663,10 @@ impl KekStore {
                     reason: format!("Failed to persist rotated DEK to DB: {e}"),
                 })?;
 
-            debug!(tenant_id, key_id, new_version, "Rotated DEK persisted to database");
+            debug!(
+                tenant_id,
+                key_id, new_version, "Rotated DEK persisted to database"
+            );
         }
 
         Ok(new_version)
@@ -821,7 +824,10 @@ mod tests {
         assert_eq!(&*dek1, &*dek2, "fetching a DEK must be deterministic");
 
         let (wrapped, version) = store.get_dek_metadata(&key_id).await.unwrap();
-        assert!(!wrapped.is_empty(), "wrapped DEK envelope must be populated");
+        assert!(
+            !wrapped.is_empty(),
+            "wrapped DEK envelope must be populated"
+        );
         assert_eq!(version, 1);
     }
 

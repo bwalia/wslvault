@@ -307,9 +307,6 @@ pub async fn update_quota(
 pub fn router(state: QuotaState) -> Router {
     Router::new()
         .route("/v1/quotas", get(list_quotas))
-        .route(
-            "/v1/quotas/:id",
-            get(get_quota).patch(update_quota),
-        )
+        .route("/v1/quotas/:id", get(get_quota).patch(update_quota))
         .with_state(state)
 }

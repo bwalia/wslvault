@@ -243,9 +243,9 @@ impl OidcManager {
         // If not (some IdPs omit `kid` when they only have one key), fall back
         // to the first RSA key in the set.
         let jwk = if let Some(kid) = &header.kid {
-            key_set
-                .find(kid)
-                .ok_or_else(|| OidcError::TokenValidation(format!("no JWK found for kid '{kid}'")))?
+            key_set.find(kid).ok_or_else(|| {
+                OidcError::TokenValidation(format!("no JWK found for kid '{kid}'"))
+            })?
         } else {
             // No `kid` in header — use first available RSA key.
             key_set
@@ -285,10 +285,8 @@ impl OidcManager {
         validation.validate_exp = true;
         validation.leeway = 0;
 
-        let token_data =
-            decode::<IdTokenClaims>(id_token, &decoding_key, &validation).map_err(|e| {
-                OidcError::TokenValidation(format!("token validation failed: {e}"))
-            })?;
+        let token_data = decode::<IdTokenClaims>(id_token, &decoding_key, &validation)
+            .map_err(|e| OidcError::TokenValidation(format!("token validation failed: {e}")))?;
 
         let claims = token_data.claims;
 
@@ -378,7 +376,10 @@ impl OidcManager {
     /// Validates that the `issuer` field in the discovery document matches the
     /// configured issuer to guard against provider misconfiguration.
     pub async fn discover_jwks_uri(&self, issuer: &str) -> Result<String, OidcError> {
-        let discovery_url = format!("{}/.well-known/openid-configuration", issuer.trim_end_matches('/'));
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            issuer.trim_end_matches('/')
+        );
 
         info!(issuer = issuer, url = %discovery_url, "fetching OIDC discovery document");
 
@@ -400,10 +401,13 @@ impl OidcManager {
         }
 
         let discovery: OpenIdConfiguration =
-            response.json().await.map_err(|e| OidcError::DiscoveryFailed {
-                issuer: issuer.to_string(),
-                reason: format!("failed to parse discovery document: {e}"),
-            })?;
+            response
+                .json()
+                .await
+                .map_err(|e| OidcError::DiscoveryFailed {
+                    issuer: issuer.to_string(),
+                    reason: format!("failed to parse discovery document: {e}"),
+                })?;
 
         // Guard against discovery documents that return a mismatched issuer,
         // which could indicate a misconfigured or compromised IdP endpoint.
@@ -431,15 +435,12 @@ impl OidcManager {
     pub async fn fetch_jwks(&self, jwks_uri: &str) -> Result<JwkSet, OidcError> {
         info!(uri = jwks_uri, "fetching JWKS keys");
 
-        let response = self
-            .http_client
-            .get(jwks_uri)
-            .send()
-            .await
-            .map_err(|e| OidcError::JwksFetchFailed {
+        let response = self.http_client.get(jwks_uri).send().await.map_err(|e| {
+            OidcError::JwksFetchFailed {
                 uri: jwks_uri.to_string(),
                 reason: format!("HTTP request failed: {e}"),
-            })?;
+            }
+        })?;
 
         if !response.status().is_success() {
             return Err(OidcError::JwksFetchFailed {
@@ -448,10 +449,13 @@ impl OidcManager {
             });
         }
 
-        let key_set: JwkSet = response.json().await.map_err(|e| OidcError::JwksFetchFailed {
-            uri: jwks_uri.to_string(),
-            reason: format!("failed to parse JWKS response: {e}"),
-        })?;
+        let key_set: JwkSet = response
+            .json()
+            .await
+            .map_err(|e| OidcError::JwksFetchFailed {
+                uri: jwks_uri.to_string(),
+                reason: format!("failed to parse JWKS response: {e}"),
+            })?;
 
         info!(
             uri = jwks_uri,
@@ -481,10 +485,7 @@ impl OidcManager {
         let mapping = &config.claims_mapping;
 
         // ── Resolve tenant_id ──────────────────────────────────────────────
-        let tenant_id_claim_name = mapping
-            .tenant_id_claim
-            .as_deref()
-            .unwrap_or("tenant_id");
+        let tenant_id_claim_name = mapping.tenant_id_claim.as_deref().unwrap_or("tenant_id");
 
         // Look for the tenant claim in the flattened `extra` map first; if the
         // claim name happens to be one of the well-known fields (`iss`, `sub`,
@@ -507,19 +508,13 @@ impl OidcManager {
         }
 
         // ── Resolve policies ───────────────────────────────────────────────
-        let policies_claim_name = mapping
-            .policies_claim
-            .as_deref()
-            .unwrap_or("groups");
+        let policies_claim_name = mapping.policies_claim.as_deref().unwrap_or("groups");
 
         // Collect per-user policies from the named claim.  The claim may live
         // in the well-known `groups` field or in a custom claim in `extra`.
         let mut policies: Vec<String> = if policies_claim_name == "groups" {
             // Use the typed `groups` field to avoid double-lookup in `extra`.
-            claims
-                .groups
-                .clone()
-                .unwrap_or_default()
+            claims.groups.clone().unwrap_or_default()
         } else {
             claims
                 .extra

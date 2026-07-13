@@ -94,14 +94,17 @@ pub async fn build_ha_health_report(
         .count();
 
     // Determine the leader's region.
-    let leader_region = cluster.current_leader.as_ref().and_then(|id| {
-        cluster.nodes.get(id).map(|n| n.region.clone())
-    });
+    let leader_region = cluster
+        .current_leader
+        .as_ref()
+        .and_then(|id| cluster.nodes.get(id).map(|n| n.region.clone()));
 
     // Determine overall status.
     let status = if !cluster.config.enabled {
         HaStatus::Standalone
-    } else if summary.active_nodes == summary.total_nodes && max_lag < cluster.config.replication.max_lag_ms {
+    } else if summary.active_nodes == summary.total_nodes
+        && max_lag < cluster.config.replication.max_lag_ms
+    {
         HaStatus::Healthy
     } else if summary.active_nodes > 0 && cluster.current_leader.is_some() {
         HaStatus::Degraded
@@ -115,7 +118,9 @@ pub async fn build_ha_health_report(
 
     let last_failover = failover_history.last().map(|e| e.timestamp);
 
-    let uptime = cluster.nodes.get(&cluster.local_node_id)
+    let uptime = cluster
+        .nodes
+        .get(&cluster.local_node_id)
         .map(|n| n.uptime_seconds)
         .unwrap_or(0);
 

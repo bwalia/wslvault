@@ -40,19 +40,9 @@
 //! - Wildcard `"*"` entries in bound lists are treated as explicit allowlists,
 //!   not regexes.
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::Instant,
-};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use jsonwebtoken::{
     decode, decode_header,
     jwk::{AlgorithmParameters, JwkSet},
@@ -363,15 +353,11 @@ impl KubernetesManager {
         &self,
         sa_jwt: &str,
     ) -> Result<ServiceAccountIdentity, KubernetesError> {
-        let reviewer_token = self
-            .config
-            .reviewer_token
-            .as_deref()
-            .ok_or_else(|| {
-                KubernetesError::TokenReviewFailed(
-                    "reviewer_token is required for TokenReview mode".to_string(),
-                )
-            })?;
+        let reviewer_token = self.config.reviewer_token.as_deref().ok_or_else(|| {
+            KubernetesError::TokenReviewFailed(
+                "reviewer_token is required for TokenReview mode".to_string(),
+            )
+        })?;
 
         let url = format!(
             "{}/apis/authentication.k8s.io/v1/tokenreviews",
@@ -414,13 +400,9 @@ impl KubernetesManager {
         }
 
         // The `username` field contains `system:serviceaccount:<ns>:<sa>`.
-        let username = review
-            .status
-            .user
-            .and_then(|u| u.username)
-            .ok_or_else(|| {
-                KubernetesError::TokenReviewFailed("no username in token review response".to_string())
-            })?;
+        let username = review.status.user.and_then(|u| u.username).ok_or_else(|| {
+            KubernetesError::TokenReviewFailed("no username in token review response".to_string())
+        })?;
 
         parse_sa_username(&username)
     }
@@ -432,13 +414,9 @@ impl KubernetesManager {
         &self,
         sa_jwt: &str,
     ) -> Result<ServiceAccountIdentity, KubernetesError> {
-        let issuer = self
-            .config
-            .issuer
-            .as_deref()
-            .ok_or_else(|| {
-                KubernetesError::JwksFetch("issuer is required for JWKS validation mode".to_string())
-            })?;
+        let issuer = self.config.issuer.as_deref().ok_or_else(|| {
+            KubernetesError::JwksFetch("issuer is required for JWKS validation mode".to_string())
+        })?;
 
         let key_set = self.get_jwks(issuer).await?;
 
@@ -455,9 +433,7 @@ impl KubernetesManager {
                 .keys
                 .iter()
                 .find(|k| matches!(k.algorithm, AlgorithmParameters::RSA(_)))
-                .ok_or_else(|| {
-                    KubernetesError::JwtValidation("no RSA key in JWKS".to_string())
-                })?
+                .ok_or_else(|| KubernetesError::JwtValidation("no RSA key in JWKS".to_string()))?
         };
 
         let decoding_key = DecodingKey::from_jwk(jwk)
@@ -483,8 +459,7 @@ impl KubernetesManager {
 
         // Extract SA identity from claims.  Prefer the dedicated k8s.io claims;
         // fall back to parsing the `sub` field.
-        let (namespace, name) = if let (Some(ns), Some(sa)) = (&claims.namespace, &claims.sa_name)
-        {
+        let (namespace, name) = if let (Some(ns), Some(sa)) = (&claims.namespace, &claims.sa_name) {
             (ns.clone(), sa.clone())
         } else if let Some(sub) = &claims.sub {
             let identity = parse_sa_username(sub)?;
@@ -604,17 +579,17 @@ impl KubernetesManager {
 pub fn parse_sa_username(username: &str) -> Result<ServiceAccountIdentity, KubernetesError> {
     // Expected format: "system:serviceaccount:<namespace>:<name>"
     let prefix = "system:serviceaccount:";
-    let rest = username
-        .strip_prefix(prefix)
-        .ok_or_else(|| KubernetesError::JwtValidation(format!(
-            "unexpected SA username format: '{username}'"
-        )))?;
+    let rest = username.strip_prefix(prefix).ok_or_else(|| {
+        KubernetesError::JwtValidation(format!("unexpected SA username format: '{username}'"))
+    })?;
 
     let mut parts = rest.splitn(2, ':');
     let namespace = parts
         .next()
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| KubernetesError::JwtValidation("empty namespace in SA username".to_string()))?
+        .ok_or_else(|| {
+            KubernetesError::JwtValidation("empty namespace in SA username".to_string())
+        })?
         .to_string();
     let name = parts
         .next()
@@ -676,7 +651,11 @@ pub async fn handle_kubernetes_login(
     State(state): State<KubernetesState>,
     Json(payload): Json<KubernetesLoginRequest>,
 ) -> impl IntoResponse {
-    match state.manager.authenticate(&payload.jwt, &payload.role).await {
+    match state
+        .manager
+        .authenticate(&payload.jwt, &payload.role)
+        .await
+    {
         Ok(result) => {
             let subject = format!("{}:{}", result.namespace, result.service_account_name);
             match state.token_manager.issue_token(
@@ -783,7 +762,10 @@ mod tests {
     #[test]
     fn check_role_bindings_exact_match_passes() {
         let mut roles = HashMap::new();
-        roles.insert("my-role".to_string(), make_role(vec!["default"], vec!["my-app"], "tenant-1"));
+        roles.insert(
+            "my-role".to_string(),
+            make_role(vec!["default"], vec!["my-app"], "tenant-1"),
+        );
         let mgr = make_manager(roles);
 
         let identity = ServiceAccountIdentity {
@@ -797,7 +779,10 @@ mod tests {
     #[test]
     fn check_role_bindings_wildcard_namespace_passes() {
         let mut roles = HashMap::new();
-        roles.insert("any-ns".to_string(), make_role(vec!["*"], vec!["my-app"], "tenant-1"));
+        roles.insert(
+            "any-ns".to_string(),
+            make_role(vec!["*"], vec!["my-app"], "tenant-1"),
+        );
         let mgr = make_manager(roles);
 
         let identity = ServiceAccountIdentity {
@@ -811,7 +796,10 @@ mod tests {
     #[test]
     fn check_role_bindings_wildcard_sa_passes() {
         let mut roles = HashMap::new();
-        roles.insert("any-sa".to_string(), make_role(vec!["default"], vec!["*"], "tenant-1"));
+        roles.insert(
+            "any-sa".to_string(),
+            make_role(vec!["default"], vec!["*"], "tenant-1"),
+        );
         let mgr = make_manager(roles);
 
         let identity = ServiceAccountIdentity {
@@ -825,7 +813,10 @@ mod tests {
     #[test]
     fn check_role_bindings_wrong_namespace_fails() {
         let mut roles = HashMap::new();
-        roles.insert("strict".to_string(), make_role(vec!["staging"], vec!["*"], "tenant-1"));
+        roles.insert(
+            "strict".to_string(),
+            make_role(vec!["staging"], vec!["*"], "tenant-1"),
+        );
         let mgr = make_manager(roles);
 
         let identity = ServiceAccountIdentity {
@@ -833,14 +824,19 @@ mod tests {
             name: "app".to_string(),
         };
         let role = mgr.config.roles.get("strict").unwrap();
-        let err = mgr.check_role_bindings(&identity, "strict", role).unwrap_err();
+        let err = mgr
+            .check_role_bindings(&identity, "strict", role)
+            .unwrap_err();
         assert!(matches!(err, KubernetesError::UnboundServiceAccount { .. }));
     }
 
     #[test]
     fn check_role_bindings_wrong_sa_name_fails() {
         let mut roles = HashMap::new();
-        roles.insert("strict-sa".to_string(), make_role(vec!["*"], vec!["allowed-app"], "tenant-1"));
+        roles.insert(
+            "strict-sa".to_string(),
+            make_role(vec!["*"], vec!["allowed-app"], "tenant-1"),
+        );
         let mgr = make_manager(roles);
 
         let identity = ServiceAccountIdentity {
@@ -914,6 +910,9 @@ mod tests {
             .await
             .expect("authentication should succeed");
 
-        println!("Authenticated: {}/{}", result.namespace, result.service_account_name);
+        println!(
+            "Authenticated: {}/{}",
+            result.namespace, result.service_account_name
+        );
     }
 }

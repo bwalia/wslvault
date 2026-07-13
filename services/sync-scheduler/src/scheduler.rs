@@ -51,7 +51,11 @@ pub async fn run_scheduler_loop(pool: DbPool, elector: Arc<LeaderElector>) {
 
             match runner::run_sync_job(&pool, &job).await {
                 Ok(result) => {
-                    let status = if result.failed > 0 { "partial" } else { "success" };
+                    let status = if result.failed > 0 {
+                        "partial"
+                    } else {
+                        "success"
+                    };
                     let _ = store::update_job_result(
                         &pool,
                         job.id,

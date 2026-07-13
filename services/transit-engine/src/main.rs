@@ -83,32 +83,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Using `Arc<dyn TransitKeyStoreBackend>` here keeps AppState a single
     // concrete type regardless of which backend is active, which is required
     // for axum's `State` extractor.
-    let key_store: Arc<dyn TransitKeyStoreBackend> =
-        match std::env::var("DATABASE_URL") {
-            Ok(database_url) if !database_url.is_empty() => {
-                info!("DATABASE_URL detected — using PostgreSQL transit key backend");
+    let key_store: Arc<dyn TransitKeyStoreBackend> = match std::env::var("DATABASE_URL") {
+        Ok(database_url) if !database_url.is_empty() => {
+            info!("DATABASE_URL detected — using PostgreSQL transit key backend");
 
-                let db_config = DatabaseConfig {
-                    url: database_url,
-                    ..DatabaseConfig::default()
-                };
+            let db_config = DatabaseConfig {
+                url: database_url,
+                ..DatabaseConfig::default()
+            };
 
-                let pool = DbPool::connect(&db_config).await.map_err(|e| {
-                    // Propagate the error as a boxed error so main() can return it.
-                    format!("failed to connect to PostgreSQL: {}", e)
-                })?;
+            let pool = DbPool::connect(&db_config).await.map_err(|e| {
+                // Propagate the error as a boxed error so main() can return it.
+                format!("failed to connect to PostgreSQL: {}", e)
+            })?;
 
-                let backend = PgTransitKeyBackend::new(pool).await.map_err(|e| {
-                    format!("failed to initialise PG transit key backend: {}", e)
-                })?;
+            let backend = PgTransitKeyBackend::new(pool)
+                .await
+                .map_err(|e| format!("failed to initialise PG transit key backend: {}", e))?;
 
-                Arc::new(backend)
-            }
-            _ => {
-                info!("DATABASE_URL not set — using in-memory transit key backend");
-                Arc::new(InMemoryTransitKeyStore::new())
-            }
-        };
+            Arc::new(backend)
+        }
+        _ => {
+            info!("DATABASE_URL not set — using in-memory transit key backend");
+            Arc::new(InMemoryTransitKeyStore::new())
+        }
+    };
 
     // Resolve the policy-engine endpoint.
     // Precedence: POLICY_ENGINE_ENDPOINT env var > compiled default.

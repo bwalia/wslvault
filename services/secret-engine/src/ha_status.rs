@@ -43,9 +43,7 @@ pub async fn ha_status_standalone() -> impl IntoResponse {
 ///
 /// This handler is registered when HA mode is configured. It reads the
 /// shared cluster state and builds a comprehensive health report.
-pub async fn ha_status_enabled(
-    cluster_state: Arc<SharedClusterState>,
-) -> impl IntoResponse {
+pub async fn ha_status_enabled(cluster_state: Arc<SharedClusterState>) -> impl IntoResponse {
     let state = cluster_state.read().await;
     let summary = state.cluster_summary();
 
@@ -55,7 +53,11 @@ pub async fn ha_status_enabled(
         StatusCode::OK,
         Json(HaStatusResponse {
             ha_enabled: true,
-            status: if is_leader { "leader".into() } else { "standby".into() },
+            status: if is_leader {
+                "leader".into()
+            } else {
+                "standby".into()
+            },
             cluster: Some(summary),
             is_leader,
             leader_node: state.current_leader.clone(),

@@ -121,7 +121,9 @@ mod inner {
         ) -> Result<Self, ConnectorError> {
             let contents = std::fs::read_to_string(key_file_path).map_err(|e| {
                 ConnectorError::Configuration {
-                    reason: format!("failed to read service account key file '{key_file_path}': {e}"),
+                    reason: format!(
+                        "failed to read service account key file '{key_file_path}': {e}"
+                    ),
                 }
             })?;
 
@@ -225,9 +227,11 @@ mod inner {
             });
 
             let header_obj = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-            let token = jsonwebtoken::encode(&header_obj, &claims_value, &encoding_key)
-                .map_err(|e| ConnectorError::Internal {
-                    reason: format!("JWT signing failed: {e}"),
+            let token =
+                jsonwebtoken::encode(&header_obj, &claims_value, &encoding_key).map_err(|e| {
+                    ConnectorError::Internal {
+                        reason: format!("JWT signing failed: {e}"),
+                    }
                 })?;
 
             let _ = signing_input; // suppress unused warning; jsonwebtoken handles the full flow
@@ -235,10 +239,7 @@ mod inner {
         }
 
         /// Exchange a signed JWT for an access token via OAuth2.
-        async fn exchange_jwt_for_token(
-            &self,
-            jwt: &str,
-        ) -> Result<CachedToken, ConnectorError> {
+        async fn exchange_jwt_for_token(&self, jwt: &str) -> Result<CachedToken, ConnectorError> {
             let params = [
                 ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
                 ("assertion", jwt),
@@ -270,8 +271,7 @@ mod inner {
                     reason: format!("failed to parse token response: {e}"),
                 })?;
 
-            let expires_at =
-                chrono::Utc::now().timestamp() + token_resp.expires_in as i64;
+            let expires_at = chrono::Utc::now().timestamp() + token_resp.expires_in as i64;
 
             Ok(CachedToken {
                 access_token: token_resp.access_token,
@@ -463,10 +463,11 @@ mod inner {
                     reason: format!("failed to base64-decode secret payload: {e}"),
                 })?;
 
-            let raw_str = String::from_utf8(raw_bytes).map_err(|e| ConnectorError::Deserialise {
-                connector: CONNECTOR_NAME.to_string(),
-                reason: format!("secret payload is not valid UTF-8: {e}"),
-            })?;
+            let raw_str =
+                String::from_utf8(raw_bytes).map_err(|e| ConnectorError::Deserialise {
+                    connector: CONNECTOR_NAME.to_string(),
+                    reason: format!("secret payload is not valid UTF-8: {e}"),
+                })?;
 
             let value = serde_json::from_str::<serde_json::Value>(&raw_str)
                 .unwrap_or_else(|_| serde_json::Value::String(raw_str));
@@ -484,11 +485,7 @@ mod inner {
         }
 
         #[instrument(skip(self, data), fields(connector = CONNECTOR_NAME, path = external_path))]
-        async fn push(
-            &self,
-            external_path: &str,
-            data: &SecretData,
-        ) -> Result<(), ConnectorError> {
+        async fn push(&self, external_path: &str, data: &SecretData) -> Result<(), ConnectorError> {
             debug!("pushing secret to GCP Secret Manager");
 
             // The bare secret name (not a full resource path) is needed for creation.
@@ -505,15 +502,15 @@ mod inner {
             // Ensure the secret resource exists before adding a version.
             self.ensure_secret_exists(&secret_name).await?;
 
-            let secret_string = serde_json::to_string(&data.value).map_err(|e| {
-                ConnectorError::Serialise {
+            let secret_string =
+                serde_json::to_string(&data.value).map_err(|e| ConnectorError::Serialise {
                     connector: CONNECTOR_NAME.to_string(),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             // GCP expects the payload as base64-encoded bytes.
-            let encoded = base64::engine::general_purpose::STANDARD.encode(secret_string.as_bytes());
+            let encoded =
+                base64::engine::general_purpose::STANDARD.encode(secret_string.as_bytes());
 
             let resource_name = self.secret_resource_name(&secret_name);
             let url = format!("{}/{resource_name}:addVersion", SECRET_MANAGER_BASE);
@@ -756,4 +753,7 @@ mod inner {
 }
 
 #[cfg(feature = "gcp")]
-pub use inner::{GcpSecretManagerConnector, MetadataServerTokenProvider, ServiceAccountTokenProvider, TokenProvider};
+pub use inner::{
+    GcpSecretManagerConnector, MetadataServerTokenProvider, ServiceAccountTokenProvider,
+    TokenProvider,
+};

@@ -104,19 +104,39 @@ fn dto_to_doc(dto: PolicyDocumentDto) -> Result<PolicyDocument, String> {
         let mut caps = std::collections::HashSet::new();
         for c in &r.capabilities {
             match c.to_lowercase().as_str() {
-                "read" => { caps.insert(Capability::Read); }
-                "write" => { caps.insert(Capability::Write); }
-                "delete" => { caps.insert(Capability::Delete); }
-                "list" => { caps.insert(Capability::List); }
-                "create" => { caps.insert(Capability::Create); }
-                "update" => { caps.insert(Capability::Update); }
-                "deny" => { caps.insert(Capability::Deny); }
+                "read" => {
+                    caps.insert(Capability::Read);
+                }
+                "write" => {
+                    caps.insert(Capability::Write);
+                }
+                "delete" => {
+                    caps.insert(Capability::Delete);
+                }
+                "list" => {
+                    caps.insert(Capability::List);
+                }
+                "create" => {
+                    caps.insert(Capability::Create);
+                }
+                "update" => {
+                    caps.insert(Capability::Update);
+                }
+                "deny" => {
+                    caps.insert(Capability::Deny);
+                }
                 other => return Err(format!("unknown capability: {other}")),
             }
         }
-        rules.push(PolicyRule { paths: r.paths, capabilities: caps });
+        rules.push(PolicyRule {
+            paths: r.paths,
+            capabilities: caps,
+        });
     }
-    Ok(PolicyDocument { name: dto.name, rules })
+    Ok(PolicyDocument {
+        name: dto.name,
+        rules,
+    })
 }
 
 fn tenant_id(headers: &HeaderMap) -> Option<String> {
@@ -131,19 +151,20 @@ fn tenant_id(headers: &HeaderMap) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 async fn health_handler() -> impl IntoResponse {
-    (StatusCode::OK, Json(serde_json::json!({ "status": "ok", "service": "policy-engine" })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "status": "ok", "service": "policy-engine" })),
+    )
 }
 
 /// GET /v1/policies
-async fn list_policies(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn list_policies(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        ).into_response();
+        )
+            .into_response();
     };
     let docs = state.store.get_all_for_tenant(&tid).await;
     let dtos: Vec<_> = docs.into_iter().map(doc_to_dto).collect();
@@ -157,11 +178,21 @@ async fn create_policy(
     Json(body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "message": "X-Tenant-Id header is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
+        )
+            .into_response();
     };
     let doc = match dto_to_doc(body) {
         Ok(d) => d,
-        Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "message": e }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "message": e })),
+            )
+                .into_response()
+        }
     };
     state.store.put_policy(&tid, doc.clone()).await;
     {
@@ -178,11 +209,19 @@ async fn get_policy(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "message": "X-Tenant-Id header is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
+        )
+            .into_response();
     };
     match state.store.get_policy(&tid, &name).await {
         Some(doc) => (StatusCode::OK, Json(doc_to_dto(doc))).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "message": "policy not found" }))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "policy not found" })),
+        )
+            .into_response(),
     }
 }
 
@@ -194,12 +233,22 @@ async fn upsert_policy(
     Json(mut body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "message": "X-Tenant-Id header is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
+        )
+            .into_response();
     };
     body.name = name; // path name wins
     let doc = match dto_to_doc(body) {
         Ok(d) => d,
-        Err(e) => return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({ "message": e }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({ "message": e })),
+            )
+                .into_response()
+        }
     };
     state.store.put_policy(&tid, doc.clone()).await;
     {
@@ -216,11 +265,19 @@ async fn delete_policy(
     Path(name): Path<String>,
 ) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "message": "X-Tenant-Id header is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
+        )
+            .into_response();
     };
     match state.store.delete_policy(&tid, &name).await {
         Some(_) => StatusCode::NO_CONTENT.into_response(),
-        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "message": "policy not found" }))).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "policy not found" })),
+        )
+            .into_response(),
     }
 }
 
@@ -231,7 +288,11 @@ async fn authorize(
     Json(body): Json<AuthorizeRequest>,
 ) -> impl IntoResponse {
     let Some(tid) = tenant_id(&headers) else {
-        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "message": "X-Tenant-Id header is required" }))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
+        )
+            .into_response();
     };
 
     let compiled = state.compiled.read().await;
@@ -278,7 +339,13 @@ pub fn api_router(state: AppState) -> Router {
         .unwrap_or_default();
 
     let cors = CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
@@ -287,7 +354,10 @@ pub fn api_router(state: AppState) -> Router {
 
     let policy_routes = Router::new()
         .route("/v1/policies", get(list_policies).post(create_policy))
-        .route("/v1/policies/:name", get(get_policy).put(upsert_policy).delete(delete_policy))
+        .route(
+            "/v1/policies/:name",
+            get(get_policy).put(upsert_policy).delete(delete_policy),
+        )
         .route("/v1/policies/authorize", post(authorize))
         .layer(axum::middleware::from_fn_with_state(
             GatewayAuth::from_env(),

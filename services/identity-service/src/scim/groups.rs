@@ -19,8 +19,8 @@ use uuid::Uuid;
 
 use super::{
     schemas::{
-        PatchOpType, ScimError, ScimGroup, ScimListParams, ScimListResponse, ScimMeta,
-        ScimMemberRef, SCHEMA_GROUP,
+        PatchOpType, ScimError, ScimGroup, ScimListParams, ScimListResponse, ScimMemberRef,
+        ScimMeta, SCHEMA_GROUP,
     },
     ScimState,
 };
@@ -63,10 +63,7 @@ fn conflict(detail: impl Into<String>) -> impl IntoResponse {
 
 /// Returns a 400 SCIM error response.
 fn bad_request(detail: impl Into<String>) -> impl IntoResponse {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ScimError::new(400, detail)),
-    )
+    (StatusCode::BAD_REQUEST, Json(ScimError::new(400, detail)))
 }
 
 /// Returns a 500 SCIM error response.
@@ -100,10 +97,7 @@ fn add_policy_to_principal(state: &ScimState, user_id: &str, policy_name: &str) 
     // Read the existing principal record and append the policy if absent.
     // We use list_principals to locate the record across all tenants because
     // SCIM users are stored under the "scim" tenant by create_user.
-    match state
-        .principals
-        .list_principals("scim")
-    {
+    match state.principals.list_principals("scim") {
         Ok(records) => {
             if let Some(record) = records.into_iter().find(|r| r.id == user_id) {
                 if !record.policies.contains(&policy_name.to_string()) {
@@ -226,10 +220,7 @@ pub async fn list_groups(
     State(state): State<ScimState>,
     Query(params): Query<ScimListParams>,
 ) -> impl IntoResponse {
-    let filter_display_name = params
-        .filter
-        .as_deref()
-        .and_then(parse_display_name_filter);
+    let filter_display_name = params.filter.as_deref().and_then(parse_display_name_filter);
 
     let start_index = params.start_index.unwrap_or(1).max(1);
     let page_size = params.count.unwrap_or(100);
@@ -336,9 +327,7 @@ pub async fn update_group(
             // Add member(s) to the group.
             (PatchOpType::Add, Some("members"), Some(val)) => {
                 let policy_name = group.display_name.clone();
-                if let Ok(new_members) =
-                    serde_json::from_value::<Vec<ScimMemberRef>>(val)
-                {
+                if let Ok(new_members) = serde_json::from_value::<Vec<ScimMemberRef>>(val) {
                     for member in new_members {
                         add_policy_to_principal(&state, &member.value, &policy_name);
                         if !group.members.iter().any(|m| m.value == member.value) {
@@ -359,9 +348,7 @@ pub async fn update_group(
                     for user_id in &ids_to_remove {
                         remove_policy_from_principal(&state, user_id, &policy_name);
                     }
-                    group
-                        .members
-                        .retain(|m| !ids_to_remove.contains(&m.value));
+                    group.members.retain(|m| !ids_to_remove.contains(&m.value));
                 } else {
                     // No value — remove all members.
                     for member in &group.members {
@@ -371,7 +358,11 @@ pub async fn update_group(
                 }
             }
             // Replace the displayName (policy name).
-            (PatchOpType::Replace, Some("displayName"), Some(serde_json::Value::String(new_name))) => {
+            (
+                PatchOpType::Replace,
+                Some("displayName"),
+                Some(serde_json::Value::String(new_name)),
+            ) => {
                 if !new_name.trim().is_empty() {
                     group.display_name = new_name;
                 }

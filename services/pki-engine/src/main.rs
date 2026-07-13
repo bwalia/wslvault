@@ -72,9 +72,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load the service-level root KEK from `PKI_ROOT_KEY`.
     // Fail fast if the variable is absent or malformed; running without key
     // protection would expose CA private keys in the database.
-    let kek = Arc::new(RootKek::from_env().map_err(|e| {
-        format!("failed to load PKI_ROOT_KEY: {e}")
-    })?);
+    let kek =
+        Arc::new(RootKek::from_env().map_err(|e| format!("failed to load PKI_ROOT_KEY: {e}"))?);
 
     info!(key_version = kek.version, "PKI root KEK loaded");
 
@@ -88,9 +87,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..DatabaseConfig::default()
             };
 
-            let pool = DbPool::connect(&db_config).await.map_err(|e| {
-                format!("failed to connect to PostgreSQL: {e}")
-            })?;
+            let pool = DbPool::connect(&db_config)
+                .await
+                .map_err(|e| format!("failed to connect to PostgreSQL: {e}"))?;
 
             Arc::new(PgPkiStore::new(pool))
         }

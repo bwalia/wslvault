@@ -50,17 +50,16 @@ impl RootKek {
     /// Returns `PkiError::KeyEncryptionError` if the variable is absent,
     /// not valid base64, or does not decode to exactly 32 bytes.
     pub fn from_env() -> Result<Self, PkiError> {
-        let encoded = std::env::var("PKI_ROOT_KEY").map_err(|_| {
-            PkiError::KeyEncryptionError {
-                reason: "PKI_ROOT_KEY environment variable is not set".into(),
-            }
+        let encoded = std::env::var("PKI_ROOT_KEY").map_err(|_| PkiError::KeyEncryptionError {
+            reason: "PKI_ROOT_KEY environment variable is not set".into(),
         })?;
 
-        let raw_bytes = BASE64
-            .decode(encoded.trim())
-            .map_err(|e| PkiError::KeyEncryptionError {
-                reason: format!("PKI_ROOT_KEY is not valid base64: {e}"),
-            })?;
+        let raw_bytes =
+            BASE64
+                .decode(encoded.trim())
+                .map_err(|e| PkiError::KeyEncryptionError {
+                    reason: format!("PKI_ROOT_KEY is not valid base64: {e}"),
+                })?;
 
         if raw_bytes.len() != 32 {
             return Err(PkiError::KeyEncryptionError {
@@ -97,16 +96,13 @@ impl RootKek {
     /// the encrypted blob to a different tenant's CA record.
     ///
     /// Returns the base64-encoded `nonce‖ciphertext‖tag` envelope.
-    pub fn encrypt_ca_key(
-        &self,
-        tenant_id: &str,
-        key_pem: &str,
-    ) -> Result<String, PkiError> {
+    pub fn encrypt_ca_key(&self, tenant_id: &str, key_pem: &str) -> Result<String, PkiError> {
         let aad = build_aad(tenant_id);
-        let envelope = encrypt_with_dek(&self.raw, key_pem.as_bytes(), aad.as_bytes())
-            .map_err(|e: VaultError| PkiError::KeyEncryptionError {
+        let envelope = encrypt_with_dek(&self.raw, key_pem.as_bytes(), aad.as_bytes()).map_err(
+            |e: VaultError| PkiError::KeyEncryptionError {
                 reason: format!("failed to encrypt CA key: {e}"),
-            })?;
+            },
+        )?;
         Ok(envelope.ciphertext_b64)
     }
 
@@ -120,12 +116,11 @@ impl RootKek {
         encrypted_b64: &str,
     ) -> Result<Zeroizing<Vec<u8>>, PkiError> {
         let aad = build_aad(tenant_id);
-        let plaintext =
-            decrypt_with_dek(&self.raw, encrypted_b64, aad.as_bytes()).map_err(|e: VaultError| {
-                PkiError::KeyEncryptionError {
-                    reason: format!("failed to decrypt CA key: {e}"),
-                }
-            })?;
+        let plaintext = decrypt_with_dek(&self.raw, encrypted_b64, aad.as_bytes()).map_err(
+            |e: VaultError| PkiError::KeyEncryptionError {
+                reason: format!("failed to decrypt CA key: {e}"),
+            },
+        )?;
         Ok(plaintext)
     }
 }

@@ -2,15 +2,12 @@
 
 use crate::config::AppConfig;
 use colored::Colorize;
-use dialoguer::{Input, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Input};
 
 pub async fn execute() -> anyhow::Result<()> {
     let config_path = AppConfig::config_path();
 
-    eprintln!(
-        "{} WSLVault interactive setup",
-        "»".cyan().bold()
-    );
+    eprintln!("{} WSLVault interactive setup", "»".cyan().bold());
     eprintln!(
         "  Config will be written to: {}\n",
         config_path.display().to_string().bold()
@@ -61,11 +58,7 @@ pub async fn execute() -> anyhow::Result<()> {
         }
         Err(e) => {
             eprintln!("{}", "failed".red().bold());
-            eprintln!(
-                "  {} Could not reach server: {}",
-                "⚠".yellow(),
-                e
-            );
+            eprintln!("  {} Could not reach server: {}", "⚠".yellow(), e);
             let proceed: String = Input::with_theme(&theme)
                 .with_prompt("Save config anyway? [y/N]")
                 .default("N".into())

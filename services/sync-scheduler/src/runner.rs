@@ -40,7 +40,8 @@ async fn run_aws_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result
         use wslvault_connectors::aws::AwsSecretsManagerConnector;
         use wslvault_connectors::traits::SecretConnector;
 
-        let connector = AwsSecretsManagerConnector::new(None, job.prefix.clone()).await
+        let connector = AwsSecretsManagerConnector::new(None, job.prefix.clone())
+            .await
             .map_err(|e| anyhow::anyhow!("failed to create AWS connector: {}", e))?;
         connector
             .sync(&job.prefix, direction)
@@ -77,10 +78,7 @@ async fn run_gcp_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result
     })
 }
 
-async fn run_hashicorp_sync(
-    job: &SyncJob,
-    direction: SyncDirection,
-) -> anyhow::Result<SyncResult> {
+async fn run_hashicorp_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result<SyncResult> {
     use wslvault_connectors::hashicorp_vault::HashiCorpVaultConnector;
     use wslvault_connectors::traits::SecretConnector;
 

@@ -656,10 +656,7 @@ impl VaultClient {
     }
 
     /// Perform a GET request with retry/backoff, deserialising the JSON body.
-    async fn get<T: serde::de::DeserializeOwned>(
-        &self,
-        url: &str,
-    ) -> Result<T, VaultClientError> {
+    async fn get<T: serde::de::DeserializeOwned>(&self, url: &str) -> Result<T, VaultClientError> {
         self.with_retry(|| async {
             let resp = self.request(reqwest::Method::GET, url).send().await?;
             self.handle_response(resp).await
@@ -701,10 +698,7 @@ impl VaultClient {
     /// Perform a DELETE request where a successful response has no body (204).
     async fn delete_empty(&self, url: &str) -> Result<(), VaultClientError> {
         self.with_retry(|| async {
-            let resp = self
-                .request(reqwest::Method::DELETE, url)
-                .send()
-                .await?;
+            let resp = self.request(reqwest::Method::DELETE, url).send().await?;
             self.handle_empty_response(resp).await
         })
         .await
@@ -798,10 +792,7 @@ impl VaultClient {
     }
 
     /// Handle a response that carries no body on success (201 / 204 etc.).
-    async fn handle_empty_response(
-        &self,
-        resp: reqwest::Response,
-    ) -> Result<(), VaultClientError> {
+    async fn handle_empty_response(&self, resp: reqwest::Response) -> Result<(), VaultClientError> {
         if resp.status().is_success() {
             return Ok(());
         }

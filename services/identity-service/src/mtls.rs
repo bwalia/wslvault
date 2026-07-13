@@ -9,10 +9,7 @@ use std::fmt;
 use serde::Deserialize;
 use tracing::{info, warn};
 use x509_parser::{
-    certificate::X509Certificate,
-    pem::parse_x509_pem,
-    prelude::FromDer,
-    time::ASN1Time,
+    certificate::X509Certificate, pem::parse_x509_pem, prelude::FromDer, time::ASN1Time,
 };
 
 // ─── Public error type ────────────────────────────────────────────────────────
@@ -124,9 +121,8 @@ impl MtlsManager {
     /// Returns [`MtlsError::ConfigError`] if `trusted_ca_pem` contains no
     /// valid PEM-encoded X.509 certificate blocks.
     pub fn new(config: MtlsConfig) -> Result<Self, MtlsError> {
-        let trusted_ca_ders = parse_all_pem_certs(&config.trusted_ca_pem).map_err(|e| {
-            MtlsError::ConfigError(format!("failed to parse trusted CA PEM: {e}"))
-        })?;
+        let trusted_ca_ders = parse_all_pem_certs(&config.trusted_ca_pem)
+            .map_err(|e| MtlsError::ConfigError(format!("failed to parse trusted CA PEM: {e}")))?;
 
         if trusted_ca_ders.is_empty() {
             return Err(MtlsError::ConfigError(
@@ -165,13 +161,11 @@ impl MtlsManager {
         certificate_pem: &str,
     ) -> Result<MtlsValidationResult, MtlsError> {
         // Step 1 — decode PEM and parse the X.509 certificate.
-        let (_, pem) = parse_x509_pem(certificate_pem.as_bytes()).map_err(|e| {
-            MtlsError::InvalidCertificate(format!("PEM decode error: {e}"))
-        })?;
+        let (_, pem) = parse_x509_pem(certificate_pem.as_bytes())
+            .map_err(|e| MtlsError::InvalidCertificate(format!("PEM decode error: {e}")))?;
 
-        let (_, client_cert) = X509Certificate::from_der(&pem.contents).map_err(|e| {
-            MtlsError::InvalidCertificate(format!("DER parse error: {e}"))
-        })?;
+        let (_, client_cert) = X509Certificate::from_der(&pem.contents)
+            .map_err(|e| MtlsError::InvalidCertificate(format!("DER parse error: {e}")))?;
 
         // Step 2 — verify the certificate chain against each trusted CA.
         self.verify_against_trusted_cas(&client_cert)?;
@@ -194,20 +188,19 @@ impl MtlsManager {
             .as_deref()
             .unwrap_or("O");
 
-        let principal_id = extract_subject_attribute(&client_cert, principal_id_field)
-            .ok_or_else(|| {
+        let principal_id =
+            extract_subject_attribute(&client_cert, principal_id_field).ok_or_else(|| {
                 MtlsError::MissingField(format!(
                     "certificate subject is missing required field '{principal_id_field}'"
                 ))
             })?;
 
-        let tenant_id = extract_subject_attribute(&client_cert, tenant_id_field).ok_or_else(
-            || {
+        let tenant_id =
+            extract_subject_attribute(&client_cert, tenant_id_field).ok_or_else(|| {
                 MtlsError::MissingField(format!(
                     "certificate subject is missing required field '{tenant_id_field}'"
                 ))
-            },
-        )?;
+            })?;
 
         // Build a human-readable display name from the full subject DN.
         let display_name = client_cert.subject().to_string();
@@ -320,7 +313,10 @@ fn is_expired(cert: &X509Certificate<'_>) -> bool {
     // `ASN1Time` implements `PartialOrd` against itself; compare against "now".
     let now = ASN1Time::now();
     // If the current time is after notAfter the certificate has expired.
-    matches!(now.partial_cmp(&not_after), Some(std::cmp::Ordering::Greater))
+    matches!(
+        now.partial_cmp(&not_after),
+        Some(std::cmp::Ordering::Greater)
+    )
 }
 
 /// Returns `Err(MtlsError::CertificateExpired)` when the cert has expired.

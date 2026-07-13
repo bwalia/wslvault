@@ -96,11 +96,7 @@ pub trait SecretStoreBackend: Send + Sync + std::fmt::Debug {
     async fn list(&self, tenant_id: &str, prefix: &str) -> Vec<String>;
 
     /// Retrieve metadata for a secret path without reading any version data.
-    async fn get_metadata(
-        &self,
-        tenant_id: &str,
-        path: &str,
-    ) -> Result<SecretEntry, VaultError>;
+    async fn get_metadata(&self, tenant_id: &str, path: &str) -> Result<SecretEntry, VaultError>;
 
     /// Initiate a two-phase rotation: create a pending new version and return
     /// (rotation_id, new_version).
@@ -542,8 +538,16 @@ impl SecretStoreBackend for KvStore {
         custom_metadata: HashMap<String, String>,
         max_versions: Option<u32>,
     ) -> Result<(String, u32), VaultError> {
-        self.put(tenant_id, path, ciphertext, dek_id, cas, custom_metadata, max_versions)
-            .await
+        self.put(
+            tenant_id,
+            path,
+            ciphertext,
+            dek_id,
+            cas,
+            custom_metadata,
+            max_versions,
+        )
+        .await
     }
 
     async fn soft_delete(
@@ -568,11 +572,7 @@ impl SecretStoreBackend for KvStore {
         self.list(tenant_id, prefix).await
     }
 
-    async fn get_metadata(
-        &self,
-        tenant_id: &str,
-        path: &str,
-    ) -> Result<SecretEntry, VaultError> {
+    async fn get_metadata(&self, tenant_id: &str, path: &str) -> Result<SecretEntry, VaultError> {
         self.get_metadata(tenant_id, path).await
     }
 

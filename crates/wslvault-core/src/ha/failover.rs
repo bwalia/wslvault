@@ -119,7 +119,11 @@ impl FailoverManager {
                 nodes.iter().map(|n| n.health_score).sum::<f64>() / nodes.len() as f64
             };
 
-            let max_lag = nodes.iter().map(|n| n.replication_lag_ms).max().unwrap_or(0);
+            let max_lag = nodes
+                .iter()
+                .map(|n| n.replication_lag_ms)
+                .max()
+                .unwrap_or(0);
 
             health_map.insert(
                 region.clone(),
@@ -234,10 +238,7 @@ impl FailoverManager {
                 .iter()
                 .filter(|(_, n)| {
                     n.region == event.to_region
-                        && matches!(
-                            n.state,
-                            NodeState::Active | NodeState::Standby
-                        )
+                        && matches!(n.state, NodeState::Active | NodeState::Standby)
                 })
                 .map(|(id, _)| id.clone())
                 .collect();

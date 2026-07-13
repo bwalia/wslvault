@@ -20,22 +20,27 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
     r.register(Box::new(HTTP_REQUESTS_TOTAL.clone())).unwrap();
     r.register(Box::new(GRPC_REQUEST_DURATION.clone())).unwrap();
     r.register(Box::new(GRPC_REQUESTS_TOTAL.clone())).unwrap();
-    r.register(Box::new(SECRET_OPERATIONS_TOTAL.clone())).unwrap();
+    r.register(Box::new(SECRET_OPERATIONS_TOTAL.clone()))
+        .unwrap();
     r.register(Box::new(SECRETS_MANAGED.clone())).unwrap();
     r.register(Box::new(SECRET_VERSIONS_TOTAL.clone())).unwrap();
     r.register(Box::new(KEY_OPERATIONS_TOTAL.clone())).unwrap();
     r.register(Box::new(ACTIVE_LEASES.clone())).unwrap();
-    r.register(Box::new(LEASE_OPERATIONS_TOTAL.clone())).unwrap();
+    r.register(Box::new(LEASE_OPERATIONS_TOTAL.clone()))
+        .unwrap();
     r.register(Box::new(AUDIT_EVENTS_TOTAL.clone())).unwrap();
-    r.register(Box::new(AUDIT_EVENTS_BY_ACTION.clone())).unwrap();
+    r.register(Box::new(AUDIT_EVENTS_BY_ACTION.clone()))
+        .unwrap();
     r.register(Box::new(AUTH_ATTEMPTS_TOTAL.clone())).unwrap();
-    r.register(Box::new(POLICY_EVALUATIONS_TOTAL.clone())).unwrap();
+    r.register(Box::new(POLICY_EVALUATIONS_TOTAL.clone()))
+        .unwrap();
     r.register(Box::new(HA_CLUSTER_NODES.clone())).unwrap();
     r.register(Box::new(HA_IS_LEADER.clone())).unwrap();
     r.register(Box::new(HA_REPLICATION_LAG_MS.clone())).unwrap();
     r.register(Box::new(HA_FAILOVER_TOTAL.clone())).unwrap();
     r.register(Box::new(HA_ELECTION_TERM.clone())).unwrap();
-    r.register(Box::new(ENCRYPTION_OPERATIONS_TOTAL.clone())).unwrap();
+    r.register(Box::new(ENCRYPTION_OPERATIONS_TOTAL.clone()))
+        .unwrap();
     r.register(Box::new(ENCRYPTION_DURATION.clone())).unwrap();
 
     r
@@ -46,8 +51,13 @@ pub static REGISTRY: Lazy<Registry> = Lazy::new(|| {
 /// Histogram of HTTP request durations in seconds, labelled by method, path, and status.
 pub static HTTP_REQUEST_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
-        HistogramOpts::new("http_request_duration_seconds", "HTTP request latency in seconds")
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]),
+        HistogramOpts::new(
+            "http_request_duration_seconds",
+            "HTTP request latency in seconds",
+        )
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+        ]),
         &["method", "path", "status", "service"],
     )
     .unwrap()
@@ -67,8 +77,13 @@ pub static HTTP_REQUESTS_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
 /// Histogram of gRPC request durations.
 pub static GRPC_REQUEST_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
-        HistogramOpts::new("grpc_request_duration_seconds", "gRPC request latency in seconds")
-            .buckets(vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5]),
+        HistogramOpts::new(
+            "grpc_request_duration_seconds",
+            "gRPC request latency in seconds",
+        )
+        .buckets(vec![
+            0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+        ]),
         &["method", "status", "service"],
     )
     .unwrap()
@@ -196,8 +211,11 @@ pub static HA_CLUSTER_NODES: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 /// Gauge indicating if this node is the cluster leader (1) or not (0).
 pub static HA_IS_LEADER: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::new("ha_is_leader", "Whether this node is the HA leader (1=yes, 0=no)")
-        .unwrap()
+    IntGauge::new(
+        "ha_is_leader",
+        "Whether this node is the HA leader (1=yes, 0=no)",
+    )
+    .unwrap()
 });
 
 /// Gauge of replication lag in milliseconds per region.
@@ -219,9 +237,8 @@ pub static HA_FAILOVER_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
 });
 
 /// Gauge tracking the current election term.
-pub static HA_ELECTION_TERM: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::new("ha_election_term", "Current HA election term").unwrap()
-});
+pub static HA_ELECTION_TERM: Lazy<IntGauge> =
+    Lazy::new(|| IntGauge::new("ha_election_term", "Current HA election term").unwrap());
 
 // ── Encryption / Transit Metrics ────────────────────────────────────────────
 

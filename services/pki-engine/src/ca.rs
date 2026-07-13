@@ -264,22 +264,24 @@ pub fn issue_leaf(
     // ---- Sign with CA key ---------------------------------------------------
 
     // Parse the CA key material from the PEM so rcgen can sign the leaf.
-    let ca_key_pair = KeyPair::from_pem(ca_key_pem)
-        .map_err(|e| PkiError::CertGenerationFailed {
+    let ca_key_pair =
+        KeyPair::from_pem(ca_key_pem).map_err(|e| PkiError::CertGenerationFailed {
             reason: format!("failed to parse CA private key: {e}"),
         })?;
 
     // Parse the CA certificate parameters so we can use it as the issuer.
-    let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem)
-        .map_err(|e| PkiError::CertGenerationFailed {
+    let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem).map_err(|e| {
+        PkiError::CertGenerationFailed {
             reason: format!("failed to parse CA cert: {e}"),
-        })?;
+        }
+    })?;
 
-    let ca_cert = ca_params
-        .self_signed(&ca_key_pair)
-        .map_err(|e| PkiError::CertGenerationFailed {
-            reason: format!("failed to reconstruct CA cert for signing: {e}"),
-        })?;
+    let ca_cert =
+        ca_params
+            .self_signed(&ca_key_pair)
+            .map_err(|e| PkiError::CertGenerationFailed {
+                reason: format!("failed to reconstruct CA cert for signing: {e}"),
+            })?;
 
     let leaf_cert = params
         .signed_by(&leaf_key, &ca_cert, &ca_key_pair)
@@ -347,11 +349,10 @@ pub fn sign_csr(
     let not_after = not_before + Duration::seconds(effective_ttl);
 
     // Parse the CSR with rcgen.
-    let mut csr = CertificateSigningRequestParams::from_pem(csr_pem).map_err(|e| {
-        PkiError::InvalidCsr {
+    let mut csr =
+        CertificateSigningRequestParams::from_pem(csr_pem).map_err(|e| PkiError::InvalidCsr {
             reason: format!("rcgen failed to parse CSR: {e}"),
-        }
-    })?;
+        })?;
 
     // Override validity window and serial from the CSR's embedded params, since
     // the CSR itself does not carry these — we impose them from the role + request.
@@ -380,9 +381,10 @@ pub fn sign_csr(
     }
 
     // Sign the CSR with the CA key.
-    let ca_key_pair = KeyPair::from_pem(ca_key_pem).map_err(|e| PkiError::CertGenerationFailed {
-        reason: format!("failed to parse CA private key: {e}"),
-    })?;
+    let ca_key_pair =
+        KeyPair::from_pem(ca_key_pem).map_err(|e| PkiError::CertGenerationFailed {
+            reason: format!("failed to parse CA private key: {e}"),
+        })?;
 
     let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem).map_err(|e| {
         PkiError::CertGenerationFailed {
@@ -390,18 +392,19 @@ pub fn sign_csr(
         }
     })?;
 
-    let ca_cert = ca_params
-        .self_signed(&ca_key_pair)
-        .map_err(|e| PkiError::CertGenerationFailed {
-            reason: format!("failed to reconstruct CA cert: {e}"),
-        })?;
+    let ca_cert =
+        ca_params
+            .self_signed(&ca_key_pair)
+            .map_err(|e| PkiError::CertGenerationFailed {
+                reason: format!("failed to reconstruct CA cert: {e}"),
+            })?;
 
     // `CertificateSigningRequestParams::signed_by` takes (self, issuer, issuer_key).
-    let signed_cert = csr
-        .signed_by(&ca_cert, &ca_key_pair)
-        .map_err(|e| PkiError::CertGenerationFailed {
-            reason: format!("CSR signing failed: {e}"),
-        })?;
+    let signed_cert =
+        csr.signed_by(&ca_cert, &ca_key_pair)
+            .map_err(|e| PkiError::CertGenerationFailed {
+                reason: format!("CSR signing failed: {e}"),
+            })?;
 
     Ok(SignCsrOutput {
         cert_pem: signed_cert.pem(),
@@ -426,9 +429,10 @@ pub fn build_crl_pem(
 ) -> Result<String, PkiError> {
     use rcgen::{CertificateRevocationListParams, RevokedCertParams};
 
-    let ca_key_pair = KeyPair::from_pem(ca_key_pem).map_err(|e| PkiError::CertGenerationFailed {
-        reason: format!("failed to parse CA key for CRL signing: {e}"),
-    })?;
+    let ca_key_pair =
+        KeyPair::from_pem(ca_key_pem).map_err(|e| PkiError::CertGenerationFailed {
+            reason: format!("failed to parse CA key for CRL signing: {e}"),
+        })?;
 
     let ca_params = CertificateParams::from_ca_cert_pem(ca_cert_pem).map_err(|e| {
         PkiError::CertGenerationFailed {
@@ -436,11 +440,12 @@ pub fn build_crl_pem(
         }
     })?;
 
-    let ca_cert = ca_params
-        .self_signed(&ca_key_pair)
-        .map_err(|e| PkiError::CertGenerationFailed {
-            reason: format!("failed to reconstruct CA cert for CRL: {e}"),
-        })?;
+    let ca_cert =
+        ca_params
+            .self_signed(&ca_key_pair)
+            .map_err(|e| PkiError::CertGenerationFailed {
+                reason: format!("failed to reconstruct CA cert for CRL: {e}"),
+            })?;
 
     let now = Utc::now();
     let next_update = now + Duration::hours(24);
@@ -469,11 +474,11 @@ pub fn build_crl_pem(
         key_identifier_method: rcgen::KeyIdMethod::Sha256,
     };
 
-    let crl = crl_params
-        .signed_by(&ca_cert, &ca_key_pair)
-        .map_err(|e| PkiError::CertGenerationFailed {
+    let crl = crl_params.signed_by(&ca_cert, &ca_key_pair).map_err(|e| {
+        PkiError::CertGenerationFailed {
             reason: format!("CRL signing failed: {e}"),
-        })?;
+        }
+    })?;
 
     crl.pem().map_err(|e| PkiError::CertGenerationFailed {
         reason: format!("CRL PEM serialization failed: {e}"),
@@ -590,8 +595,7 @@ fn check_domain_allowed(role: &PkiRole, name: &str) -> Result<(), PkiError> {
         // Wildcard leaf: "*.example.com" in the role allows "foo.example.com".
         if allowed_lc.starts_with("*.") {
             let suffix = &allowed_lc[1..]; // ".example.com"
-            if name_lc.ends_with(suffix) && !name_lc[..name_lc.len() - suffix.len()].contains('.')
-            {
+            if name_lc.ends_with(suffix) && !name_lc[..name_lc.len() - suffix.len()].contains('.') {
                 return Ok(());
             }
         }
@@ -678,16 +682,7 @@ mod tests {
         let (ca_cert, ca_key) = setup_ca();
         let role = test_role(vec!["example.com"], true, true);
 
-        let out = issue_leaf(
-            &ca_cert,
-            &ca_key,
-            &role,
-            "api.example.com",
-            &[],
-            &[],
-            3600,
-        )
-        .unwrap();
+        let out = issue_leaf(&ca_cert, &ca_key, &role, "api.example.com", &[], &[], 3600).unwrap();
 
         assert!(!out.cert_pem.is_empty());
         assert!(!out.private_key_pem.is_empty());
@@ -715,7 +710,10 @@ mod tests {
         .unwrap();
 
         let expected_max = Utc::now() + chrono::Duration::seconds(role.max_ttl_seconds + 5);
-        assert!(out.not_after < expected_max, "TTL must be capped to role max");
+        assert!(
+            out.not_after < expected_max,
+            "TTL must be capped to role max"
+        );
     }
 
     #[test]
@@ -744,16 +742,7 @@ mod tests {
         let (ca_cert, ca_key) = setup_ca();
         let role = test_role(vec!["example.com"], true, false);
 
-        let out = issue_leaf(
-            &ca_cert,
-            &ca_key,
-            &role,
-            "sub.example.com",
-            &[],
-            &[],
-            3600,
-        )
-        .unwrap();
+        let out = issue_leaf(&ca_cert, &ca_key, &role, "sub.example.com", &[], &[], 3600).unwrap();
         assert!(!out.cert_pem.is_empty());
     }
 
@@ -844,9 +833,8 @@ mod tests {
         let mut dn = DistinguishedName::new();
         dn.push(DnType::CommonName, "api.example.com");
         csr_params.distinguished_name = dn;
-        csr_params.subject_alt_names = vec![SanType::DnsName(
-            "api.example.com".try_into().unwrap(),
-        )];
+        csr_params.subject_alt_names =
+            vec![SanType::DnsName("api.example.com".try_into().unwrap())];
         let csr_pem = csr_params
             .serialize_request(&csr_key)
             .unwrap()
