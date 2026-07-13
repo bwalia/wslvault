@@ -39,6 +39,9 @@ spec:
           ports:
             - name: http
               containerPort: {{ $ui.port | default 3011 }}
+          # NOTE: Next.js bakes rewrite destinations at build time (see the
+          # Dockerfile build args), so these are informational/for future
+          # runtime-proxy use — they do not change the compiled /api/* targets.
           env:
             - name: IDENTITY_URL
               value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $ctx) }}:{{ .Values.identityService.httpPort }}"
