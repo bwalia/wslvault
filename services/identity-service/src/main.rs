@@ -399,7 +399,7 @@ async fn main() -> Result<(), anyhow::Error> {
 
     // Build the tenant store (database-backed when DATABASE_URL is set,
     // otherwise in-memory fallback).
-    let tenant_store = tenant_handlers::TenantStoreState::from_env();
+    let tenant_store = tenant_handlers::TenantStoreState::from_env().await?;
 
     // Build the API key manager and its associated HTTP state.
     // Uses the pre-cloned token manager so the API key exchange endpoint issues

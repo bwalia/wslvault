@@ -101,6 +101,31 @@ pub async fn create_tenant(pool: &DbPool, tenant: &Tenant) -> Result<(), VaultEr
     Ok(())
 }
 
+/// Soft-delete a tenant by stamping `deleted_at`.
+///
+/// Only affects rows that are not already deleted; returns `TenantNotFound`
+/// when no active row matches so callers can distinguish a no-op from success.
+pub async fn soft_delete_tenant(pool: &DbPool, tenant_id: &TenantId) -> Result<(), VaultError> {
+    let result = sqlx::query(
+        "UPDATE system.tenants SET deleted_at = now()
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(tenant_id.as_uuid())
+    .execute(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    if result.rows_affected() == 0 {
+        return Err(VaultError::TenantNotFound {
+            tenant_id: tenant_id.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 /// List all active tenants.
 pub async fn list_tenants(pool: &DbPool) -> Result<Vec<Tenant>, VaultError> {
     let rows = sqlx::query(

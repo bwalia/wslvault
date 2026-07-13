@@ -33,6 +33,7 @@ use wslvault_core::{
     types::tenant::{Tenant, TenantId, TenantTier},
     VaultError,
 };
+use wslvault_storage::pool::DbPool;
 
 // ---------------------------------------------------------------------------
 // Shared application state
@@ -49,9 +50,8 @@ pub struct TenantStoreState {
 
 #[derive(Clone)]
 enum TenantStoreInner {
-    /// Live database pool (present when DATABASE_URL is configured).
-    #[allow(dead_code)]
-    Database,
+    /// Live PostgreSQL pool (present when DATABASE_URL is configured).
+    Database(DbPool),
     /// In-memory fallback keyed by tenant UUID.
     Memory(Arc<RwLock<HashMap<Uuid, Tenant>>>),
 }
@@ -59,38 +59,41 @@ enum TenantStoreInner {
 impl TenantStoreState {
     /// Constructs state from the environment.
     ///
-    /// Returns a `Database` variant when `DATABASE_URL` is set; otherwise
-    /// falls back to an empty in-memory store and logs a warning.
-    pub fn from_env() -> Self {
-        if std::env::var("DATABASE_URL").is_ok() {
-            // Full database-backed operation is wired up by the caller using
-            // wslvault_storage::pool::DbPool; the Database variant is a
-            // placeholder that signals intent.  A future refactor can pass the
-            // actual pool here.
-            tracing::info!("tenant store: using PostgreSQL backend");
-            Self {
-                inner: TenantStoreInner::Database,
+    /// Returns a `Database` variant backed by a live PostgreSQL pool when
+    /// `DATABASE_URL` is set; otherwise falls back to an empty in-memory store
+    /// and logs a warning. Fails only if `DATABASE_URL` is set but the pool
+    /// cannot be established.
+    pub async fn from_env() -> Result<Self, VaultError> {
+        match std::env::var("DATABASE_URL") {
+            Ok(url) if !url.is_empty() => {
+                let pool = sqlx::postgres::PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(&url)
+                    .await
+                    .map_err(|e| VaultError::Database {
+                        reason: format!("tenant store pool: {e}"),
+                    })?;
+                tracing::info!("tenant store: using PostgreSQL backend");
+                Ok(Self {
+                    inner: TenantStoreInner::Database(DbPool::from_pool(pool)),
+                })
             }
-        } else {
-            tracing::warn!(
-                "DATABASE_URL not set; tenant store using in-memory fallback (data is not persisted)"
-            );
-            Self {
-                inner: TenantStoreInner::Memory(Arc::new(RwLock::new(HashMap::new()))),
+            _ => {
+                tracing::warn!(
+                    "DATABASE_URL not set; tenant store using in-memory fallback (data is not persisted)"
+                );
+                Ok(Self {
+                    inner: TenantStoreInner::Memory(Arc::new(RwLock::new(HashMap::new()))),
+                })
             }
         }
     }
 
     /// Insert a tenant into whichever backend is active.
-    fn create(&self, tenant: Tenant) -> Result<(), VaultError> {
+    async fn create(&self, tenant: Tenant) -> Result<(), VaultError> {
         match &self.inner {
-            TenantStoreInner::Database => {
-                // Callers that hold a live DbPool call wslvault_storage::tenant_store::create_tenant
-                // directly.  This branch is unreachable in the in-process path.
-                Err(VaultError::Internal {
-                    reason: "database backend requires async context; use tenant_store::create_tenant"
-                        .into(),
-                })
+            TenantStoreInner::Database(pool) => {
+                wslvault_storage::tenant_store::create_tenant(pool, &tenant).await
             }
             TenantStoreInner::Memory(map) => {
                 let mut guard = map.write().map_err(|e| VaultError::Internal {
@@ -110,12 +113,11 @@ impl TenantStoreState {
     }
 
     /// Retrieve one tenant by ID.
-    fn get(&self, tenant_id: &TenantId) -> Result<Tenant, VaultError> {
+    async fn get(&self, tenant_id: &TenantId) -> Result<Tenant, VaultError> {
         match &self.inner {
-            TenantStoreInner::Database => Err(VaultError::Internal {
-                reason: "database backend requires async context; use tenant_store::get_tenant"
-                    .into(),
-            }),
+            TenantStoreInner::Database(pool) => {
+                wslvault_storage::tenant_store::get_tenant(pool, tenant_id).await
+            }
             TenantStoreInner::Memory(map) => {
                 let guard = map.read().map_err(|e| VaultError::Internal {
                     reason: format!("in-memory store lock poisoned: {e}"),
@@ -131,12 +133,11 @@ impl TenantStoreState {
     }
 
     /// Return all active (non-deleted) tenants.
-    fn list(&self) -> Result<Vec<Tenant>, VaultError> {
+    async fn list(&self) -> Result<Vec<Tenant>, VaultError> {
         match &self.inner {
-            TenantStoreInner::Database => Err(VaultError::Internal {
-                reason: "database backend requires async context; use tenant_store::list_tenants"
-                    .into(),
-            }),
+            TenantStoreInner::Database(pool) => {
+                wslvault_storage::tenant_store::list_tenants(pool).await
+            }
             TenantStoreInner::Memory(map) => {
                 let guard = map.read().map_err(|e| VaultError::Internal {
                     reason: format!("in-memory store lock poisoned: {e}"),
@@ -154,11 +155,11 @@ impl TenantStoreState {
     }
 
     /// Soft-delete a tenant by setting `deleted_at`.
-    fn soft_delete(&self, tenant_id: &TenantId) -> Result<(), VaultError> {
+    async fn soft_delete(&self, tenant_id: &TenantId) -> Result<(), VaultError> {
         match &self.inner {
-            TenantStoreInner::Database => Err(VaultError::Internal {
-                reason: "database backend requires async context".into(),
-            }),
+            TenantStoreInner::Database(pool) => {
+                wslvault_storage::tenant_store::soft_delete_tenant(pool, tenant_id).await
+            }
             TenantStoreInner::Memory(map) => {
                 let mut guard = map.write().map_err(|e| VaultError::Internal {
                     reason: format!("in-memory store lock poisoned: {e}"),
@@ -355,7 +356,7 @@ pub async fn create_tenant(
         deleted_at: None,
     };
 
-    match store.create(tenant.clone()) {
+    match store.create(tenant.clone()).await {
         Ok(()) => {
             tracing::info!(
                 tenant_id = %tenant.id,
@@ -389,7 +390,7 @@ pub async fn create_tenant(
     tag = "tenants"
 )]
 pub async fn list_tenants(State(store): State<TenantStoreState>) -> impl IntoResponse {
-    match store.list() {
+    match store.list().await {
         Ok(tenants) => {
             let body: Vec<TenantResponse> = tenants.iter().map(TenantResponse::from).collect();
             (StatusCode::OK, Json(body)).into_response()
@@ -441,7 +442,7 @@ pub async fn get_tenant(
         }
     };
 
-    match store.get(&tenant_id) {
+    match store.get(&tenant_id).await {
         Ok(tenant) => (StatusCode::OK, Json(TenantResponse::from(&tenant))).into_response(),
         Err(VaultError::TenantNotFound { .. }) => (
             StatusCode::NOT_FOUND,
@@ -502,7 +503,7 @@ pub async fn delete_tenant(
         }
     };
 
-    match store.soft_delete(&tenant_id) {
+    match store.soft_delete(&tenant_id).await {
         Ok(()) => {
             tracing::info!(tenant_id = %id_str, "tenant soft-deleted");
             StatusCode::NO_CONTENT.into_response()
@@ -605,40 +606,40 @@ mod tests {
         assert!(parse_tier(Some("premium")).is_err());
     }
 
-    #[test]
-    fn memory_store_create_and_get() {
+    #[tokio::test]
+    async fn memory_store_create_and_get() {
         let store = memory_store();
         let tenant = sample_tenant("acme");
         let tenant_id = tenant.id.clone();
-        store.create(tenant).unwrap();
-        let fetched = store.get(&tenant_id).unwrap();
+        store.create(tenant).await.unwrap();
+        let fetched = store.get(&tenant_id).await.unwrap();
         assert_eq!(fetched.slug, "acme");
     }
 
-    #[test]
-    fn memory_store_list_excludes_deleted() {
+    #[tokio::test]
+    async fn memory_store_list_excludes_deleted() {
         let store = memory_store();
         let t1 = sample_tenant("alpha");
         let t2 = sample_tenant("beta");
         let t2_id = t2.id.clone();
-        store.create(t1).unwrap();
-        store.create(t2).unwrap();
-        store.soft_delete(&t2_id).unwrap();
-        let active = store.list().unwrap();
+        store.create(t1).await.unwrap();
+        store.create(t2).await.unwrap();
+        store.soft_delete(&t2_id).await.unwrap();
+        let active = store.list().await.unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].slug, "alpha");
     }
 
-    #[test]
-    fn memory_store_soft_delete_idempotency() {
+    #[tokio::test]
+    async fn memory_store_soft_delete_idempotency() {
         let store = memory_store();
         let tenant = sample_tenant("gamma");
         let id = tenant.id.clone();
-        store.create(tenant).unwrap();
-        store.soft_delete(&id).unwrap();
+        store.create(tenant).await.unwrap();
+        store.soft_delete(&id).await.unwrap();
         // Second delete should return TenantNotFound because the tenant is
         // already marked deleted.
-        let result = store.soft_delete(&id);
+        let result = store.soft_delete(&id).await;
         assert!(matches!(result, Err(VaultError::TenantNotFound { .. })));
     }
 
@@ -697,7 +698,7 @@ mod tests {
         let store = memory_store();
         let tenant = sample_tenant("to-delete");
         let tenant_id = tenant.id.clone();
-        store.create(tenant).unwrap();
+        store.create(tenant).await.unwrap();
 
         let app = router(store);
         let req = Request::builder()
