@@ -578,6 +578,53 @@ spec:
 
 {{/*
 ────────────────────────────────────────────────────────────────────────────
+pki-engine, region-health, replication-agent, sync-scheduler:
+accept HTTP from wslvault services and allow egress to PostgreSQL.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- range $svc := tuple
+      (dict "comp" "pki-engine"        "enabled" $.Values.pkiEngine.enabled       "port" $.Values.pkiEngine.httpPort)
+      (dict "comp" "region-health"     "enabled" $.Values.regionHealth.enabled     "port" $.Values.regionHealth.httpPort)
+      (dict "comp" "replication-agent" "enabled" $.Values.replicationAgent.enabled  "port" $.Values.replicationAgent.httpPort)
+      (dict "comp" "sync-scheduler"    "enabled" $.Values.syncScheduler.enabled     "port" $.Values.syncScheduler.httpPort) }}
+{{- if $svc.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" $ }}-{{ $svc.comp }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" $svc.comp "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Peer wslvault services (and cross-region peers) may reach the HTTP/health port
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: {{ include "wslvault.name" $ }}
+      ports:
+        - port: {{ $svc.port }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+{{- end }}
+{{- end }}
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
 PostgreSQL: accept connections from all wslvault services
 ────────────────────────────────────────────────────────────────────────────
 */}}

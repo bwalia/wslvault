@@ -35,7 +35,7 @@ CREATE TABLE system.key_descriptors (
     parent_key_id UUID REFERENCES system.key_descriptors(id),
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     rotated_at  TIMESTAMPTZ,
-    expires_at  TIMESTAMPTZ,
+    expires_at  TIMESTAMPTZ
     -- No inline UNIQUE constraint: per-encrypt DEKs produce many rows per tenant.
     -- Uniqueness for KEK purposes is enforced by the partial index below.
 );

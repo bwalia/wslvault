@@ -138,12 +138,13 @@ Build the PostgreSQL port.
 {{/*
 Build the full DATABASE_URL environment variable value.
 Format: postgresql://<user>:<password>@<host>:<port>/<database>
-When postgresql.auth.existingSecret is set the password placeholder is
-replaced at runtime via secretKeyRef (see secrets.yaml).
+The password is embedded from postgresql.auth.password. Ensure the password
+is URL-safe (no @ / : characters) or url-encode it before supplying.
 */}}
 {{- define "wslvault.databaseURL" -}}
-{{- printf "postgresql://%s@%s:%s/%s"
+{{- printf "postgresql://%s:%s@%s:%s/%s"
     .Values.postgresql.auth.username
+    .Values.postgresql.auth.password
     (include "wslvault.postgresHost" .)
     (include "wslvault.postgresPort" .)
     .Values.postgresql.auth.database }}

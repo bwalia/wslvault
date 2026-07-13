@@ -62,12 +62,8 @@ spec:
             - name: GRPC_PORT
               value: {{ .Values.cryptoService.grpcPort | quote }}
             - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-db-credentials
-                  key: password
-                  optional: false
-            - name: ROOT_KEY
+              value: {{ include "wslvault.databaseURL" . | quote }}
+            - name: VAULT_ROOT_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "wslvault.fullname" . }}-root-key
@@ -78,14 +74,14 @@ spec:
             {{- end }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10

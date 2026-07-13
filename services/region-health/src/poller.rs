@@ -60,9 +60,8 @@ pub async fn run_health_poller(pool: DbPool, elector: Arc<LeaderElector>, local_
                 Ok(resp) if resp.status().is_success() => {
                     let rtt_ms = start.elapsed().as_millis() as i64;
                     failure_counts.insert(region.id.clone(), 0);
-                    let _ =
-                        store::update_region_status(&pool, &region.id, "active", Some(rtt_ms))
-                            .await;
+                    let _ = store::update_region_status(&pool, &region.id, "active", Some(rtt_ms))
+                        .await;
                 }
                 Ok(resp) => {
                     warn!(

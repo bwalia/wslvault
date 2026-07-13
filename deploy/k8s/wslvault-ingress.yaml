@@ -1,0 +1,106 @@
+# wslvault edge Ingress (Traefik / k3s)
+#
+# Replaces the in-cluster OpenResty gateway (gateway.enabled=false) with a
+# native k8s Ingress. Path map mirrors gateway/conf.d/main.conf. TLS terminates
+# with the wslvault-gateway-tls cert (SANs: wslvault.workstation.co.uk,
+# vault.workstation.co.uk).
+#
+# NOTE: this bypasses the gateway's lua auth/rate-limit/quota middleware and the
+# X-Gateway-Secret stamping. Backends run with VAULT_GATEWAY_SECRET unset, so
+# they accept requests directly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wslvault
+  namespace: wslvault
+  labels:
+    app.kubernetes.io/name: wslvault
+    app.kubernetes.io/part-of: wslvault
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+spec:
+  ingressClassName: traefik
+  tls:
+    - secretName: wslvault-gateway-tls
+      hosts:
+        - vault.workstation.co.uk
+        - wslvault.workstation.co.uk
+  rules:
+    - host: vault.workstation.co.uk
+      http:
+        paths:
+          - path: /v1/auth
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /v1/identity
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /v1/tenants
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /v1/api-keys
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /v1/quotas
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /scim
+            pathType: Prefix
+            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          - path: /v1/secret
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          - path: /v1/transit
+            pathType: Prefix
+            backend: { service: { name: wslvault-transit-engine, port: { number: 8086 } } }
+          - path: /v1/policies
+            pathType: Prefix
+            backend: { service: { name: wslvault-policy-engine, port: { number: 8083 } } }
+          - path: /v1/leases
+            pathType: Prefix
+            backend: { service: { name: wslvault-lease-manager, port: { number: 8084 } } }
+          - path: /v1/audit
+            pathType: Prefix
+            backend: { service: { name: wslvault-audit-service, port: { number: 8085 } } }
+          - path: /v1/pki
+            pathType: Prefix
+            backend: { service: { name: wslvault-pki-engine, port: { number: 8088 } } }
+          - path: /v1/mcp
+            pathType: Prefix
+            backend: { service: { name: wslvault-mcp-server, port: { number: 8087 } } }
+---
+# Allow the Traefik ingress controller (kube-system) to reach wslvault service
+# HTTP ports. Required because the chart's default-deny NetworkPolicy only
+# permits in-namespace (part-of: wslvault) and gateway traffic; with the gateway
+# disabled, Traefik is the new edge and must be explicitly allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: wslvault-allow-traefik-ingress
+  namespace: wslvault
+  labels:
+    app.kubernetes.io/name: wslvault
+    app.kubernetes.io/part-of: wslvault
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: wslvault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { port: 8081, protocol: TCP }
+        - { port: 8082, protocol: TCP }
+        - { port: 8083, protocol: TCP }
+        - { port: 8084, protocol: TCP }
+        - { port: 8085, protocol: TCP }
+        - { port: 8086, protocol: TCP }
+        - { port: 8087, protocol: TCP }
+        - { port: 8088, protocol: TCP }

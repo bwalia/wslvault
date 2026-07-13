@@ -28,3 +28,6 @@ Thumbs.db
 # Node (UI)
 node_modules/
 dist/
+
+# session scratchpad (contains secrets, temp prompts)
+scratchpad/

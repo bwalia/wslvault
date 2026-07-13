@@ -1,0 +1,19 @@
+# Shared builder: compiles ALL wslvault service binaries in a single pass
+# so the heavy dependency graph is built once instead of once per service.
+FROM --platform=linux/amd64 rust:1.94-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      musl-tools protobuf-compiler lld && rm -rf /var/lib/apt/lists/*
+RUN rustup target add x86_64-unknown-linux-musl
+WORKDIR /app
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
+COPY crates/ crates/
+COPY services/ services/
+COPY sdks/ sdks/
+COPY wslvault-cli/ wslvault-cli/
+COPY proto/ proto/
+RUN cargo build --release --target x86_64-unknown-linux-musl \
+      -p crypto-service -p secret-engine -p policy-engine -p identity-service \
+      -p lease-manager -p audit-service -p transit-engine -p pki-engine \
+      -p mcp-server -p replication-agent -p region-health -p sync-scheduler \
+      -p k8s-operator

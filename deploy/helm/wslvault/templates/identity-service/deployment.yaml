@@ -57,10 +57,10 @@ spec:
               containerPort: {{ .Values.identityService.grpcPort }}
               protocol: TCP
           env:
-            - name: HTTP_PORT
-              value: {{ .Values.identityService.httpPort | quote }}
-            - name: GRPC_PORT
-              value: {{ .Values.identityService.grpcPort | quote }}
+            - name: VAULT_HTTP_ADDR
+              value: {{ printf "0.0.0.0:%v" .Values.identityService.httpPort | quote }}
+            - name: VAULT_LISTEN_ADDR
+              value: {{ printf "0.0.0.0:%v" .Values.identityService.grpcPort | quote }}
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -73,7 +73,7 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            - name: JWT_SECRET
+            - name: VAULT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: {{ include "wslvault.fullname" . }}-jwt-secret
@@ -89,14 +89,14 @@ spec:
             {{- end }}
           livenessProbe:
             httpGet:
-              path: /health
+              path: /healthz
               port: http
             initialDelaySeconds: 10
             periodSeconds: 15
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /health
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10

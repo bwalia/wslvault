@@ -55,11 +55,18 @@ spec:
               containerPort: {{ .Values.syncScheduler.httpPort }}
               protocol: TCP
           env:
-            - name: DATABASE_URL
+            - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "wslvault.dbCredentialsSecretName" . }}
                   key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  optional: false
+            - name: DATABASE_URL
+              value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
+                          .Values.postgresql.auth.username
+                          (include "wslvault.postgresHost" .)
+                          (include "wslvault.postgresPort" .)
+                          .Values.postgresql.auth.database }}
             - name: REGION_ID
               valueFrom:
                 fieldRef:

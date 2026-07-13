@@ -30,9 +30,29 @@ pub async fn list_regions(pool: &DbPool) -> anyhow::Result<Vec<RegionInfo>> {
 
     Ok(rows
         .into_iter()
-        .map(|(id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata)| {
-            RegionInfo { id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata }
-        })
+        .map(
+            |(
+                id,
+                display_name,
+                endpoint,
+                status,
+                is_local,
+                replication_lag_ms,
+                last_seen,
+                metadata,
+            )| {
+                RegionInfo {
+                    id,
+                    display_name,
+                    endpoint,
+                    status,
+                    is_local,
+                    replication_lag_ms,
+                    last_seen,
+                    metadata,
+                }
+            },
+        )
         .collect())
 }
 
@@ -49,9 +69,29 @@ pub async fn get_region(pool: &DbPool, region_id: &str) -> anyhow::Result<Option
         .fetch_optional(pool.inner())
         .await?;
 
-    Ok(row.map(|(id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata)| {
-        RegionInfo { id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata }
-    }))
+    Ok(row.map(
+        |(
+            id,
+            display_name,
+            endpoint,
+            status,
+            is_local,
+            replication_lag_ms,
+            last_seen,
+            metadata,
+        )| {
+            RegionInfo {
+                id,
+                display_name,
+                endpoint,
+                status,
+                is_local,
+                replication_lag_ms,
+                last_seen,
+                metadata,
+            }
+        },
+    ))
 }
 
 pub async fn update_region_status(
