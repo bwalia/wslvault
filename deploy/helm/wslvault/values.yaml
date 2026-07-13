@@ -28,20 +28,43 @@ networkPolicies:
   # -- Whether to create NetworkPolicy resources (default deny + explicit allow rules)
   enabled: true
 
-# -- Ingress configuration (disabled by default; use gateway TLS termination instead)
-ingress:
+# -- Edge Ingress for the control plane (Traefik / k3s). Chart-managed
+# equivalent of deploy/k8s/wslvault-ingress.yaml — enable exactly ONE of the two
+# (this template OR the raw manifest) to avoid duplicate Ingress objects.
+# The route map is verified against the actual axum route registrations in
+# services/*/src; only prefixes a backend truly serves over HTTP are listed.
+edgeIngress:
   enabled: false
-  className: "nginx"
-  annotations: {}
-  hosts:
-    - host: wslvault.example.com
-      paths:
-        - path: /
-          pathType: Prefix
+  ingressClassName: traefik
+  entrypoint: websecure
+  host: vault.workstation.co.uk
   tls:
-    - secretName: wslvault-tls
-      hosts:
-        - wslvault.example.com
+    # -- Self-signed by default; SANs must cover every host below. Point this at
+    # a cert-manager-issued secret for a trusted chain.
+    secretName: wslvault-gateway-tls
+    hosts:
+      - vault.workstation.co.uk
+      - wslvault.workstation.co.uk
+  # -- HTTP:80 -> HTTPS 308 redirect (Traefik redirectScheme middleware).
+  httpRedirect:
+    enabled: true
+    entrypoint: web
+  # -- path -> component:port. Verified 2026-07-13 against source routes.
+  # Deliberately omitted (no HTTP backend): /v1/identity (unimplemented),
+  # /v1/leases + /v1/audit (gRPC-only). /healthz + /readyz map to secret-engine.
+  routes:
+    - { path: /healthz, component: secret-engine, port: 8081 }
+    - { path: /readyz, component: secret-engine, port: 8081 }
+    - { path: /v1/auth, component: identity-service, port: 8082 }
+    - { path: /v1/tenants, component: identity-service, port: 8082 }
+    - { path: /v1/api-keys, component: identity-service, port: 8082 }
+    - { path: /v1/quotas, component: identity-service, port: 8082 }
+    - { path: /scim, component: identity-service, port: 8082 }
+    - { path: /v1/secret, component: secret-engine, port: 8081 }
+    - { path: /v1/transit, component: transit-engine, port: 8086 }
+    - { path: /v1/policies, component: policy-engine, port: 8083 }
+    - { path: /v1/pki, component: pki-engine, port: 8088 }
+    - { path: /v1/mcp, component: mcp-server, port: 8087 }
 
 # -- Prometheus monitoring annotations
 monitoring:

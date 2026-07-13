@@ -1,13 +1,25 @@
 # wslvault edge Ingress (Traefik / k3s)
 #
 # Replaces the in-cluster OpenResty gateway (gateway.enabled=false) with a
-# native k8s Ingress. Path map mirrors gateway/conf.d/main.conf. TLS terminates
-# with the wslvault-gateway-tls cert (SANs: wslvault.workstation.co.uk,
-# vault.workstation.co.uk).
+# native k8s Ingress. Path map is derived from the ACTUAL axum route
+# registrations in services/*/src (verified 2026-07-13), not just the old
+# gateway/conf.d/main.conf — axum matches routes EXACTLY (no prefix fallthrough
+# like nginx `location`), so only prefixes a backend really serves are listed.
+#
+# TLS terminates with the wslvault-gateway-tls cert (self-signed; SANs cover
+# both vault.workstation.co.uk and wslvault.workstation.co.uk). Clients hitting
+# the node IP directly, or without the CA trusted, must use `curl -k`.
 #
 # NOTE: this bypasses the gateway's lua auth/rate-limit/quota middleware and the
-# X-Gateway-Secret stamping. Backends run with VAULT_GATEWAY_SECRET unset, so
-# they accept requests directly.
+# X-Gateway-Secret stamping. Backends run with VAULT_GATEWAY_SECRET unset, which
+# makes the shared-secret check a documented no-op (see policy-engine
+# src/main.rs), so they accept Traefik's unstamped requests directly.
+#
+# Routes intentionally NOT exposed here (backend serves no HTTP under them):
+#   /v1/identity  -> identity-service registers no such route
+#   /v1/leases    -> lease-manager  API is gRPC-only (:50055); HTTP :8084 = /health
+#   /v1/audit     -> audit-service  API is gRPC-only (:50056); HTTP :8085 = /health
+# Re-add them here only once those services expose the corresponding HTTP routes.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -29,10 +41,18 @@ spec:
     - host: vault.workstation.co.uk
       http:
         paths:
-          - path: /v1/auth
+          # --- Health (unauthenticated) — routed to secret-engine's liveness/
+          #     readiness so basic health checks work through the edge. `/` has
+          #     no owner by design (the gateway that served it is disabled), so
+          #     the bare host still 404s; use these instead.
+          - path: /healthz
             pathType: Prefix
-            backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
-          - path: /v1/identity
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          - path: /readyz
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          # --- identity-service (8082) ---
+          - path: /v1/auth
             pathType: Prefix
             backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
           - path: /v1/tenants
@@ -47,27 +67,71 @@ spec:
           - path: /scim
             pathType: Prefix
             backend: { service: { name: wslvault-identity-service, port: { number: 8082 } } }
+          # --- secret-engine (8081) ---
           - path: /v1/secret
             pathType: Prefix
             backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          # --- transit-engine (8086) ---
           - path: /v1/transit
             pathType: Prefix
             backend: { service: { name: wslvault-transit-engine, port: { number: 8086 } } }
+          # --- policy-engine (8083) ---
           - path: /v1/policies
             pathType: Prefix
             backend: { service: { name: wslvault-policy-engine, port: { number: 8083 } } }
-          - path: /v1/leases
-            pathType: Prefix
-            backend: { service: { name: wslvault-lease-manager, port: { number: 8084 } } }
-          - path: /v1/audit
-            pathType: Prefix
-            backend: { service: { name: wslvault-audit-service, port: { number: 8085 } } }
+          # --- pki-engine (8088) ---
           - path: /v1/pki
             pathType: Prefix
             backend: { service: { name: wslvault-pki-engine, port: { number: 8088 } } }
+          # --- mcp-server (8087) ---
           - path: /v1/mcp
             pathType: Prefix
             backend: { service: { name: wslvault-mcp-server, port: { number: 8087 } } }
+---
+# HTTP -> HTTPS redirect. Encoded explicitly so the repo is self-sufficient and
+# does not depend on any cluster-global Traefik entrypoint redirect. Traefik's
+# redirectScheme middleware issues a 308 preserving host+path; the backend on
+# this port-80 router is never actually reached (the middleware short-circuits),
+# but Ingress requires one, so we point it at any always-present service.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: wslvault
+  labels:
+    app.kubernetes.io/name: wslvault
+    app.kubernetes.io/part-of: wslvault
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wslvault-http-redirect
+  namespace: wslvault
+  labels:
+    app.kubernetes.io/name: wslvault
+    app.kubernetes.io/part-of: wslvault
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    traefik.ingress.kubernetes.io/router.middlewares: wslvault-redirect-https@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: vault.workstation.co.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+    - host: wslvault.workstation.co.uk
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
 ---
 # Allow the Traefik ingress controller (kube-system) to reach wslvault service
 # HTTP ports. Required because the chart's default-deny NetworkPolicy only

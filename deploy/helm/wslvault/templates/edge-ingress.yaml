@@ -1,0 +1,118 @@
+{{/*
+Edge Ingress for the wslvault control plane (Traefik / k3s).
+
+This is the chart-managed equivalent of deploy/k8s/wslvault-ingress.yaml — keep
+the two in sync. It is DISABLED by default (edgeIngress.enabled=false) so that
+operators who apply the raw manifest out-of-band do not end up with two Ingress
+objects named the same. Enable exactly one of the two mechanisms.
+
+The path map lives in values (edgeIngress.routes) and is verified against the
+actual axum route registrations under services/ — axum matches routes exactly,
+so only prefixes a backend really serves are listed. Backends whose APIs are
+gRPC-only (lease-manager, audit-service) or unimplemented over HTTP
+(/v1/identity) are deliberately absent.
+*/}}
+{{- if .Values.edgeIngress.enabled }}
+{{- $ctx := . }}
+{{- $ei := .Values.edgeIngress }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "wslvault.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ $ei.entrypoint | default "websecure" }}
+spec:
+  ingressClassName: {{ $ei.ingressClassName | default "traefik" }}
+  tls:
+    - secretName: {{ $ei.tls.secretName }}
+      hosts:
+        {{- range $ei.tls.hosts }}
+        - {{ . | quote }}
+        {{- end }}
+  rules:
+    - host: {{ $ei.host | quote }}
+      http:
+        paths:
+          {{- range $ei.routes }}
+          - path: {{ .path | quote }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" .component "context" $ctx) }}
+                port:
+                  number: {{ .port }}
+          {{- end }}
+{{- if $ei.httpRedirect.enabled }}
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: redirect-https
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "wslvault.fullname" . }}-http-redirect
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ $ei.httpRedirect.entrypoint | default "web" }}
+    traefik.ingress.kubernetes.io/router.middlewares: {{ .Release.Namespace }}-redirect-https@kubernetescrd
+spec:
+  ingressClassName: {{ $ei.ingressClassName | default "traefik" }}
+  rules:
+    {{- range concat (list $ei.host) (without $ei.tls.hosts $ei.host) }}
+    - host: {{ . | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $ctx) }}
+                port:
+                  number: 8081
+    {{- end }}
+{{- end }}
+---
+# Allow the Traefik ingress controller (kube-system) to reach wslvault HTTP
+# ports. The chart's default-deny NetworkPolicy only permits in-namespace and
+# gateway traffic; with the gateway disabled Traefik is the new edge.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-allow-traefik-ingress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: {{ include "wslvault.name" . }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        {{- range (list 8081 8082 8083 8084 8085 8086 8087 8088) }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+{{- end }}
