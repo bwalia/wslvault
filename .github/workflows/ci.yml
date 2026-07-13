@@ -129,6 +129,7 @@ jobs:
           - region-health
           - sync-scheduler
           - pki-engine
+          - vault-ui
     steps:
       - uses: actions/checkout@v4
 

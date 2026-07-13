@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# vault-ui
 
-## Getting Started
+Web console for **WSLVault** — a Next.js (App Router) dashboard for tenants,
+secrets, transit, policies, identity, SCIM, cluster, regions, leases, and audit.
 
-First, run the development server:
+## How it talks to the backend
+
+The browser calls same-origin paths under `/api/<service>/*`. Next.js
+[rewrites](./next.config.ts) proxy each prefix to a backend base URL, stripping
+the `/api/<service>` segment:
+
+| Prefix | Env var | Dev default |
+|--------|---------|-------------|
+| `/api/identity/*` | `IDENTITY_URL` | `http://localhost:18082` |
+| `/api/secret/*`   | `SECRET_URL`   | `http://localhost:8081`  |
+| `/api/transit/*`  | `TRANSIT_URL`  | `http://localhost:18086` |
+| `/api/policy/*`   | `POLICY_URL`   | `http://localhost:8083`  |
+| `/api/audit/*`    | `AUDIT_URL`    | `http://localhost:18085` |
+| `/api/lease/*`    | `LEASE_URL`    | `http://localhost:18084` |
+| `/api/gateway/*`  | `GATEWAY_URL`  | `http://localhost:8088`  |
+
+So `/api/identity/v1/tenants` → `${IDENTITY_URL}/v1/tenants`.
+
+## Run locally
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev        # http://localhost:3011
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Point at a live cluster via the edge ingress
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Because the `vault.workstation.co.uk` ingress already routes every `/v1/*` path
+to the right service, you can send all prefixes to the one public host:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+IDENTITY_URL=https://vault.workstation.co.uk \
+SECRET_URL=https://vault.workstation.co.uk \
+TRANSIT_URL=https://vault.workstation.co.uk \
+POLICY_URL=https://vault.workstation.co.uk \
+AUDIT_URL=https://vault.workstation.co.uk \
+LEASE_URL=https://vault.workstation.co.uk \
+GATEWAY_URL=https://vault.workstation.co.uk \
+npm run dev
+```
 
-## Learn More
+If the edge serves a self-signed cert, prefix with
+`NODE_TLS_REJECT_UNAUTHORIZED=0` (development only).
 
-To learn more about Next.js, take a look at the following resources:
+## Log in
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Authenticate with a WSLVault API key (`wslv_…`); the UI exchanges it at
+`POST /v1/auth/api-key` for a JWT and sends `Authorization: Bearer <jwt>` plus
+`X-Tenant-Id` on every request.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Known limitations
 
-## Deploy on Vercel
+- **Audit** and **Leases** backends are gRPC-only over their HTTP port (only
+  `/health` is served), so those pages return errors against a real cluster.
+- **Regions / Cluster / SCIM** pages call `/api/gateway/*` with pre-gateway
+  paths (`/v1/regions`, `/v1/scim/Users`) that don't match the current backend
+  routes (`/v1/sys/regions`, `/scim/v2/Users`); region-health is also not in the
+  edge ingress. These need path alignment before they work end-to-end.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Build
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm run build      # produces .next/standalone (output: 'standalone')
+npm start
+```

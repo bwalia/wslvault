@@ -1,0 +1,192 @@
+{{/*
+vault-ui — Next.js web console. Disabled by default (ui.enabled=false).
+
+Talks to the backend services over in-cluster ClusterIP DNS. Because the chart's
+default-deny NetworkPolicy blocks all pod traffic, this template ships the
+additive policies the UI needs (UI egress to DNS + backends; backends accept
+ingress from the UI), mirroring the existing allow-traefik-ingress pattern — it
+does NOT modify the per-service policies.
+
+DNS for ui.host must point at the cluster edge (same PoP as the API host).
+*/}}
+{{- if .Values.ui.enabled }}
+{{- $ctx := . }}
+{{- $ui := .Values.ui }}
+{{- $svc := include "wslvault.componentFullname" (dict "component" "vault-ui" "context" $ctx) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $svc }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  replicas: {{ $ui.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 8 }}
+    spec:
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: vault-ui
+          image: {{ include "wslvault.image" (dict "image" $ui.image "context" $ctx) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ $ui.port | default 3011 }}
+          env:
+            - name: IDENTITY_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $ctx) }}:{{ .Values.identityService.httpPort }}"
+            - name: SECRET_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $ctx) }}:{{ .Values.secretEngine.httpPort }}"
+            - name: TRANSIT_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $ctx) }}:{{ .Values.transitEngine.httpPort }}"
+            - name: POLICY_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $ctx) }}:{{ .Values.policyEngine.httpPort }}"
+            - name: AUDIT_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "audit-service" "context" $ctx) }}:{{ .Values.auditService.httpPort }}"
+            - name: LEASE_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $ctx) }}:{{ .Values.leaseManager.httpPort }}"
+            - name: GATEWAY_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "region-health" "context" $ctx) }}:{{ .Values.regionHealth.httpPort }}"
+          readinessProbe:
+            httpGet: { path: /login, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /login, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          resources:
+            {{- toYaml ($ui.resources | default dict) | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $svc }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $ui.port | default 3011 }}
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $svc }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: {{ $ui.entrypoint | default "websecure" }}
+spec:
+  ingressClassName: {{ $ui.ingressClassName | default "traefik" }}
+  {{- if $ui.tls.secretName }}
+  tls:
+    - secretName: {{ $ui.tls.secretName }}
+      hosts:
+        - {{ $ui.host | quote }}
+  {{- end }}
+  rules:
+    - host: {{ $ui.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $svc }}
+                port:
+                  number: {{ $ui.port | default 3011 }}
+---
+# Allow the UI pod egress to DNS and to the backend HTTP ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $svc }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: {{ include "wslvault.name" . }}
+      ports:
+        {{- range (list 8081 8082 8083 8084 8085 8086 8087 8088 8092) }}
+        - { port: {{ . }}, protocol: TCP }
+        {{- end }}
+---
+# Allow backend services to accept ingress from the UI pod (additive; does not
+# modify the per-service policies).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $svc }}-to-backends
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: {{ include "wslvault.name" . }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 14 }}
+      ports:
+        {{- range (list 8081 8082 8083 8084 8085 8086 8087 8088 8092) }}
+        - { port: {{ . }}, protocol: TCP }
+        {{- end }}
+---
+# Allow the Traefik ingress controller to reach the UI pod.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $svc }}-allow-traefik
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - { port: {{ $ui.port | default 3011 }}, protocol: TCP }
+{{- end }}

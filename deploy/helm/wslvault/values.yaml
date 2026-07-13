@@ -28,6 +28,25 @@ networkPolicies:
   # -- Whether to create NetworkPolicy resources (default deny + explicit allow rules)
   enabled: true
 
+# -- vault-ui: Next.js web console (disabled by default). When enabled it is
+# deployed with a Service, Ingress, and the additive NetworkPolicies it needs to
+# reach the backends over in-cluster DNS. Point ui.host's DNS at the same edge.
+ui:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: bwalia/wslvault-vault-ui
+    # -- Leave empty to use global.imageTag
+    tag: ""
+  port: 3011
+  host: vault-ui.workstation.co.uk
+  ingressClassName: traefik
+  entrypoint: websecure
+  tls:
+    # -- Leave secretName empty to serve HTTP only (TLS terminated at the edge PoP)
+    secretName: ""
+  resources: {}
+
 # -- Edge Ingress for the control plane (Traefik / k3s). Chart-managed
 # equivalent of deploy/k8s/wslvault-ingress.yaml — enable exactly ONE of the two
 # (this template OR the raw manifest) to avoid duplicate Ingress objects.
