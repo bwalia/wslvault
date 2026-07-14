@@ -5,23 +5,16 @@ interface SkeletonProps {
 }
 
 export function Skeleton({ className }: SkeletonProps) {
-  return (
-    <div
-      className={cn(
-        'animate-pulse rounded bg-slate-200 dark:bg-slate-700',
-        className,
-      )}
-    />
-  )
+  return <div className={cn('animate-pulse rounded bg-surface-3', className)} />
 }
 
 export function TableSkeleton({ rows = 10, cols = 4 }: { rows?: number; cols?: number }) {
   return (
     <>
       {Array.from({ length: rows }).map((_, i) => (
-        <tr key={i} className="border-b border-slate-100 dark:border-slate-800/50">
+        <tr key={i} className="border-b border-line">
           {Array.from({ length: cols }).map((_, j) => (
-            <td key={j} className="px-6 py-3">
+            <td key={j} className="px-4 py-2.5">
               <Skeleton className="h-4 w-full" />
             </td>
           ))}

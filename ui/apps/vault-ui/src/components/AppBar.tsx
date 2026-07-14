@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { Menu, Sun, Moon, Monitor, LogOut, ChevronDown } from 'lucide-react'
+import { Menu, Sun, Moon, Monitor, LogOut, ChevronDown, Timer } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme } from '@/contexts/ThemeContext'
 import { cn } from '@/lib/utils'
@@ -14,18 +14,19 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
   const remaining = expiresAt
     ? getRemainingSeconds(new Date(expiresAt).toISOString())
     : 0
+  // Quiet by default; amber only inside the final 15 minutes, red inside 5.
   const expiryColor =
-    remaining > 3600
-      ? 'text-accent-600'
+    remaining > 900
+      ? 'text-ink-muted'
       : remaining > 300
-        ? 'text-warn-600'
-        : 'text-danger-600'
+        ? 'text-warn-600 dark:text-warn-500'
+        : 'text-danger-600 dark:text-danger-400'
 
   return (
-    <header className="sticky top-0 z-30 flex items-center gap-3 h-14 px-6 bg-white/80 dark:bg-slate-900/80 backdrop-blur border-b border-slate-200 dark:border-slate-800">
+    <header className="sticky top-0 z-30 flex items-center gap-3 h-14 px-6 bg-canvas/90 backdrop-blur border-b border-line">
       <button
         onClick={onMenuClick}
-        className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"
+        className="p-1.5 rounded-lg hover:bg-surface-2 text-ink-muted focus-ring"
         aria-label="Toggle menu"
       >
         <Menu className="w-5 h-5" />
@@ -33,23 +34,30 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
 
       <span className="flex-1" />
 
-      {/* Token expiry */}
+      {/* Session expiry — labeled, not a bare number */}
       {expiresAt && (
-        <span className={cn('text-xs font-mono', expiryColor)}>{formatDuration(remaining)}</span>
+        <span
+          className={cn('inline-flex items-center gap-1.5 text-xs font-mono tabular', expiryColor)}
+          title="Session time remaining"
+        >
+          <Timer className="w-3.5 h-3.5" aria-hidden="true" />
+          {formatDuration(remaining)}
+        </span>
       )}
 
       {/* Theme toggle */}
-      <div className="flex items-center rounded-lg border border-slate-200 dark:border-slate-700 p-0.5">
+      <div className="flex items-center rounded-lg border border-line p-0.5" role="group" aria-label="Theme">
         {(['light', 'system', 'dark'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTheme(t)}
             aria-label={`Set theme to ${t}`}
+            aria-pressed={theme === t}
             className={cn(
-              'p-1.5 rounded-md transition-colors',
+              'p-1.5 rounded-md transition-colors focus-ring',
               theme === t
-                ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-600 dark:text-primary-400'
-                : 'text-slate-400 hover:text-slate-600',
+                ? 'bg-surface-3 text-ink'
+                : 'text-ink-faint hover:text-ink-muted',
             )}
           >
             {t === 'light' ? (
@@ -67,27 +75,31 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
       <div className="relative">
         <button
           onClick={() => setUserOpen(o => !o)}
-          className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-sm text-slate-700 dark:text-slate-300"
+          aria-expanded={userOpen}
+          aria-haspopup="menu"
+          className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-2 text-sm text-ink focus-ring"
         >
-          <span className="w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center text-primary-700 dark:text-primary-300 text-xs font-bold">
+          <span className="w-7 h-7 rounded-full bg-primary-600 flex items-center justify-center text-white text-xs font-semibold">
             {policies[0]?.[0]?.toUpperCase() ?? 'U'}
           </span>
           <span className="hidden sm:block max-w-32 truncate">{policies[0] ?? 'user'}</span>
-          <ChevronDown className="w-4 h-4" />
+          <ChevronDown className="w-4 h-4 text-ink-faint" />
         </button>
         {userOpen && (
-          <div className="absolute right-0 mt-1 w-56 bg-white dark:bg-slate-900 rounded-lg shadow-lg border border-slate-200 dark:border-slate-800 py-1 z-50">
-            <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800">
-              <p className="text-xs text-slate-500">Tenant</p>
-              <p className="text-sm font-mono truncate">{tenantId ?? '—'}</p>
+          <div className="absolute right-0 mt-1 w-60 bg-surface rounded-xl shadow-2xl border border-line py-1 z-50">
+            <div className="px-3 py-2 border-b border-line">
+              <p className="text-xs text-ink-faint">Tenant</p>
+              <p className="text-[13px] font-mono truncate text-ink" title={tenantId ?? undefined}>
+                {tenantId ?? '—'}
+              </p>
             </div>
-            <div className="px-3 py-2 border-b border-slate-200 dark:border-slate-800">
-              <p className="text-xs text-slate-500 mb-1">Policies</p>
+            <div className="px-3 py-2 border-b border-line">
+              <p className="text-xs text-ink-faint mb-1.5">Policies</p>
               <div className="flex flex-wrap gap-1">
                 {policies.map(p => (
                   <span
                     key={p}
-                    className="text-xs bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 px-1.5 py-0.5 rounded"
+                    className="text-xs font-mono bg-surface-2 border border-line text-ink-muted px-1.5 py-0.5 rounded"
                   >
                     {p}
                   </span>
@@ -96,7 +108,7 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
             </div>
             <button
               onClick={logout}
-              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20 transition-colors"
+              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-danger-600 dark:text-danger-400 hover:bg-danger-50 dark:hover:bg-danger-600/10 transition-colors"
             >
               <LogOut className="w-4 h-4" />
               Sign out

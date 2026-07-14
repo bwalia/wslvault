@@ -5,6 +5,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
@@ -31,15 +32,19 @@ function TTLBar({ expiresAt }: { expiresAt: string }) {
   // Estimate total from when remaining could be 0–24h; show progress as % of 24h
   const total = 24 * 3600
   const pct = Math.min(100, Math.round((remaining / total) * 100))
-  const color =
-    pct > 50 ? 'bg-accent-500' : pct > 20 ? 'bg-warn-500' : 'bg-danger-500'
+  // Use functional colors: healthy → primary, warning → warn, critical → danger
+  const fillColor =
+    pct > 50 ? 'bg-primary-500' : pct > 20 ? 'bg-warn-500' : 'bg-danger-500'
 
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-1.5 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-        <div className={cn('h-full rounded-full transition-all', color)} style={{ width: `${pct}%` }} />
+    <div className="flex items-center gap-2 min-w-[120px]">
+      <div className="flex-1 h-1.5 rounded-full bg-surface-3 overflow-hidden">
+        <div
+          className={cn('h-full rounded-full transition-colors', fillColor)}
+          style={{ width: `${pct}%` }}
+        />
       </div>
-      <span className="text-xs font-mono text-slate-500 w-16 text-right">
+      <span className="text-[13px] font-mono tabular text-ink-muted w-16 text-right flex-shrink-0">
         {remaining > 0 ? formatDuration(remaining) : 'Expired'}
       </span>
     </div>
@@ -88,7 +93,20 @@ export default function LeasesPage() {
   }
 
   const columns: Column<Lease>[] = [
-    { field: 'secret_path', label: 'Secret Path', sortable: true, render: row => <span className="font-mono text-xs">{row.secret_path}</span> },
+    {
+      field: 'secret_path',
+      label: 'Secret Path',
+      sortable: true,
+      mono: true,
+    },
+    {
+      field: 'id',
+      label: 'Lease ID',
+      mono: true,
+      render: row => (
+        <span className="font-mono text-[13px] text-ink-muted">{row.id}</span>
+      ),
+    },
     { field: 'state', label: 'State', render: row => <StatusBadge status={row.state} /> },
     {
       field: 'expires_at',
@@ -99,7 +117,7 @@ export default function LeasesPage() {
       field: 'created_at',
       label: 'Created',
       sortable: true,
-      render: row => <span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span>,
+      render: row => <span className="text-xs text-ink-muted">{formatDateTime(row.created_at)}</span>,
     },
     {
       field: '_actions',
@@ -111,6 +129,7 @@ export default function LeasesPage() {
               variant="ghost"
               size="sm"
               loading={renewingId === row.id}
+              aria-label={`Renew lease for ${row.secret_path}`}
               onClick={e => { e.stopPropagation(); onRenew(row) }}
             >
               <RefreshCw className="w-4 h-4" />
@@ -119,8 +138,9 @@ export default function LeasesPage() {
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Revoke lease for ${row.secret_path}`}
             onClick={e => { e.stopPropagation(); setRevokeTarget(row) }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
+            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-600/10"
           >
             <XCircle className="w-4 h-4" />
           </Button>
@@ -142,41 +162,47 @@ export default function LeasesPage() {
       <PageHeader
         title="Leases"
         description="Active secret leases and TTL management"
-        icon={Key}
       />
 
-      {/* State filter tabs */}
-      <div className="border-b border-slate-200 dark:border-slate-800 mb-6">
-        <nav className="flex gap-1 -mb-px">
-          {tabs.map(tab => (
-            <button
-              key={tab.value}
-              onClick={() => setStateFilter(tab.value)}
-              className={cn(
-                'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors',
-                stateFilter === tab.value
-                  ? 'border-primary-500 text-primary-600 dark:text-primary-400'
-                  : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200',
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </nav>
+      {/* State filter — quiet segmented buttons; selected = bg-surface-3 text-ink */}
+      <div className="flex items-center gap-1 mb-6 p-1 rounded-lg bg-surface-2 border border-line w-fit">
+        {tabs.map(tab => (
+          <button
+            key={tab.value}
+            onClick={() => setStateFilter(tab.value)}
+            className={cn(
+              'px-3 py-1.5 text-sm font-medium rounded-md transition-colors focus-ring',
+              stateFilter === tab.value
+                ? 'bg-surface-3 text-ink'
+                : 'text-ink-muted hover:text-ink',
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      <DataTable
-        columns={columns}
-        data={(filtered as unknown as Record<string, unknown>[]) ?? []}
-        loading={isLoading}
-        keyField="id"
-      />
+      {!isLoading && leases.length === 0 ? (
+        <EmptyState
+          icon={Key}
+          title="No leases yet"
+          description="Secret leases will appear here once clients start reading time-bound credentials."
+        />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={(filtered as unknown as Record<string, unknown>[]) ?? []}
+          loading={isLoading}
+          keyField="id"
+          emptyMessage="No leases match the selected filter."
+        />
+      )}
 
       <ConfirmModal
         open={!!revokeTarget}
         onClose={() => setRevokeTarget(null)}
         onConfirm={onRevoke}
-        title="Revoke Lease"
+        title="Revoke lease"
         description={`Revoke lease for "${revokeTarget?.secret_path}"? The associated credentials will be immediately invalidated.`}
         confirmLabel="Revoke"
         loading={revoking}

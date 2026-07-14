@@ -3,11 +3,11 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTheme } from '@/contexts/ThemeContext'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { mutate } from '@/lib/fetcher'
-import { Settings, Sun, Moon, Monitor, Save, CheckCircle } from 'lucide-react'
+import { Sun, Moon, Monitor, Save, CheckCircle, Check, Copy } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
@@ -47,6 +47,47 @@ interface BootstrapFormValues {
   tenant_name: string
   key_name: string
   key_policies: string
+}
+
+// ---------------------------------------------------------------------------
+// One-time key reveal with copy affordance
+// ---------------------------------------------------------------------------
+
+function OneTimeKeyReveal({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(value)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="rounded-lg border border-line bg-surface-2 p-4 space-y-2">
+      <p className="text-xs font-semibold text-warn-600 uppercase tracking-wide">
+        Shown once — store it now
+      </p>
+      <div className="flex items-start gap-2">
+        <pre
+          className="flex-1 font-mono text-[13px] text-ink break-all whitespace-pre-wrap select-all leading-relaxed"
+          aria-label="One-time API key"
+        >
+          {value}
+        </pre>
+        <button
+          onClick={copy}
+          className="flex-shrink-0 p-1.5 rounded-md text-ink-faint hover:text-ink hover:bg-surface-3 transition-colors focus-ring"
+          aria-label={copied ? 'Copied' : 'Copy API key'}
+        >
+          {copied ? (
+            <Check className="w-4 h-4 text-success-600" />
+          ) : (
+            <Copy className="w-4 h-4" />
+          )}
+        </button>
+      </div>
+    </div>
+  )
 }
 
 export default function SettingsPage() {
@@ -104,15 +145,15 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6 max-w-2xl">
-      <PageHeader title="Settings" description="Configure WSLVault admin UI" icon={Settings} />
+      <PageHeader title="Settings" description="Configure WSLVault admin UI" />
 
-      {/* Theme */}
+      {/* Appearance */}
       <Card>
         <CardHeader>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Appearance</h2>
+          <CardTitle>Appearance</CardTitle>
         </CardHeader>
         <CardBody>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {([
               ['light', 'Light', Sun],
               ['system', 'System', Monitor],
@@ -122,13 +163,14 @@ export default function SettingsPage() {
                 key={value}
                 onClick={() => setTheme(value)}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border transition-colors',
+                  'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border transition-colors focus-ring',
                   theme === value
-                    ? 'border-primary-500 bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                    : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800',
+                    ? 'border-primary-500 ring-1 ring-primary-500/40 bg-surface text-ink'
+                    : 'border-line text-ink-muted hover:bg-surface-2 hover:text-ink',
                 )}
+                aria-pressed={theme === value}
               >
-                <Icon className="w-4 h-4" />
+                <Icon className="w-4 h-4" aria-hidden="true" />
                 {label}
               </button>
             ))}
@@ -139,23 +181,24 @@ export default function SettingsPage() {
       {/* Service URLs */}
       <Card>
         <CardHeader>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Service URLs</h2>
+          <CardTitle>Service URLs</CardTitle>
         </CardHeader>
         <CardBody>
           <form className="space-y-3" onSubmit={urlForm.handleSubmit(onSaveUrls)}>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              These override the default localhost URLs for backend services. Stored in localStorage.
+            <p className="text-xs text-ink-muted">
+              Override the default localhost endpoints for each backend service. Values are stored in localStorage and take effect immediately.
             </p>
             {(Object.keys(DEFAULT_URLS) as (keyof ServiceUrls)[]).map(key => (
               <Input
                 key={key}
                 label={key.replace('_URL', '')}
+                mono
                 {...urlForm.register(key)}
               />
             ))}
-            <Button type="submit" size="sm">
+            <Button type="submit" size="sm" variant={savedUrls ? 'secondary' : 'primary'}>
               {savedUrls ? <CheckCircle className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-              {savedUrls ? 'Saved!' : 'Save URLs'}
+              {savedUrls ? 'Saved' : 'Save URLs'}
             </Button>
           </form>
         </CardBody>
@@ -164,51 +207,57 @@ export default function SettingsPage() {
       {/* Session info */}
       <Card>
         <CardHeader>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Session</h2>
+          <CardTitle>Session</CardTitle>
         </CardHeader>
-        <CardBody className="space-y-2 text-sm">
-          <div className="flex justify-between">
-            <span className="text-slate-500">Tenant ID</span>
-            <span className="font-mono text-xs">{tenantId ?? '—'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Policies</span>
-            <span className="text-xs">{policies.join(', ') || '—'}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-500">Expires</span>
-            <span className="text-xs">{expiresAt ? formatDateTime(new Date(expiresAt)) : '—'}</span>
-          </div>
+        <CardBody>
+          <dl className="space-y-3">
+            <div className="flex items-center justify-between gap-4">
+              <dt className="text-sm text-ink-muted">Tenant ID</dt>
+              <dd className="font-mono text-[13px] text-ink">{tenantId ?? '—'}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <dt className="text-sm text-ink-muted">Policies</dt>
+              <dd className="font-mono text-[13px] text-ink">{policies.join(', ') || '—'}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <dt className="text-sm text-ink-muted">Expires</dt>
+              <dd className="font-mono text-[13px] text-ink tabular">
+                {expiresAt ? formatDateTime(new Date(expiresAt)) : '—'}
+              </dd>
+            </div>
+          </dl>
         </CardBody>
       </Card>
 
       {/* Bootstrap */}
       <Card>
         <CardHeader>
-          <h2 className="text-sm font-semibold text-slate-900 dark:text-white">Bootstrap</h2>
+          <CardTitle>Bootstrap</CardTitle>
         </CardHeader>
         <CardBody>
-          <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
-            Quickly create a new tenant and API key in one step.
+          <p className="text-xs text-ink-muted mb-4">
+            Create a new tenant and issue its first API key in one step. The key is shown once — copy it before navigating away.
           </p>
           <form className="space-y-3" onSubmit={bootstrapForm.handleSubmit(onBootstrap)}>
             {bootstrapError && (
-              <p className="text-sm text-danger-600 dark:text-danger-400">{bootstrapError}</p>
+              <p className="text-sm text-danger-600">{bootstrapError}</p>
             )}
             {bootstrapResult && (
-              <div className="p-3 rounded-lg bg-accent-50 dark:bg-accent-900/20 space-y-1">
-                <p className="text-xs font-medium text-accent-700 dark:text-accent-400">Bootstrap complete!</p>
-                <p className="text-xs text-slate-600 dark:text-slate-400">
-                  Tenant: <span className="font-mono">{bootstrapResult.tenant_id}</span>
-                </p>
-                <p className="text-xs text-slate-600 dark:text-slate-400">
-                  API Key: <span className="font-mono break-all">{bootstrapResult.api_key}</span>
-                </p>
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-ink-muted uppercase tracking-wide">Tenant ID</p>
+                  <p className="font-mono text-[13px] text-ink">{bootstrapResult.tenant_id}</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-ink-muted uppercase tracking-wide">API Key</p>
+                  <OneTimeKeyReveal value={bootstrapResult.api_key} />
+                </div>
               </div>
             )}
             <Input
               label="Tenant Slug"
               placeholder="my-tenant"
+              mono
               error={bootstrapForm.formState.errors.tenant_slug?.message}
               {...bootstrapForm.register('tenant_slug', { required: 'Required' })}
             />
@@ -221,12 +270,14 @@ export default function SettingsPage() {
             <Input
               label="API Key Name"
               placeholder="admin-key"
+              mono
               error={bootstrapForm.formState.errors.key_name?.message}
               {...bootstrapForm.register('key_name', { required: 'Required' })}
             />
             <Input
-              label="API Key Policies (comma-separated)"
+              label="API Key Policies"
               placeholder="admin, read-all"
+              hint="Comma-separated policy names to assign to the new key."
               {...bootstrapForm.register('key_policies')}
             />
             <Button type="submit" size="sm" loading={bootstrapping}>

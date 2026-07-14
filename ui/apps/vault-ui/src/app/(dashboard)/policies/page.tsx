@@ -3,8 +3,10 @@ import { useState } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
+import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Button } from '@/components/ui/Button'
@@ -119,7 +121,9 @@ export default function PoliciesPage() {
     setRules(r => r.map((rule, i) => i === ruleIdx ? { ...rule, paths: [...rule.paths, ''] } : rule))
 
   const removePath = (ruleIdx: number, pathIdx: number) =>
-    setRules(r => r.map((rule, i) => i === ruleIdx ? { ...rule, paths: rule.paths.filter((_, j) => j !== pathIdx) } : rule))
+    setRules(r => r.map((rule, i) =>
+      i === ruleIdx ? { ...rule, paths: rule.paths.filter((_, j) => j !== pathIdx) } : rule,
+    ))
 
   const toggleCap = (ruleIdx: number, cap: string) =>
     setRules(r => r.map((rule, i) => {
@@ -131,12 +135,14 @@ export default function PoliciesPage() {
     }))
 
   const columns: Column<Policy>[] = [
-    { field: 'name', label: 'Name', sortable: true },
+    { field: 'name', label: 'Name', sortable: true, mono: true },
     {
       field: 'rules',
       label: 'Rules',
       render: row => (
-        <Badge variant="info">{Array.isArray(row.rules) ? row.rules.length : 0} rule{row.rules?.length === 1 ? '' : 's'}</Badge>
+        <Badge variant="default">
+          {Array.isArray(row.rules) ? row.rules.length : 0} rule{row.rules?.length === 1 ? '' : 's'}
+        </Badge>
       ),
     },
     {
@@ -144,11 +150,19 @@ export default function PoliciesPage() {
       label: 'Capabilities',
       render: row => {
         const caps = new Set<string>()
-        row.rules?.forEach(r => r.capabilities?.forEach(c => caps.add(c)))
+        row.rules?.forEach((r: PolicyRule) => r.capabilities?.forEach((c: string) => caps.add(c)))
         return (
           <div className="flex flex-wrap gap-1">
             {[...caps].map(c => (
-              <span key={c} className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${c === 'deny' ? 'bg-danger-50 dark:bg-danger-900/20 text-danger-700 dark:text-danger-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}>
+              <span
+                key={c}
+                className={cn(
+                  'inline-flex px-1.5 py-0.5 rounded text-[11px] font-mono font-medium border',
+                  c === 'deny'
+                    ? 'bg-danger-50 text-danger-700 border-danger-100 dark:bg-danger-600/15 dark:text-danger-400 dark:border-danger-600/30'
+                    : 'bg-surface-2 text-ink-muted border-line',
+                )}
+              >
                 {c}
               </span>
             ))}
@@ -161,14 +175,20 @@ export default function PoliciesPage() {
       label: '',
       render: row => (
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" onClick={e => { e.stopPropagation(); openEdit(row) }}>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label={`Edit policy ${row.name}`}
+            onClick={e => { e.stopPropagation(); openEdit(row) }}
+          >
             <Edit2 className="w-4 h-4" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Delete policy ${row.name}`}
             onClick={e => { e.stopPropagation(); setDeleteTarget(row) }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
+            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-600/10"
           >
             <Trash2 className="w-4 h-4" />
           </Button>
@@ -182,68 +202,85 @@ export default function PoliciesPage() {
       <PageHeader
         title="Policies"
         description="Manage access control policies"
-        icon={Shield}
         actions={
           <Button onClick={openCreate}>
             <Plus className="w-4 h-4" />
-            New Policy
+            Create Policy
           </Button>
         }
       />
 
-      <DataTable
-        columns={columns}
-        data={(policies as unknown as Record<string, unknown>[] | undefined) ?? []}
-        loading={isLoading}
-        keyField="name"
-        onRowClick={row => openEdit(row as unknown as Policy)}
-        emptyMessage="No policies yet — create your first policy to control access"
-      />
+      {!isLoading && (policies ?? []).length === 0 ? (
+        <EmptyState
+          icon={Shield}
+          title="No policies yet"
+          description="Create your first policy to define which capabilities are allowed on secret paths."
+          action={
+            <Button onClick={openCreate}>
+              <Plus className="w-4 h-4" />
+              Create Policy
+            </Button>
+          }
+        />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={(policies as unknown as Record<string, unknown>[] | undefined) ?? []}
+          loading={isLoading}
+          keyField="name"
+          onRowClick={row => openEdit(row as unknown as Policy)}
+          emptyMessage="No policies match your search."
+        />
+      )}
 
       {/* Policy editor modal */}
       <Modal
         open={modalOpen}
         onClose={() => setModalOpen(false)}
-        title={editTarget ? `Edit Policy: ${editTarget.name}` : 'New Policy'}
+        title={editTarget ? `Edit policy: ${editTarget.name}` : 'Create policy'}
         size="lg"
         footer={
           <>
             <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
             <Button size="sm" loading={saving} onClick={onSave}>
-              {editTarget ? 'Save Changes' : 'Create Policy'}
+              {editTarget ? 'Save changes' : 'Create policy'}
             </Button>
           </>
         }
       >
         <div className="space-y-4">
-          {saveError && <p className="text-sm text-danger-600 dark:text-danger-400">{saveError}</p>}
+          {saveError && <p className="text-sm text-danger-600">{saveError}</p>}
 
           <Input
-            label="Policy Name"
+            label="Policy name"
             placeholder="admin-policy"
             value={policyName}
             onChange={e => setPolicyName(e.target.value)}
             disabled={!!editTarget}
+            mono
           />
 
           {/* Rule builder */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className="text-sm font-medium text-slate-700 dark:text-slate-300">Rules</label>
+              <span className="text-sm font-semibold text-ink">Rules</span>
               <Button variant="ghost" size="sm" onClick={addRule} type="button">
-                <Plus className="w-3.5 h-3.5" /> Add Rule
+                <Plus className="w-3.5 h-3.5" /> Add rule
               </Button>
             </div>
             <div className="space-y-3">
               {rules.map((rule, rIdx) => (
-                <div key={rIdx} className="p-3 rounded-lg border border-slate-200 dark:border-slate-700 space-y-2.5">
+                <div key={rIdx} className="p-3 rounded-lg border border-line bg-surface-2 space-y-2.5">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Rule {rIdx + 1}</span>
+                    <span className="text-xs font-medium text-ink-faint uppercase tracking-wide">
+                      Rule {rIdx + 1}
+                    </span>
                     {rules.length > 1 && (
                       <button
                         type="button"
                         onClick={() => removeRule(rIdx)}
-                        className="text-danger-500 hover:text-danger-700 p-0.5"
+                        aria-label={`Remove rule ${rIdx + 1}`}
+                        className="text-ink-faint hover:text-danger-600 p-0.5 rounded transition-colors focus-ring"
                       >
                         <X className="w-3.5 h-3.5" />
                       </button>
@@ -253,25 +290,32 @@ export default function PoliciesPage() {
                   {/* Paths */}
                   <div className="space-y-1.5">
                     <div className="flex items-center justify-between">
-                      <label className="text-xs text-slate-500">Paths (glob)</label>
+                      <span className="text-xs text-ink-muted">Paths (glob)</span>
                       <button
                         type="button"
                         onClick={() => addPath(rIdx)}
-                        className="text-xs text-primary-600 hover:text-primary-700"
+                        className="text-xs text-primary-600 hover:text-primary-700 transition-colors focus-ring rounded"
                       >
                         + add path
                       </button>
                     </div>
                     {rule.paths.map((path, pIdx) => (
                       <div key={pIdx} className="flex items-center gap-1.5">
-                        <input
-                          value={path}
-                          onChange={e => updatePath(rIdx, pIdx, e.target.value)}
-                          placeholder="secret/data/** or **"
-                          className="flex-1 px-2.5 py-1.5 text-sm font-mono rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
-                        />
+                        <div className="flex-1">
+                          <Input
+                            mono
+                            value={path}
+                            onChange={e => updatePath(rIdx, pIdx, e.target.value)}
+                            placeholder="secret/data/** or **"
+                          />
+                        </div>
                         {rule.paths.length > 1 && (
-                          <button type="button" onClick={() => removePath(rIdx, pIdx)} className="text-slate-400 hover:text-danger-500">
+                          <button
+                            type="button"
+                            onClick={() => removePath(rIdx, pIdx)}
+                            aria-label={`Remove path ${pIdx + 1} from rule ${rIdx + 1}`}
+                            className="text-ink-faint hover:text-danger-600 p-0.5 rounded transition-colors focus-ring"
+                          >
                             <X className="w-3.5 h-3.5" />
                           </button>
                         )}
@@ -279,30 +323,31 @@ export default function PoliciesPage() {
                     ))}
                   </div>
 
-                  {/* Capabilities */}
+                  {/* Capabilities — segmented toggle chips */}
                   <div>
-                    <label className="text-xs text-slate-500 mb-1.5 block">Capabilities</label>
-                    <div className="flex flex-wrap gap-1.5">
+                    <span className="text-xs text-ink-muted mb-1.5 block">Capabilities</span>
+                    <div className="flex flex-wrap gap-1">
                       {ALL_CAPS.map(cap => (
                         <button
                           key={cap}
                           type="button"
                           onClick={() => toggleCap(rIdx, cap)}
-                          className={`px-2.5 py-1 text-xs rounded-md font-medium transition-colors ${
+                          className={cn(
+                            'px-2.5 py-1 text-[11px] rounded border font-mono font-medium transition-colors focus-ring',
                             rule.capabilities.includes(cap)
                               ? cap === 'deny'
-                                ? 'bg-danger-100 text-danger-700 dark:bg-danger-900/30 dark:text-danger-400 ring-1 ring-danger-400'
-                                : 'bg-primary-100 text-primary-700 dark:bg-primary-900/30 dark:text-primary-300 ring-1 ring-primary-400'
-                              : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'
-                          }`}
+                                ? 'bg-danger-600 text-white border-danger-600'
+                                : 'bg-primary-600 text-white border-primary-600'
+                              : 'bg-surface border-line text-ink-muted hover:bg-surface-3',
+                          )}
                         >
                           {cap}
                         </button>
                       ))}
                     </div>
                     {rule.capabilities.includes('deny') && (
-                      <p className="mt-1.5 text-xs text-danger-600 dark:text-danger-400">
-                        ⚠ deny overrides all other capabilities for matching paths
+                      <p className="mt-1.5 text-xs text-danger-600">
+                        deny overrides all other capabilities for matching paths
                       </p>
                     )}
                   </div>
@@ -317,7 +362,7 @@ export default function PoliciesPage() {
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={onDelete}
-        title="Delete Policy"
+        title="Delete policy"
         description={`Delete policy "${deleteTarget?.name}"? This may revoke access for API keys using this policy.`}
         confirmLabel="Delete"
         loading={deleting}

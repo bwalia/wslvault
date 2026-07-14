@@ -5,12 +5,14 @@ import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
-import { Cpu, Plus, Lock, Unlock, FileSignature, CheckCircle } from 'lucide-react'
+import { EmptyState } from '@/components/ui/EmptyState'
+import { StatusBadge } from '@/components/ui/StatusBadge'
+import { Plus, Lock, Unlock, FileSignature, CheckCircle, Cpu } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
@@ -135,27 +137,40 @@ export default function TransitPage() {
   }
 
   const columns: Column<TransitKey>[] = [
-    { field: 'name', label: 'Name', sortable: true, render: row => <span className="font-mono text-xs">{row.name}</span> },
-    { field: 'type', label: 'Type', render: row => <Badge variant="info">{row.type}</Badge> },
-    { field: 'version', label: 'Version', render: row => <span className="text-sm">{row.version}</span> },
+    {
+      field: 'name',
+      label: 'Name',
+      sortable: true,
+      render: row => <span className="font-mono text-[13px] text-ink">{row.name}</span>,
+    },
+    {
+      field: 'type',
+      label: 'Type',
+      render: row => <Badge variant="info">{row.type}</Badge>,
+    },
+    {
+      field: 'version',
+      label: 'Version',
+      align: 'right',
+      render: row => <span className="tabular text-sm text-ink">{row.version}</span>,
+    },
     {
       field: 'created_at',
       label: 'Created',
       sortable: true,
-      render: row => <span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span>,
+      render: row => <span className="text-xs text-ink-faint tabular">{formatDateTime(row.created_at)}</span>,
     },
   ]
 
   return (
-    <div>
+    <div className="max-w-7xl space-y-6">
       <PageHeader
         title="Transit Engine"
         description="Encryption as a service"
-        icon={Cpu}
         actions={
           <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="w-4 h-4" />
-            New Key
+            <Plus className="w-4 h-4" aria-hidden="true" />
+            Create key
           </Button>
         }
       />
@@ -168,6 +183,7 @@ export default function TransitPage() {
             data={(keys as unknown as Record<string, unknown>[]) ?? []}
             loading={isLoading}
             keyField="id"
+            emptyMessage="No transit keys yet. Create a key to get started."
             onRowClick={row => { setSelectedKey(row as unknown as TransitKey); setOpResult(null); setOpInput('') }}
           />
         </div>
@@ -176,63 +192,83 @@ export default function TransitPage() {
         <div>
           <Card>
             <CardHeader>
-              <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                {selectedKey ? `Playground — ${selectedKey.name}` : 'Select a key to continue'}
-              </h3>
+              <CardTitle>
+                {selectedKey
+                  ? <>Playground — <span className="font-mono text-[13px] font-normal">{selectedKey.name}</span></>
+                  : 'Playground'}
+              </CardTitle>
             </CardHeader>
             <CardBody className="space-y-4">
               {!selectedKey ? (
-                <p className="text-sm text-slate-400 text-center py-8">
-                  Click a key from the list to use the playground.
-                </p>
+                <EmptyState
+                  icon={Cpu}
+                  title="No key selected"
+                  description="Select a key from the table to use the encrypt / decrypt / sign / verify playground."
+                />
               ) : (
                 <>
                   {/* Operation tabs */}
-                  <div className="flex rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700">
+                  <div
+                    role="tablist"
+                    aria-label="Transit operations"
+                    className="flex rounded-lg overflow-hidden border border-line"
+                  >
                     {(Object.keys(opConfig) as Operation[]).map(op => {
                       const Icon = opConfig[op].icon
+                      const isActive = activeOp === op
                       return (
                         <button
                           key={op}
+                          role="tab"
+                          aria-selected={isActive}
                           onClick={() => { setActiveOp(op); setOpResult(null); setOpInput(''); setSigInput('') }}
                           className={cn(
-                            'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors',
-                            activeOp === op
+                            'flex-1 flex items-center justify-center gap-1.5 py-2 text-xs font-medium transition-colors focus-ring',
+                            isActive
                               ? 'bg-primary-600 text-white'
-                              : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800',
+                              : 'text-ink-muted hover:bg-surface-2',
                           )}
                         >
-                          <Icon className="w-3.5 h-3.5" />
+                          <Icon className="w-3.5 h-3.5" aria-hidden="true" />
                           {opConfig[op].label}
                         </button>
                       )
                     })}
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  {/* Input */}
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="op-input"
+                      className="block text-xs font-medium text-ink-muted"
+                    >
                       {opConfig[activeOp].inputLabel}
                     </label>
                     <textarea
+                      id="op-input"
                       value={opInput}
                       onChange={e => setOpInput(e.target.value)}
                       rows={4}
-                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/50 resize-none"
                       placeholder="Enter input…"
+                      className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                     />
                   </div>
 
                   {activeOp === 'verify' && (
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                    <div className="space-y-1.5">
+                      <label
+                        htmlFor="sig-input"
+                        className="block text-xs font-medium text-ink-muted"
+                      >
                         Signature
                       </label>
                       <textarea
+                        id="sig-input"
                         value={sigInput}
                         onChange={e => setSigInput(e.target.value)}
                         rows={3}
-                        className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50 resize-none"
                         placeholder="vault:v1:…"
+                        className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                       />
                     </div>
                   )}
@@ -247,24 +283,21 @@ export default function TransitPage() {
                   </Button>
 
                   {opError && (
-                    <p className="text-sm text-danger-600 dark:text-danger-400">{opError}</p>
+                    <p className="text-sm text-danger-600">{opError}</p>
                   )}
 
                   {opResult && (
                     <div className="space-y-2">
-                      <p className="text-xs font-medium text-slate-600 dark:text-slate-400">Result</p>
+                      <p className="text-xs font-medium text-ink-muted uppercase tracking-wide">Result</p>
                       {opResult.valid !== undefined ? (
-                        <div className={cn(
-                          'flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium',
-                          opResult.valid
-                            ? 'bg-accent-50 text-accent-700 dark:bg-accent-900/20 dark:text-accent-400'
-                            : 'bg-danger-50 text-danger-700 dark:bg-danger-900/20 dark:text-danger-400',
-                        )}>
-                          <CheckCircle className="w-4 h-4" />
-                          {opResult.valid ? 'Signature valid' : 'Signature invalid'}
+                        <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-line bg-surface-2">
+                          <StatusBadge status={opResult.valid ? 'success' : 'failure'} />
+                          <span className="text-sm text-ink">
+                            {opResult.valid ? 'Signature valid' : 'Signature invalid'}
+                          </span>
                         </div>
                       ) : (
-                        <pre className="text-xs font-mono bg-slate-50 dark:bg-slate-800 rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all">
+                        <pre className="text-[13px] font-mono bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all text-ink">
                           {opResult.ciphertext ?? opResult.plaintext ?? opResult.signature}
                         </pre>
                       )}
@@ -277,31 +310,44 @@ export default function TransitPage() {
         </div>
       </div>
 
-      {/* Create Key modal */}
+      {/* Create key modal */}
       <Modal
         open={createOpen}
         onClose={() => { setCreateOpen(false); reset(); setCreateError('') }}
-        title="Create Transit Key"
+        title="Create transit key"
         size="sm"
         footer={
           <>
-            <Button variant="secondary" size="sm" onClick={() => setCreateOpen(false)}>Cancel</Button>
-            <Button size="sm" loading={creating} onClick={handleSubmit(onCreate)}>Create</Button>
+            <Button variant="secondary" size="sm" onClick={() => setCreateOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" loading={creating} onClick={handleSubmit(onCreate)}>
+              Create key
+            </Button>
           </>
         }
       >
         <form className="space-y-4" onSubmit={handleSubmit(onCreate)}>
-          {createError && <p className="text-sm text-danger-600 dark:text-danger-400">{createError}</p>}
+          {createError && (
+            <p className="text-sm text-danger-600">{createError}</p>
+          )}
           <Input
-            label="Key Name"
+            label="Key name"
             placeholder="my-key"
+            mono
             error={errors.name?.message}
             {...register('name', { required: 'Name is required' })}
           />
           <div className="space-y-1.5">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">Key Type</label>
+            <label
+              htmlFor="key-type"
+              className="block text-sm font-medium text-ink"
+            >
+              Key type
+            </label>
             <select
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              id="key-type"
+              className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface text-ink text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
               {...register('type')}
             >
               <option value="aes256-gcm96">AES-256-GCM96 (default)</option>

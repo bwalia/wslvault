@@ -17,15 +17,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   if (!isAuthenticated) return null
 
   return (
-    <div className="flex h-screen bg-slate-50 dark:bg-slate-950">
+    <div className="flex h-screen bg-canvas">
       <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
       <div
-        className={`flex flex-col flex-1 min-w-0 transition-all duration-300 ${sidebarOpen ? 'ml-64' : 'ml-18'}`}
+        className={`flex flex-col flex-1 min-w-0 transition-all duration-200 ${sidebarOpen ? 'ml-60' : 'ml-16'}`}
       >
         <AppBar onMenuClick={() => setSidebarOpen(o => !o)} />
-        <main className="flex-1 overflow-auto p-6">{children}</main>
-        <footer className="border-t border-slate-200 dark:border-slate-800 px-6 py-3">
-          <p className="text-xs text-slate-400 dark:text-slate-500">WSLVault v0.1.0 | Build local</p>
+        <main className="flex-1 overflow-auto">
+          <div className="max-w-7xl mx-auto px-6 py-6 w-full">{children}</div>
+        </main>
+        <footer className="border-t border-line px-6 py-2.5">
+          <p className="text-xs text-ink-faint font-mono">wslvault v0.1.0 · local build</p>
         </footer>
       </div>
     </div>

@@ -6,7 +6,8 @@ import { createFetcher } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { StatusBadge } from '@/components/ui/StatusBadge'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { Button } from '@/components/ui/Button'
 import { Activity, X } from 'lucide-react'
 import { formatDateTime, formatRelativeTime } from '@/lib/utils'
@@ -38,6 +39,9 @@ function buildUrl(params: { action: string; principal: string; from: string; to:
   return `/api/audit/v1/audit/events?${q.toString()}`
 }
 
+const filterInputClass =
+  'w-full px-3 py-1.5 text-sm rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 transition-colors'
+
 export default function AuditPage() {
   const { token, tenantId } = useAuth()
   const fetcher = createFetcher(token, tenantId)
@@ -62,30 +66,41 @@ export default function AuditPage() {
       field: 'action',
       label: 'Action',
       sortable: true,
-      render: row => <span className="font-mono text-xs">{row.action}</span>,
+      render: row => (
+        <span className="font-mono text-[13px] text-ink">{row.action}</span>
+      ),
     },
     {
       field: 'principal',
       label: 'Principal',
       sortable: true,
-      render: row => <span className="text-xs text-slate-500">{row.principal ?? '—'}</span>,
+      render: row => (
+        <span className="font-mono text-[13px] text-ink-muted">{row.principal ?? '—'}</span>
+      ),
     },
     {
       field: 'resource',
       label: 'Resource',
       render: row => (
-        <span className="text-xs text-slate-600 dark:text-slate-400 truncate max-w-xs block">
+        <span className="font-mono text-[13px] text-ink-muted truncate max-w-xs block">
           {row.resource}
         </span>
       ),
     },
-    { field: 'outcome', label: 'Outcome', render: row => <StatusBadge status={row.outcome} /> },
+    {
+      field: 'outcome',
+      label: 'Outcome',
+      render: row => <StatusBadge status={row.outcome} />,
+    },
     {
       field: 'timestamp',
       label: 'Time',
       sortable: true,
       render: row => (
-        <span className="text-xs text-slate-500" title={formatDateTime(row.timestamp)}>
+        <span
+          className="font-mono text-[13px] tabular text-ink-faint"
+          title={formatDateTime(row.timestamp)}
+        >
           {formatRelativeTime(row.timestamp)}
         </span>
       ),
@@ -93,112 +108,163 @@ export default function AuditPage() {
   ]
 
   return (
-    <div className="flex gap-6">
-      <div className="flex-1 min-w-0">
-        <PageHeader title="Audit Log" description="Event history across all services" icon={Activity} />
+    <div className="flex gap-6 max-w-7xl">
+      <div className="flex-1 min-w-0 space-y-4">
+        <PageHeader
+          title="Audit Log"
+          description="Forensic event history across all services and principals"
+        />
 
-        {/* Filter bar */}
-        <div className="flex flex-wrap items-end gap-3 mb-4 p-4 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800">
-          <div className="flex-1 min-w-36">
-            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+        {/* Filter bar — single row above the table */}
+        <div className="flex flex-wrap items-end gap-3 px-4 py-3 bg-surface rounded-xl border border-line">
+          <div className="flex-1 min-w-32">
+            <label
+              htmlFor="filter-action"
+              className="block text-xs font-medium text-ink-muted mb-1"
+            >
               Action
             </label>
             <input
+              id="filter-action"
               value={filters.action}
               onChange={e => setFilters(f => ({ ...f, action: e.target.value }))}
+              onKeyDown={e => e.key === 'Enter' && applyFilters()}
               placeholder="e.g. secret.read"
-              className="w-full px-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              className={filterInputClass}
             />
           </div>
-          <div className="flex-1 min-w-36">
-            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+          <div className="flex-1 min-w-32">
+            <label
+              htmlFor="filter-principal"
+              className="block text-xs font-medium text-ink-muted mb-1"
+            >
               Principal
             </label>
             <input
+              id="filter-principal"
               value={filters.principal}
               onChange={e => setFilters(f => ({ ...f, principal: e.target.value }))}
+              onKeyDown={e => e.key === 'Enter' && applyFilters()}
               placeholder="user or key ID"
-              className="w-full px-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              className={filterInputClass}
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+            <label
+              htmlFor="filter-from"
+              className="block text-xs font-medium text-ink-muted mb-1"
+            >
               From
             </label>
             <input
+              id="filter-from"
               type="datetime-local"
               value={filters.from}
               onChange={e => setFilters(f => ({ ...f, from: e.target.value }))}
-              className="px-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              className={cn(filterInputClass, 'w-auto')}
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">
+            <label
+              htmlFor="filter-to"
+              className="block text-xs font-medium text-ink-muted mb-1"
+            >
               To
             </label>
             <input
+              id="filter-to"
               type="datetime-local"
               value={filters.to}
               onChange={e => setFilters(f => ({ ...f, to: e.target.value }))}
-              className="px-3 py-1.5 text-sm rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              className={cn(filterInputClass, 'w-auto')}
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 pb-px">
             <Button size="sm" onClick={applyFilters}>Apply</Button>
             {hasFilters && (
-              <Button variant="ghost" size="sm" onClick={clearFilters}>
-                <X className="w-4 h-4" /> Clear
+              <Button variant="ghost" size="sm" onClick={clearFilters} aria-label="Clear filters">
+                <X className="w-4 h-4" aria-hidden="true" /> Clear
               </Button>
             )}
           </div>
         </div>
 
-        <DataTable
-          columns={columns}
-          data={(events as unknown as Record<string, unknown>[]) ?? []}
-          loading={isLoading}
-          keyField="event_id"
-          onRowClick={row => setSelectedEvent(row as unknown as AuditEvent)}
-        />
+        {events.length === 0 && !isLoading ? (
+          <EmptyState
+            icon={Activity}
+            title="No audit events found"
+            description={
+              hasFilters
+                ? 'No events match the current filters. Try broadening the time range or clearing a filter.'
+                : 'Audit events will appear here as actions are performed across services.'
+            }
+            action={
+              hasFilters ? (
+                <Button variant="secondary" size="sm" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={(events as unknown as Record<string, unknown>[]) ?? []}
+            loading={isLoading}
+            keyField="event_id"
+            onRowClick={row => setSelectedEvent(row as unknown as AuditEvent)}
+          />
+        )}
       </div>
 
-      {/* Detail drawer */}
+      {/* Event detail drawer */}
       {selectedEvent && (
         <div className="w-80 flex-shrink-0">
           <Card className="sticky top-6">
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                  Event Detail
-                </h3>
-                <button
-                  onClick={() => setSelectedEvent(null)}
-                  className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+              <CardTitle>Event Detail</CardTitle>
+              <button
+                onClick={() => setSelectedEvent(null)}
+                className="p-1.5 rounded-md text-ink-faint hover:text-ink hover:bg-surface-2 transition-colors focus-ring"
+                aria-label="Close event detail"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+              </button>
             </CardHeader>
-            <CardBody className="space-y-3 text-sm">
-              <DetailRow label="Event ID" value={selectedEvent.event_id} mono />
-              <DetailRow label="Action" value={selectedEvent.action} mono />
-              <DetailRow label="Resource" value={selectedEvent.resource} mono />
-              <DetailRow label="Principal" value={selectedEvent.principal ?? '—'} />
-              <DetailRow label="Outcome">
-                <StatusBadge status={selectedEvent.outcome} />
-              </DetailRow>
-              <DetailRow label="Time" value={formatDateTime(selectedEvent.timestamp)} />
-              {selectedEvent.ip_address && (
-                <DetailRow label="IP" value={selectedEvent.ip_address} mono />
-              )}
-              {selectedEvent.metadata && Object.keys(selectedEvent.metadata).length > 0 && (
-                <div>
-                  <p className="text-xs font-medium text-slate-500 mb-1">Metadata</p>
-                  <pre className="text-xs font-mono bg-slate-50 dark:bg-slate-800 rounded-lg p-2 overflow-auto max-h-40">
-                    {JSON.stringify(selectedEvent.metadata, null, 2)}
-                  </pre>
-                </div>
-              )}
+            <CardBody>
+              <dl className="space-y-3">
+                <DetailRow label="Event ID" value={selectedEvent.event_id} mono />
+                <DetailRow label="Action" value={selectedEvent.action} mono />
+                <DetailRow label="Resource" value={selectedEvent.resource} mono />
+                <DetailRow label="Principal" value={selectedEvent.principal ?? '—'} mono />
+                <DetailRow label="Outcome">
+                  <StatusBadge status={selectedEvent.outcome} />
+                </DetailRow>
+                <DetailRow
+                  label="Time"
+                  value={formatDateTime(selectedEvent.timestamp)}
+                  mono
+                />
+                {selectedEvent.ip_address && (
+                  <DetailRow label="IP Address" value={selectedEvent.ip_address} mono />
+                )}
+                {selectedEvent.user_agent && (
+                  <DetailRow label="User Agent" value={selectedEvent.user_agent} mono />
+                )}
+                {selectedEvent.metadata &&
+                  Object.keys(selectedEvent.metadata).length > 0 && (
+                    <div>
+                      <dt className="text-xs uppercase tracking-wide text-ink-faint mb-1.5">
+                        Metadata
+                      </dt>
+                      <dd>
+                        <pre className="font-mono text-[12px] text-ink bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap break-all">
+                          {JSON.stringify(selectedEvent.metadata, null, 2)}
+                        </pre>
+                      </dd>
+                    </div>
+                  )}
+              </dl>
             </CardBody>
           </Card>
         </div>
@@ -220,12 +286,19 @@ function DetailRow({
 }) {
   return (
     <div>
-      <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-0.5">{label}</p>
-      {children ?? (
-        <p className={cn('text-xs text-slate-800 dark:text-slate-200 break-all', mono && 'font-mono')}>
-          {value}
-        </p>
-      )}
+      <dt className="text-xs uppercase tracking-wide text-ink-faint mb-0.5">{label}</dt>
+      <dd>
+        {children ?? (
+          <span
+            className={cn(
+              'text-[13px] text-ink break-all',
+              mono && 'font-mono',
+            )}
+          >
+            {value}
+          </span>
+        )}
+      </dd>
     </div>
   )
 }

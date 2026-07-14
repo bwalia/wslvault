@@ -4,10 +4,7 @@ import { HTMLAttributes } from 'react'
 function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn(
-        'bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm',
-        className,
-      )}
+      className={cn('bg-surface rounded-xl border border-line', className)}
       {...props}
     />
   )
@@ -16,26 +13,28 @@ function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
 function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('px-6 py-4 border-b border-slate-200 dark:border-slate-800', className)}
+      className={cn('px-5 py-3.5 border-b border-line flex items-center justify-between gap-3', className)}
       {...props}
     />
   )
 }
 
+/** Standard heading inside CardHeader. */
+function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+  return <h2 className={cn('text-sm font-semibold text-ink', className)} {...props} />
+}
+
 function CardBody({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('px-6 py-4', className)} {...props} />
+  return <div className={cn('px-5 py-4', className)} {...props} />
 }
 
 function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn(
-        'px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 rounded-b-xl',
-        className,
-      )}
+      className={cn('px-5 py-3.5 border-t border-line bg-surface-2 rounded-b-xl', className)}
       {...props}
     />
   )
 }
 
-export { Card, CardHeader, CardBody, CardFooter }
+export { Card, CardHeader, CardTitle, CardBody, CardFooter }
