@@ -4,8 +4,9 @@ import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Lock, ChevronRight, ChevronDown, Eye, EyeOff, Plus, Trash2, Save, Code2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -61,23 +62,24 @@ function SecretTree({
                   onSelect(item.full)
                 }
               }}
+              aria-label={item.isDir ? `Toggle folder ${item.name}` : `Open secret ${item.name}`}
               className={cn(
-                'w-full flex items-center gap-1.5 px-2 py-1.5 text-sm rounded-lg text-left transition-colors',
+                'w-full flex items-center gap-1.5 px-2 py-1.5 text-sm rounded-lg text-left transition-colors focus-ring',
                 selected === item.full
-                  ? 'bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300'
-                  : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800',
+                  ? 'bg-primary-600/10 text-primary-700'
+                  : 'text-ink hover:bg-surface-2',
               )}
             >
               {item.isDir ? (
                 isExpanded ? (
-                  <ChevronDown className="w-4 h-4 flex-shrink-0" />
+                  <ChevronDown className="w-4 h-4 flex-shrink-0 text-ink-faint" aria-hidden="true" />
                 ) : (
-                  <ChevronRight className="w-4 h-4 flex-shrink-0" />
+                  <ChevronRight className="w-4 h-4 flex-shrink-0 text-ink-faint" aria-hidden="true" />
                 )
               ) : (
-                <Lock className="w-4 h-4 flex-shrink-0 text-slate-400" />
+                <Lock className="w-4 h-4 flex-shrink-0 text-ink-faint" aria-hidden="true" />
               )}
-              <span className="truncate text-xs font-mono">{item.name}</span>
+              <span className="truncate font-mono text-[13px]">{item.name}</span>
             </button>
           </li>
         )
@@ -156,7 +158,7 @@ function SecretEditor({
   }
 
   if (isLoading) {
-    return <div className="py-12 text-center text-slate-400 text-sm">Loading…</div>
+    return <div className="py-12 text-center text-sm text-ink-faint">Loading…</div>
   }
 
   const pairs = data?.data
@@ -165,29 +167,48 @@ function SecretEditor({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h3 className="text-sm font-mono font-semibold text-slate-800 dark:text-slate-200 truncate">
-          {path}
-        </h3>
+      {/* Path + version metadata */}
+      <div className="flex items-start justify-between gap-3">
+        <p className="font-mono text-[13px] text-ink break-all">{path}</p>
         <button
           onClick={() => setJsonMode(m => !m)}
+          aria-label={jsonMode ? 'Switch to field editor' : 'Switch to JSON editor'}
           className={cn(
-            'flex items-center gap-1 px-2 py-1 text-xs rounded font-medium transition-colors',
+            'flex items-center gap-1 px-2 py-1 text-xs rounded-lg font-medium transition-colors focus-ring flex-shrink-0',
             jsonMode
-              ? 'bg-primary-100 text-primary-700 dark:bg-primary-900/20 dark:text-primary-300'
-              : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800',
+              ? 'bg-primary-600/10 text-primary-700'
+              : 'text-ink-muted hover:bg-surface-2',
           )}
         >
-          <Code2 className="w-3.5 h-3.5" /> JSON
+          <Code2 className="w-3.5 h-3.5" aria-hidden="true" /> JSON
         </button>
       </div>
+
+      {/* Version metadata */}
+      {data?.metadata && (
+        <dl className="flex gap-4">
+          <div>
+            <dt className="text-xs text-ink-faint">Version</dt>
+            <dd className="font-mono text-[13px] text-ink tabular">{data.metadata.version}</dd>
+          </div>
+          {data.metadata.versions && (
+            <div>
+              <dt className="text-xs text-ink-faint">All versions</dt>
+              <dd className="font-mono text-[13px] text-ink tabular">
+                {data.metadata.versions.join(', ')}
+              </dd>
+            </div>
+          )}
+        </dl>
+      )}
 
       {jsonMode ? (
         <textarea
           value={jsonText}
           onChange={e => setJsonText(e.target.value)}
           rows={12}
-          className="w-full px-3 py-2 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50 resize-none"
+          aria-label="JSON editor"
+          className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
         />
       ) : (
         <div className="space-y-2">
@@ -197,7 +218,8 @@ function SecretEditor({
                 value={k}
                 onChange={e => setKvPairs(prev => prev.map((p, i) => i === idx ? { ...p, k: e.target.value } : p))}
                 placeholder="key"
-                className="w-1/3 px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+                aria-label={`Field ${idx + 1} key`}
+                className="w-1/3 px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
               />
               <div className="relative flex-1">
                 <input
@@ -205,21 +227,26 @@ function SecretEditor({
                   value={v}
                   onChange={e => setKvPairs(prev => prev.map((p, i) => i === idx ? { ...p, v: e.target.value } : p))}
                   placeholder="value"
-                  className="w-full px-3 py-1.5 pr-8 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+                  aria-label={`Field ${idx + 1} value`}
+                  className="w-full px-3 py-1.5 pr-8 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
                 />
                 <button
                   type="button"
                   onClick={() => setVisible(prev => ({ ...prev, [idx]: !prev[idx] }))}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                  aria-label={visible[idx] ? 'Hide value' : 'Show value'}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink transition-colors focus-ring rounded"
                 >
-                  {visible[idx] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  {visible[idx]
+                    ? <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />
+                    : <Eye className="w-3.5 h-3.5" aria-hidden="true" />}
                 </button>
               </div>
               <button
                 onClick={() => setKvPairs(prev => prev.filter((_, i) => i !== idx))}
-                className="p-1.5 text-slate-400 hover:text-danger-600 transition-colors"
+                aria-label={`Remove field ${idx + 1}`}
+                className="p-1.5 text-ink-faint hover:text-danger-600 transition-colors focus-ring rounded"
               >
-                <Trash2 className="w-3.5 h-3.5" />
+                <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
               </button>
             </div>
           ))}
@@ -228,23 +255,23 @@ function SecretEditor({
             size="sm"
             onClick={() => setKvPairs(prev => [...prev, { k: '', v: '', show: false }])}
           >
-            <Plus className="w-3.5 h-3.5" /> Add Field
+            <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add field
           </Button>
         </div>
       )}
 
-      {saveError && <p className="text-xs text-danger-600 dark:text-danger-400">{saveError}</p>}
+      {saveError && <p className="text-xs text-danger-600">{saveError}</p>}
 
       <div className="flex items-center gap-2">
         <Button size="sm" loading={saving} onClick={onSave}>
-          <Save className="w-3.5 h-3.5" /> Save
+          <Save className="w-3.5 h-3.5" aria-hidden="true" /> Save secret
         </Button>
         <Button
           variant="danger"
           size="sm"
           onClick={() => setDeleteOpen(true)}
         >
-          <Trash2 className="w-3.5 h-3.5" /> Delete
+          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" /> Delete secret
         </Button>
       </div>
 
@@ -252,7 +279,7 @@ function SecretEditor({
         open={deleteOpen}
         onClose={() => setDeleteOpen(false)}
         onConfirm={onDelete}
-        title="Delete Secret"
+        title="Delete secret"
         description={`Permanently delete "${path}"? All versions will be removed.`}
         confirmText={path.split('/').pop()}
         confirmLabel="Delete"
@@ -294,14 +321,17 @@ function NewSecretPanel({
 
   return (
     <div className="space-y-4">
-      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200">New Secret</h3>
-      <div>
-        <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1">Path</label>
+      <h3 className="text-sm font-semibold text-ink">Create secret</h3>
+      <div className="space-y-1.5">
+        <label htmlFor="new-secret-path" className="block text-xs font-medium text-ink-muted">
+          Path
+        </label>
         <input
+          id="new-secret-path"
           value={secretPath}
           onChange={e => setSecretPath(e.target.value)}
           placeholder="myapp/database"
-          className="w-full px-3 py-1.5 text-sm font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+          className="w-full px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
         />
       </div>
       <div className="space-y-2">
@@ -311,19 +341,22 @@ function NewSecretPanel({
               value={p.k}
               onChange={e => setKvPairs(prev => prev.map((x, i) => i === idx ? { ...x, k: e.target.value } : x))}
               placeholder="key"
-              className="w-1/3 px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              aria-label={`New field ${idx + 1} key`}
+              className="w-1/3 px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
             />
             <input
               value={p.v}
               onChange={e => setKvPairs(prev => prev.map((x, i) => i === idx ? { ...x, v: e.target.value } : x))}
               placeholder="value"
-              className="flex-1 px-3 py-1.5 text-xs font-mono rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              aria-label={`New field ${idx + 1} value`}
+              className="flex-1 px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
             />
             <button
               onClick={() => setKvPairs(prev => prev.filter((_, i) => i !== idx))}
-              className="p-1.5 text-slate-400 hover:text-danger-600"
+              aria-label={`Remove field ${idx + 1}`}
+              className="p-1.5 text-ink-faint hover:text-danger-600 transition-colors focus-ring rounded"
             >
-              <Trash2 className="w-3.5 h-3.5" />
+              <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
             </button>
           </div>
         ))}
@@ -332,12 +365,12 @@ function NewSecretPanel({
           size="sm"
           onClick={() => setKvPairs(prev => [...prev, { k: '', v: '' }])}
         >
-          <Plus className="w-3.5 h-3.5" /> Add Field
+          <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add field
         </Button>
       </div>
-      {error && <p className="text-xs text-danger-600 dark:text-danger-400">{error}</p>}
+      {error && <p className="text-xs text-danger-600">{error}</p>}
       <Button size="sm" loading={saving} onClick={onCreate} disabled={!secretPath.trim()}>
-        Create Secret
+        Create secret
       </Button>
     </div>
   )
@@ -361,15 +394,14 @@ export default function SecretsPage() {
   }, [])
 
   return (
-    <div>
+    <div className="max-w-7xl space-y-6">
       <PageHeader
         title="Secrets"
         description="Browse and manage secret key-value pairs"
-        icon={Lock}
         actions={
           <Button onClick={() => { setCreating(true); setSelectedPath(null) }}>
-            <Plus className="w-4 h-4" />
-            New Secret
+            <Plus className="w-4 h-4" aria-hidden="true" />
+            Create secret
           </Button>
         }
       />
@@ -378,13 +410,25 @@ export default function SecretsPage() {
         {/* Left: Tree browser */}
         <Card className="lg:col-span-1">
           <CardHeader>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Secret Paths</h3>
+            <CardTitle>Secret paths</CardTitle>
           </CardHeader>
           <CardBody>
             {listLoading ? (
-              <div className="text-xs text-slate-400 text-center py-8">Loading…</div>
+              <div className="text-xs text-ink-faint text-center py-8">Loading…</div>
             ) : paths.length === 0 ? (
-              <div className="text-xs text-slate-400 text-center py-8">No secrets found</div>
+              <EmptyState
+                icon={Lock}
+                title="No secrets yet"
+                description="No secrets under this prefix yet. Write your first secret to see it here."
+                action={
+                  <Button
+                    size="sm"
+                    onClick={() => { setCreating(true); setSelectedPath(null) }}
+                  >
+                    <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Create secret
+                  </Button>
+                }
+              />
             ) : (
               <SecretTree
                 prefix=""
@@ -399,9 +443,9 @@ export default function SecretsPage() {
         {/* Right: Editor */}
         <Card className="lg:col-span-2">
           <CardHeader>
-            <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-              {creating ? 'New Secret' : selectedPath ? 'Edit Secret' : 'Select a secret'}
-            </h3>
+            <CardTitle>
+              {creating ? 'Create secret' : selectedPath ? 'Edit secret' : 'Select a secret'}
+            </CardTitle>
           </CardHeader>
           <CardBody>
             {creating ? (
@@ -413,12 +457,11 @@ export default function SecretsPage() {
             ) : selectedPath ? (
               <SecretEditor path={selectedPath} token={token} tenantId={tenantId} />
             ) : (
-              <div className="py-12 text-center">
-                <Lock className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto mb-3" />
-                <p className="text-sm text-slate-400 dark:text-slate-500">
-                  Select a secret from the tree to view or edit it
-                </p>
-              </div>
+              <EmptyState
+                icon={Lock}
+                title="No secret selected"
+                description="Select a secret from the tree to view or edit it."
+              />
             )}
           </CardBody>
         </Card>

@@ -3,17 +3,17 @@ import { cn } from '@/lib/utils'
 import { ButtonHTMLAttributes, forwardRef } from 'react'
 
 const variants = {
-  primary: 'bg-primary-600 hover:bg-primary-700 text-white shadow-sm',
+  primary: 'bg-primary-600 hover:bg-primary-700 active:bg-primary-800 text-white',
   secondary:
-    'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700',
-  danger: 'bg-danger-600 hover:bg-danger-700 text-white shadow-sm',
-  ghost: 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800',
+    'bg-surface border border-line-strong text-ink hover:bg-surface-2 active:bg-surface-3',
+  danger: 'bg-danger-600 hover:bg-danger-700 text-white',
+  ghost: 'text-ink-muted hover:bg-surface-2 hover:text-ink',
 }
 
 const sizes = {
-  sm: 'px-3 py-1.5 text-xs h-7',
-  md: 'px-4 py-2 text-sm h-9',
-  lg: 'px-5 py-2.5 text-sm h-11',
+  sm: 'px-3 text-xs h-8',
+  md: 'px-4 text-sm h-9',
+  lg: 'px-5 text-sm h-10',
 }
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

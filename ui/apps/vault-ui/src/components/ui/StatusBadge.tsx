@@ -1,6 +1,9 @@
+import { cn } from '@/lib/utils'
 import { Badge } from './Badge'
 
-const statusMap: Record<string, { variant: 'success' | 'danger' | 'warning' | 'default' | 'info'; label: string }> = {
+type Variant = 'success' | 'danger' | 'warning' | 'default' | 'info'
+
+const statusMap: Record<string, { variant: Variant; label: string }> = {
   active: { variant: 'success', label: 'Active' },
   enabled: { variant: 'success', label: 'Enabled' },
   expired: { variant: 'danger', label: 'Expired' },
@@ -22,8 +25,22 @@ const statusMap: Record<string, { variant: 'success' | 'danger' | 'warning' | 'd
   candidate: { variant: 'warning', label: 'Candidate' },
 }
 
+/** Dot color per variant — the dot means identity is never color-alone text. */
+const dotColor: Record<Variant, string> = {
+  success: 'bg-success-500',
+  danger: 'bg-danger-500',
+  warning: 'bg-warn-500',
+  info: 'bg-primary-500',
+  default: 'bg-ink-faint',
+}
+
 export function StatusBadge({ status }: { status?: string | null }) {
   if (!status) return <Badge variant="default">—</Badge>
   const cfg = statusMap[status.toLowerCase()] ?? { variant: 'default' as const, label: status }
-  return <Badge variant={cfg.variant}>{cfg.label}</Badge>
+  return (
+    <Badge variant={cfg.variant}>
+      <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dotColor[cfg.variant])} />
+      {cfg.label}
+    </Badge>
+  )
 }

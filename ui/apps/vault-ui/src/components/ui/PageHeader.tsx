@@ -1,37 +1,23 @@
 import { LucideIcon } from 'lucide-react'
-import { cn } from '@/lib/utils'
 
 interface PageHeaderProps {
   title: string
   description?: string
+  /** Deprecated — headers are typographic now; icon is ignored. Kept so
+      existing call sites compile until they're cleaned up. */
   icon?: LucideIcon
   iconColor?: string
   actions?: React.ReactNode
 }
 
-export function PageHeader({
-  title,
-  description,
-  icon: Icon,
-  iconColor = 'bg-primary-100 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400',
-  actions,
-}: PageHeaderProps) {
+export function PageHeader({ title, description, actions }: PageHeaderProps) {
   return (
-    <div className="flex items-start justify-between mb-6">
-      <div className="flex items-center gap-4">
-        {Icon && (
-          <div className={cn('w-10 h-10 rounded-lg flex items-center justify-center', iconColor)}>
-            <Icon className="w-5 h-5" />
-          </div>
-        )}
-        <div>
-          <h1 className="text-xl font-semibold text-slate-900 dark:text-white">{title}</h1>
-          {description && (
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">{description}</p>
-          )}
-        </div>
+    <div className="flex items-end justify-between gap-4 mb-6">
+      <div className="min-w-0">
+        <h1 className="text-2xl font-semibold tracking-tight text-ink">{title}</h1>
+        {description && <p className="text-sm text-ink-muted mt-1">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex items-center gap-2 flex-shrink-0">{actions}</div>}
     </div>
   )
 }

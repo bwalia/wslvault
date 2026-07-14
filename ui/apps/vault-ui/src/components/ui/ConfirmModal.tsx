@@ -67,20 +67,23 @@ export function ConfirmModal({
       }
     >
       <div className="flex gap-3">
-        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-danger-50 dark:bg-danger-900/20 flex items-center justify-center">
-          <AlertTriangle className="w-5 h-5 text-danger-600 dark:text-danger-400" />
-        </div>
+        <AlertTriangle
+          className="w-5 h-5 flex-shrink-0 mt-0.5 text-danger-600 dark:text-danger-400"
+          aria-hidden="true"
+        />
         <div className="flex-1">
-          <p className="text-sm text-slate-700 dark:text-slate-300">{description}</p>
+          <p className="text-sm text-ink leading-relaxed">{description}</p>
           {confirmText && (
             <div className="mt-4">
-              <p className="text-xs text-slate-500 mb-2">
-                Type <span className="font-mono font-semibold">{confirmText}</span> to confirm
+              <p className="text-xs text-ink-muted mb-2">
+                Type <span className="font-mono font-semibold text-ink">{confirmText}</span> to
+                confirm — this cannot be undone.
               </p>
               <Input
                 value={typed}
                 onChange={e => setTyped(e.target.value)}
                 placeholder={confirmText}
+                mono
                 size={undefined}
               />
             </div>

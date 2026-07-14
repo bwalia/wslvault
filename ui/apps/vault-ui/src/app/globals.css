@@ -3,50 +3,144 @@
 /* Class-based dark mode for Tailwind CSS v4 */
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
-  --color-primary-50:  #eef2ff;
-  --color-primary-100: #e0e7ff;
-  --color-primary-200: #c7d2fe;
-  --color-primary-300: #a5b4fc;
-  --color-primary-400: #818cf8;
-  --color-primary-500: #6366f1;
-  --color-primary-600: #4f46e5;
-  --color-primary-700: #4338ca;
-  --color-primary-800: #3730a3;
-  --color-primary-900: #312e81;
-  --color-primary-950: #1e1b4e;
+/* ---------------------------------------------------------------------------
+   Semantic surface/ink tokens.
 
-  --color-accent-50:  #ecfdf5;
-  --color-accent-100: #d1fae5;
-  --color-accent-500: #10b981;
-  --color-accent-600: #059669;
-  --color-accent-700: #047857;
+   Pages and components use `bg-surface`, `text-ink-muted`, `border-line` etc.
+   instead of hand-written `slate-XXX dark:slate-YYY` pairs — the variables
+   below flip with the `.dark` class, so every component is dark-mode-correct
+   by construction.
+--------------------------------------------------------------------------- */
+:root {
+  /* Canvas & surfaces (light: cool paper) */
+  --canvas:        #f6f7f9;
+  --surface:       #ffffff;
+  --surface-2:     #f1f3f6;
+  --surface-3:     #e9edf1;
+
+  /* Lines */
+  --line:          #e4e8ed;
+  --line-strong:   #ccd3db;
+
+  /* Ink — every step ≥ 4.5:1 on surface AND surface-2 (verified) */
+  --ink:           #171a20;
+  --ink-muted:     #5a6472;
+  --ink-faint:     #66707e;
+
+  /* The sidebar is "vault steel" in BOTH themes — the app's signature. */
+  --steel:         #11161d;
+  --steel-raised:  #1a212b;
+  --steel-line:    #29323e;
+  --steel-ink:     #b7c0cc;
+  --steel-ink-dim: #828da0;
+}
+
+.dark {
+  --canvas:        #0c1014;
+  --surface:       #13181f;
+  --surface-2:     #1a2129;
+  --surface-3:     #222a34;
+
+  --line:          #242d37;
+  --line-strong:   #364250;
+
+  --ink:           #e7eaee;
+  --ink-muted:     #99a3b1;
+  --ink-faint:     #7b879a;
+
+  --steel:         #0e1319;
+  --steel-raised:  #171e27;
+  --steel-line:    #232c37;
+  --steel-ink:     #b7c0cc;
+  --steel-ink-dim: #828da0;
+}
+
+@theme inline {
+  --color-canvas:        var(--canvas);
+  --color-surface:       var(--surface);
+  --color-surface-2:     var(--surface-2);
+  --color-surface-3:     var(--surface-3);
+  --color-line:          var(--line);
+  --color-line-strong:   var(--line-strong);
+  --color-ink:           var(--ink);
+  --color-ink-muted:     var(--ink-muted);
+  --color-ink-faint:     var(--ink-faint);
+  --color-steel:         var(--steel);
+  --color-steel-raised:  var(--steel-raised);
+  --color-steel-line:    var(--steel-line);
+  --color-steel-ink:     var(--steel-ink);
+  --color-steel-ink-dim: var(--steel-ink-dim);
+}
+
+@theme {
+  /* Primary — custom deep teal ("cryptographic" green-cyan, not stock indigo).
+     600 on white = 5.0:1 contrast; 300 on dark surfaces = 7.2:1. */
+  --color-primary-50:  #eefaf8;
+  --color-primary-100: #d5f1ec;
+  --color-primary-200: #aee3dc;
+  --color-primary-300: #79cdc4;
+  --color-primary-400: #43b0a7;
+  --color-primary-500: #26948c;
+  --color-primary-600: #157a74;
+  --color-primary-700: #12615d;
+  --color-primary-800: #114e4b;
+  --color-primary-900: #10403e;
+  --color-primary-950: #052a29;
+
+  /* Status — functional, reserved for state (never decoration). */
+  --color-success-50:  #ecfdf3;
+  --color-success-100: #d1fadf;
+  --color-success-500: #12a150;
+  --color-success-600: #0d8544;
+  --color-success-700: #0b6a38;
 
   --color-danger-50:  #fef2f2;
   --color-danger-100: #fee2e2;
+  --color-danger-400: #f87171;
   --color-danger-500: #ef4444;
   --color-danger-600: #dc2626;
   --color-danger-700: #b91c1c;
 
-  --color-warn-50:  #fffbeb;
-  --color-warn-100: #fef3c7;
-  --color-warn-500: #f59e0b;
-  --color-warn-600: #d97706;
+  --color-warn-50:  #fffaeb;
+  --color-warn-100: #fdefc8;
+  --color-warn-500: #e79008;
+  --color-warn-600: #a35c04;
+  --color-warn-700: #7d4603;
 
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* Back-compat: a handful of pages still reference accent-* (= success). */
+  --color-accent-50:  #ecfdf3;
+  --color-accent-100: #d1fadf;
+  --color-accent-500: #12a150;
+  --color-accent-600: #0d8544;
+  --color-accent-700: #0b6a38;
+
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
   html { @apply antialiased; }
-  body { @apply bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100; }
+
+  body {
+    @apply bg-canvas text-ink;
+    font-feature-settings: "cv05", "ss01";
+  }
+
+  /* Counts, sizes, and durations line up in tables. */
+  .tabular { font-variant-numeric: tabular-nums; }
+
+  ::selection { @apply bg-primary-200 text-primary-950; }
+  .dark ::selection { @apply bg-primary-800 text-primary-50; }
 
   /* Custom scrollbar */
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { @apply bg-transparent; }
-  ::-webkit-scrollbar-thumb { @apply bg-slate-300 dark:bg-slate-700 rounded-full; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-400 dark:bg-slate-600; }
+  ::-webkit-scrollbar-thumb { @apply bg-line-strong rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-ink-faint; }
 }
 
 @layer utilities {
-  .focus-ring { @apply focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:ring-offset-2; }
+  .focus-ring {
+    @apply focus:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-surface;
+  }
 }

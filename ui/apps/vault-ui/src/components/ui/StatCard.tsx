@@ -1,35 +1,32 @@
 import { LucideIcon } from 'lucide-react'
-import { Card, CardBody } from './Card'
+import { cn } from '@/lib/utils'
 
 interface StatCardProps {
   label: string
   value: string | number
-  icon: LucideIcon
+  /** Deprecated — stat tiles are typographic now; icon is ignored. */
+  icon?: LucideIcon
   color?: string
   trend?: string
+  /** Small mono annotation under the value (e.g. "across 3 regions"). */
+  detail?: string
 }
 
-export function StatCard({
-  label,
-  value,
-  icon: Icon,
-  color = 'text-primary-600 bg-primary-50 dark:bg-primary-900/20 dark:text-primary-400',
-  trend,
-}: StatCardProps) {
+/**
+ * Typographic stat tile: the number IS the design. No icon-in-a-box.
+ * A hairline primary rule at the top anchors the tile to the brand.
+ */
+export function StatCard({ label, value, trend, detail }: StatCardProps) {
   return (
-    <Card>
-      <CardBody className="flex items-center gap-4">
-        <div
-          className={`w-12 h-12 rounded-lg flex items-center justify-center flex-shrink-0 ${color}`}
-        >
-          <Icon className="w-6 h-6" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-          <p className="text-2xl font-bold text-slate-900 dark:text-white">{value}</p>
-          {trend && <p className="text-xs text-accent-600 mt-0.5">{trend}</p>}
-        </div>
-      </CardBody>
-    </Card>
+    <div className="relative bg-surface rounded-xl border border-line px-5 pt-4 pb-4 overflow-hidden">
+      <div className="absolute top-0 left-5 right-5 h-px bg-primary-500/60" aria-hidden="true" />
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-faint">{label}</p>
+      <p className={cn('mt-1.5 text-3xl font-semibold tracking-tight text-ink tabular')}>
+        {value}
+      </p>
+      {(trend || detail) && (
+        <p className="mt-1 text-xs text-ink-muted font-mono">{trend ?? detail}</p>
+      )}
+    </div>
   )
 }

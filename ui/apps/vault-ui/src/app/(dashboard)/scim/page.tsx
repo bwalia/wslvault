@@ -4,16 +4,17 @@ import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
+import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Users, Plus, Trash2, Pencil, UsersRound } from 'lucide-react'
 import { useForm } from 'react-hook-form'
-import { formatDateTime } from '@/lib/utils'
+import { formatDateTime, cn } from '@/lib/utils'
 
 // ---------------------------------------------------------------------------
 // SCIM type definitions (RFC 7644 / RFC 7643)
@@ -235,36 +236,32 @@ function UsersTab() {
       label: 'Username',
       sortable: true,
       render: row => (
-        <span className="font-medium text-slate-900 dark:text-white">{row.userName}</span>
+        <span className="font-mono text-[13px] text-ink">{row.userName}</span>
       ),
     },
     {
       field: 'displayName',
       label: 'Display Name',
       sortable: true,
-      render: row => row.displayName ?? '—',
+      render: row => <span className="text-ink">{row.displayName ?? '—'}</span>,
     },
     {
       field: 'email',
       label: 'Email',
       render: row => (
-        <span className="text-xs text-slate-600 dark:text-slate-400">{primaryEmail(row)}</span>
+        <span className="font-mono text-[13px] text-ink-muted">{primaryEmail(row)}</span>
       ),
     },
     {
       field: 'active',
       label: 'Status',
-      render: row => (
-        <Badge variant={row.active ? 'success' : 'default'}>
-          {row.active ? 'Active' : 'Inactive'}
-        </Badge>
-      ),
+      render: row => <StatusBadge status={row.active ? 'active' : 'inactive'} />,
     },
     {
       field: 'meta.lastModified',
       label: 'Last Modified',
       render: row => (
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-ink-muted tabular">
           {row.meta?.lastModified ? formatDateTime(row.meta.lastModified) : '—'}
         </span>
       ),
@@ -281,7 +278,7 @@ function UsersTab() {
               e.stopPropagation()
               openEdit(row)
             }}
-            title="Edit user"
+            aria-label={`Edit user ${row.userName}`}
           >
             <Pencil className="w-4 h-4" />
           </Button>
@@ -292,8 +289,8 @@ function UsersTab() {
               e.stopPropagation()
               setDeleteTarget(row)
             }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
-            title="Delete user"
+            className="text-danger-600 hover:bg-danger-50"
+            aria-label={`Delete user ${row.userName}`}
           >
             <Trash2 className="w-4 h-4" />
           </Button>
@@ -305,8 +302,7 @@ function UsersTab() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-          <Users className="w-4 h-4 text-primary-500" />
+        <h2 className="text-sm font-semibold text-ink flex items-center gap-2">
           Users
           <Badge variant="default" size="sm">
             {data?.totalResults ?? users.length}
@@ -323,7 +319,7 @@ function UsersTab() {
         data={users as unknown as Record<string, unknown>[]}
         loading={isLoading}
         keyField="id"
-        emptyMessage="No SCIM users found"
+        emptyMessage="No SCIM users provisioned. Add your first user to begin."
       />
 
       {/* Create user modal */}
@@ -414,10 +410,11 @@ function UserForm({
 }) {
   return (
     <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)}>
-      {formError && <p className="text-sm text-danger-600 dark:text-danger-400">{formError}</p>}
+      {formError && <p className="text-sm text-danger-600">{formError}</p>}
       <Input
         label="Username"
         placeholder="jdoe"
+        mono
         error={form.formState.errors.userName?.message}
         {...form.register('userName', { required: 'Username is required' })}
       />
@@ -448,12 +445,12 @@ function UserForm({
         <input
           type="checkbox"
           id="active-checkbox"
-          className="w-4 h-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+          className="w-4 h-4 rounded border-line-strong text-primary-600 focus:ring-primary-500"
           {...form.register('active')}
         />
         <label
           htmlFor="active-checkbox"
-          className="text-sm font-medium text-slate-700 dark:text-slate-300"
+          className="text-sm font-medium text-ink"
         >
           Active
         </label>
@@ -570,7 +567,7 @@ function GroupsTab() {
       label: 'Group Name',
       sortable: true,
       render: row => (
-        <span className="font-medium text-slate-900 dark:text-white">{row.displayName}</span>
+        <span className="font-medium text-ink">{row.displayName}</span>
       ),
     },
     {
@@ -579,24 +576,21 @@ function GroupsTab() {
       render: row => {
         const memberList = row.members ?? []
         if (memberList.length === 0) {
-          return <span className="text-xs text-slate-400">No members</span>
+          return <span className="text-xs text-ink-faint">No members</span>
         }
         const displayed = memberList.slice(0, 4)
         const overflow = memberList.length - displayed.length
         return (
           <div className="flex flex-wrap gap-1">
             {displayed.map(m => (
-              <span
-                key={m.value}
-                className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium"
-              >
+              <Badge key={m.value} variant="default" size="sm" className="font-mono text-[13px]">
                 {m.display ?? m.value}
-              </span>
+              </Badge>
             ))}
             {overflow > 0 && (
-              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-slate-100 dark:bg-slate-800 text-slate-500">
+              <Badge variant="default" size="sm">
                 +{overflow} more
-              </span>
+              </Badge>
             )}
           </div>
         )
@@ -615,7 +609,7 @@ function GroupsTab() {
       field: 'meta.lastModified',
       label: 'Last Modified',
       render: row => (
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-ink-muted tabular">
           {row.meta?.lastModified ? formatDateTime(row.meta.lastModified) : '—'}
         </span>
       ),
@@ -632,7 +626,7 @@ function GroupsTab() {
               e.stopPropagation()
               openEdit(row)
             }}
-            title="Edit group"
+            aria-label={`Edit group ${row.displayName}`}
           >
             <Pencil className="w-4 h-4" />
           </Button>
@@ -643,8 +637,8 @@ function GroupsTab() {
               e.stopPropagation()
               setDeleteTarget(row)
             }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
-            title="Delete group"
+            className="text-danger-600 hover:bg-danger-50"
+            aria-label={`Delete group ${row.displayName}`}
           >
             <Trash2 className="w-4 h-4" />
           </Button>
@@ -656,8 +650,7 @@ function GroupsTab() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-          <UsersRound className="w-4 h-4 text-primary-500" />
+        <h2 className="text-sm font-semibold text-ink flex items-center gap-2">
           Groups
           <Badge variant="default" size="sm">
             {data?.totalResults ?? groups.length}
@@ -674,7 +667,7 @@ function GroupsTab() {
         data={groups as unknown as Record<string, unknown>[]}
         loading={isLoading}
         keyField="id"
-        emptyMessage="No SCIM groups found"
+        emptyMessage="No SCIM groups defined. Create a group to manage user access."
       />
 
       {/* Create group modal */}
@@ -765,7 +758,7 @@ function GroupForm({
 }) {
   return (
     <form className="space-y-4" onSubmit={form.handleSubmit(onSubmit)}>
-      {formError && <p className="text-sm text-danger-600 dark:text-danger-400">{formError}</p>}
+      {formError && <p className="text-sm text-danger-600">{formError}</p>}
       <Input
         label="Display Name"
         placeholder="engineering"
@@ -773,17 +766,17 @@ function GroupForm({
         {...form.register('displayName', { required: 'Display name is required' })}
       />
       <div className="space-y-1.5">
-        <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+        <label className="block text-sm font-medium text-ink">
           Member User IDs{' '}
-          <span className="text-slate-400 font-normal">(comma-separated)</span>
+          <span className="text-ink-faint font-normal">(comma-separated)</span>
         </label>
         <textarea
           rows={4}
           placeholder="user-id-1, user-id-2, user-id-3"
-          className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500/50 focus:border-primary-500 resize-none"
+          className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface text-ink text-sm font-mono placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 transition-colors resize-none"
           {...form.register('memberIds')}
         />
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-ink-faint">
           Enter the SCIM user IDs of group members, separated by commas.
         </p>
       </div>
@@ -805,12 +798,10 @@ export default function ScimPage() {
       <PageHeader
         title="SCIM Administration"
         description="Manage users and groups via SCIM 2.0 (RFC 7644)"
-        icon={Users}
-        iconColor="bg-primary-100 text-primary-600 dark:bg-primary-900/20 dark:text-primary-400"
       />
 
-      {/* Tab bar */}
-      <div className="flex gap-1 mb-6 border-b border-slate-200 dark:border-slate-800">
+      {/* Quiet segmented control */}
+      <div className="flex gap-0.5 mb-6 border border-line rounded-lg p-0.5 w-fit">
         {(
           [
             { key: 'users', label: 'Users', icon: Users },
@@ -820,13 +811,14 @@ export default function ScimPage() {
           <button
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
-            className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
+            className={cn(
+              'flex items-center gap-2 px-4 py-1.5 text-sm rounded-md transition-colors focus-ring',
               activeTab === tab.key
-                ? 'border-primary-500 text-primary-700 dark:text-primary-300'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:border-slate-300'
-            }`}
+                ? 'bg-surface-3 text-ink font-medium'
+                : 'text-ink-muted hover:text-ink',
+            )}
           >
-            <tab.icon className="w-4 h-4" />
+            <tab.icon className="w-4 h-4" aria-hidden="true" />
             {tab.label}
           </button>
         ))}

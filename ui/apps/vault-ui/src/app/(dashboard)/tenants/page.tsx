@@ -6,11 +6,12 @@ import { createFetcher, mutate } from '@/lib/fetcher'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { StatusBadge } from '@/components/ui/StatusBadge'
+import { CodeChip } from '@/components/ui/CodeChip'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { ShieldCheck, Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2 } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
 
@@ -82,14 +83,24 @@ export default function TenantsPage() {
 
   const columns: Column<Tenant>[] = [
     { field: 'display_name', label: 'Name', sortable: true },
-    { field: 'slug', label: 'Slug', sortable: true, render: row => <span className="font-mono text-xs">{row.slug}</span> },
+    {
+      field: 'slug',
+      label: 'Slug',
+      sortable: true,
+      render: row => <CodeChip value={row.slug} />,
+    },
+    {
+      field: 'id',
+      label: 'Tenant ID',
+      render: row => <CodeChip value={row.id} truncate={20} copyable />,
+    },
     { field: 'tier', label: 'Tier', render: row => <StatusBadge status={row.tier} /> },
     {
       field: 'created_at',
       label: 'Created',
       sortable: true,
       render: row => (
-        <span className="text-xs text-slate-500">{formatDateTime(row.created_at)}</span>
+        <span className="text-xs text-ink-muted tabular">{formatDateTime(row.created_at)}</span>
       ),
     },
     {
@@ -100,7 +111,8 @@ export default function TenantsPage() {
           variant="ghost"
           size="sm"
           onClick={e => { e.stopPropagation(); setDeleteTarget(row) }}
-          className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
+          className="text-danger-600 hover:bg-danger-50"
+          aria-label={`Delete tenant ${row.display_name}`}
         >
           <Trash2 className="w-4 h-4" />
         </Button>
@@ -113,7 +125,6 @@ export default function TenantsPage() {
       <PageHeader
         title="Tenants"
         description="Manage multi-tenant namespaces"
-        icon={ShieldCheck}
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" />
@@ -127,6 +138,7 @@ export default function TenantsPage() {
         data={(tenants as unknown as Record<string, unknown>[] | undefined) ?? []}
         loading={isLoading}
         keyField="id"
+        emptyMessage="No tenants yet. Create your first tenant to get started."
       />
 
       {/* Create modal */}
@@ -148,36 +160,44 @@ export default function TenantsPage() {
       >
         <form className="space-y-4" onSubmit={handleSubmit(onCreate)}>
           {createError && (
-            <p className="text-sm text-danger-600 dark:text-danger-400">{createError}</p>
+            <p className="text-sm text-danger-600">{createError}</p>
           )}
           <Input
             label="Slug"
             placeholder="my-tenant"
+            mono
+            hint="A short, URL-safe identifier for this tenant. Cannot be changed after creation."
             error={errors.slug?.message}
             {...register('slug', { required: 'Slug is required' })}
           />
           <Input
             label="Display Name"
             placeholder="My Tenant"
+            hint="Human-readable name shown in the UI."
             error={errors.display_name?.message}
             {...register('display_name', { required: 'Display name is required' })}
           />
           <div className="space-y-1.5">
-            <label className="block text-sm font-medium text-slate-700 dark:text-slate-300">
+            <label className="block text-sm font-medium text-ink">
               Tier
             </label>
             <select
-              className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/50"
+              className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface text-ink text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 transition-colors"
               {...register('tier')}
             >
-              <option value="shared">Shared</option>
-              <option value="dedicated">Dedicated</option>
-              <option value="sovereign">Sovereign</option>
+              <option value="shared">Shared — multi-tenant cluster, cost-efficient</option>
+              <option value="dedicated">Dedicated — isolated cluster, higher isolation</option>
+              <option value="sovereign">Sovereign — air-gapped or jurisdiction-specific</option>
             </select>
+            <p className="text-xs text-ink-faint">
+              Shared is suitable for most workloads. Choose Dedicated or Sovereign for stricter isolation requirements.
+            </p>
           </div>
           <Input
             label="Root Key ID (optional)"
             placeholder="key-..."
+            mono
+            hint="The KMS key used to wrap this tenant's root token. Leave blank to use the default."
             {...register('root_key_id')}
           />
         </form>

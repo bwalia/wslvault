@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, ReactNode } from 'react'
+import { useEffect, useRef, ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -20,12 +20,16 @@ const sizeClasses = {
 }
 
 export function Modal({ open, onClose, title, children, size = 'md', footer }: ModalProps) {
-  // Close on Escape key
+  const dialogRef = useRef<HTMLDivElement>(null)
+
+  // Close on Escape; move focus into the dialog on open.
   useEffect(() => {
+    if (!open) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
-    if (open) document.addEventListener('keydown', handler)
+    document.addEventListener('keydown', handler)
+    dialogRef.current?.focus()
     return () => document.removeEventListener('keydown', handler)
   }, [open, onClose])
 
@@ -34,35 +38,32 @@ export function Modal({ open, onClose, title, children, size = 'md', footer }: M
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       {/* Backdrop */}
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
+      {/* Dialog — overlays are the only surfaces that carry shadow */}
       <div
-        className="absolute inset-0 bg-black/40 backdrop-blur-sm"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-      {/* Dialog */}
-      <div
+        ref={dialogRef}
+        tabIndex={-1}
         className={cn(
-          'relative w-full bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-800',
+          'relative w-full bg-surface rounded-xl shadow-2xl border border-line outline-none',
           sizeClasses[size],
         )}
         role="dialog"
         aria-modal="true"
+        aria-label={title}
       >
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white">{title}</h2>
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h2 className="text-sm font-semibold text-ink">{title}</h2>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            className="p-1.5 rounded-lg text-ink-faint hover:text-ink hover:bg-surface-2 transition-colors focus-ring"
+            aria-label="Close dialog"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
-        {/* Body */}
-        <div className="px-6 py-4">{children}</div>
-        {/* Footer */}
+        <div className="px-5 py-4 max-h-[70vh] overflow-y-auto">{children}</div>
         {footer && (
-          <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50 rounded-b-xl">
+          <div className="flex items-center justify-end gap-2 px-5 py-3.5 border-t border-line bg-surface-2 rounded-b-xl">
             {footer}
           </div>
         )}

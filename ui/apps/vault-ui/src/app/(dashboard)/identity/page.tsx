@@ -3,13 +3,17 @@ import { useState } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
+import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
+import { EmptyState } from '@/components/ui/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { Users, Plus, Trash2, Copy, Check, RefreshCw } from 'lucide-react'
+import { Badge } from '@/components/ui/Badge'
+import { CodeChip } from '@/components/ui/CodeChip'
+import { Users, Plus, Trash2, Check, Copy, RefreshCw } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
 
@@ -135,10 +139,9 @@ export default function IdentityPage() {
     {
       field: 'key_prefix',
       label: 'Key Prefix',
+      mono: true,
       render: row => (
-        <code className="text-xs font-mono bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
-          wslv_{row.key_prefix}…
-        </code>
+        <CodeChip value={`wslv_${row.key_prefix}…`} />
       ),
     },
     {
@@ -148,11 +151,11 @@ export default function IdentityPage() {
         <div className="flex flex-wrap gap-1">
           {row.policies.length > 0
             ? row.policies.map(p => (
-                <span key={p} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-primary-50 dark:bg-primary-900/20 text-primary-700 dark:text-primary-300 font-medium">
+                <Badge key={p} variant="info" size="sm">
                   {p}
-                </span>
+                </Badge>
               ))
-            : <span className="text-xs text-slate-400">—</span>
+            : <span className="text-xs text-ink-faint">—</span>
           }
         </div>
       ),
@@ -161,7 +164,7 @@ export default function IdentityPage() {
       field: 'last_used_at',
       label: 'Last Used',
       render: row => (
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-ink-muted">
           {row.last_used_at ? formatDateTime(row.last_used_at) : 'Never'}
         </span>
       ),
@@ -170,7 +173,7 @@ export default function IdentityPage() {
       field: 'expires_at',
       label: 'Expires',
       render: row => (
-        <span className="text-xs text-slate-500">
+        <span className="text-xs text-ink-muted">
           {row.expires_at ? formatDateTime(row.expires_at) : 'Never'}
         </span>
       ),
@@ -178,8 +181,9 @@ export default function IdentityPage() {
     {
       field: 'rate_limit_per_minute',
       label: 'Rate Limit',
+      align: 'right',
       render: row => (
-        <span className="text-xs text-slate-500">{row.rate_limit_per_minute ?? 60}/min</span>
+        <span className="text-xs font-mono tabular text-ink-muted">{row.rate_limit_per_minute ?? 60}/min</span>
       ),
     },
     {
@@ -190,17 +194,17 @@ export default function IdentityPage() {
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Rotate key for ${row.name}`}
             onClick={e => { e.stopPropagation(); setRotateTarget(row) }}
-            title="Rotate key"
           >
             <RefreshCw className="w-4 h-4" />
           </Button>
           <Button
             variant="ghost"
             size="sm"
+            aria-label={`Delete key ${row.name}`}
             onClick={e => { e.stopPropagation(); setDeleteTarget(row) }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-900/20"
-            title="Delete key"
+            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-600/10"
           >
             <Trash2 className="w-4 h-4" />
           </Button>
@@ -214,28 +218,41 @@ export default function IdentityPage() {
       <PageHeader
         title="Identity & Access"
         description="Manage API keys and access credentials"
-        icon={Users}
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" />
-            New API Key
+            Create API Key
           </Button>
         }
       />
 
-      <DataTable
-        columns={columns}
-        data={(apiKeys as unknown as Record<string, unknown>[] | undefined) ?? []}
-        loading={isLoading}
-        keyField="id"
-        emptyMessage="No API keys yet — create your first key to get started"
-      />
+      {!isLoading && (apiKeys ?? []).length === 0 ? (
+        <EmptyState
+          icon={Users}
+          title="No API keys yet"
+          description="Create your first API key to start authenticating requests to the vault."
+          action={
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="w-4 h-4" />
+              Create API Key
+            </Button>
+          }
+        />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={(apiKeys as unknown as Record<string, unknown>[] | undefined) ?? []}
+          loading={isLoading}
+          keyField="id"
+          emptyMessage="No API keys match your search."
+        />
+      )}
 
       {/* Create API Key modal */}
       <Modal
         open={createOpen}
         onClose={() => { setCreateOpen(false); form.reset(); setFormError('') }}
-        title="Create API Key"
+        title="Create API key"
         size="md"
         footer={
           <>
@@ -249,7 +266,7 @@ export default function IdentityPage() {
         }
       >
         <form className="space-y-4" onSubmit={form.handleSubmit(onCreateKey)}>
-          {formError && <p className="text-sm text-danger-600 dark:text-danger-400">{formError}</p>}
+          {formError && <p className="text-sm text-danger-600">{formError}</p>}
           <Input
             label="Name"
             placeholder="my-app-key"
@@ -262,19 +279,20 @@ export default function IdentityPage() {
             {...form.register('policies')}
           />
           <Input
-            label="Path Prefixes (comma-separated)"
+            label="Path prefixes (comma-separated)"
             placeholder="secrets/prod/, secrets/staging/"
+            mono
             {...form.register('path_prefixes')}
           />
           <div className="grid grid-cols-2 gap-3">
             <Input
-              label="Expires In (seconds)"
+              label="Expires in (seconds)"
               placeholder="Leave blank = never"
               type="number"
               {...form.register('expires_in_seconds')}
             />
             <Input
-              label="Rate Limit / min"
+              label="Rate limit / min"
               placeholder="60"
               type="number"
               {...form.register('rate_limit_per_minute')}
@@ -285,7 +303,7 @@ export default function IdentityPage() {
 
       {/* Key reveal modal — shown once after creation */}
       <KeyRevealModal
-        title="API Key Created"
+        title="API key created"
         keyValue={newKeyValue}
         copied={copied}
         onCopy={copyKey}
@@ -294,7 +312,7 @@ export default function IdentityPage() {
 
       {/* Rotated key reveal modal */}
       <KeyRevealModal
-        title="API Key Rotated"
+        title="API key rotated"
         keyValue={rotatedKeyValue}
         copied={copied}
         onCopy={copyKey}
@@ -306,7 +324,7 @@ export default function IdentityPage() {
         open={!!rotateTarget}
         onClose={() => setRotateTarget(null)}
         onConfirm={onRotate}
-        title="Rotate API Key"
+        title="Rotate API key"
         description={`Generate a new secret for "${rotateTarget?.name}"? The existing key will be invalidated immediately.`}
         confirmLabel="Rotate"
         loading={rotating}
@@ -317,7 +335,7 @@ export default function IdentityPage() {
         open={!!deleteTarget}
         onClose={() => setDeleteTarget(null)}
         onConfirm={onDelete}
-        title="Delete API Key"
+        title="Delete API key"
         description={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
         loading={deleting}
@@ -348,21 +366,28 @@ function KeyRevealModal({
       footer={<Button onClick={onClose}>Done</Button>}
     >
       <div className="space-y-3">
-        <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
-          <span className="text-amber-600 dark:text-amber-400 text-sm font-medium">
-            ⚠ Copy this key now — it will not be shown again.
+        {/* One-time warning — uses warn palette for functional status, not decoration */}
+        <div className="flex items-start gap-2 p-3 rounded-lg bg-warn-50 border border-warn-100 dark:bg-warn-600/10 dark:border-warn-600/25">
+          <span className="text-warn-700 dark:text-warn-500 text-sm font-medium leading-snug">
+            This key is shown once. Store it in a safe place now.
           </span>
         </div>
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-slate-100 dark:bg-slate-800">
-          <code className="flex-1 text-xs font-mono text-slate-800 dark:text-slate-200 break-all">
+
+        {/* Revealed key — full-width, mono, selectable, with copy button */}
+        <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
+          <code
+            className={cn(
+              'flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed',
+            )}
+          >
             {keyValue}
           </code>
           <button
             onClick={() => keyValue && onCopy(keyValue)}
-            className="flex-shrink-0 p-1.5 rounded hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-500"
-            aria-label="Copy key"
+            aria-label={copied ? 'Copied' : 'Copy key'}
+            className="flex-shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
           >
-            {copied ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+            {copied ? <Check className="w-4 h-4 text-success-600" /> : <Copy className="w-4 h-4" />}
           </button>
         </div>
       </div>
