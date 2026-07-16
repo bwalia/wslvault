@@ -1,14 +1,16 @@
 'use client'
-import { useState } from 'react'
-import useSWR, { mutate as swrMutate } from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { useState, useCallback } from 'react'
+import { mutate as swrMutate } from 'swr'
+import { useVaultSWR, useVaultMutate } from '@/hooks/useVaultSWR'
+import { useAsyncAction } from '@/hooks/useAsyncAction'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
@@ -25,85 +27,78 @@ interface Policy {
 }
 
 const ALL_CAPS = ['read', 'write', 'create', 'update', 'delete', 'list', 'deny'] as const
-const POLICIES_KEY = '/api/policy/v1/policies'
+const POLICIES_KEY = api.policy.list()
 
 // Empty rule factory
 const emptyRule = (): PolicyRule => ({ paths: [''], capabilities: [] })
 
 export default function PoliciesPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
-  const { data: policies, isLoading } = useSWR<Policy[]>(POLICIES_KEY, fetcher)
+  const vaultMutate = useVaultMutate()
+  const { data: policies, error: loadError, isLoading } = useVaultSWR<Policy[]>(POLICIES_KEY)
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editTarget, setEditTarget] = useState<Policy | null>(null)
   const [policyName, setPolicyName] = useState('')
   const [rules, setRules] = useState<PolicyRule[]>([emptyRule()])
-  const [saving, setSaving] = useState(false)
-  const [saveError, setSaveError] = useState('')
-
   const [deleteTarget, setDeleteTarget] = useState<Policy | null>(null)
-  const [deleting, setDeleting] = useState(false)
 
-  const openCreate = () => {
+  const save = useAsyncAction()
+  const remove = useAsyncAction()
+
+  const openCreate = useCallback(() => {
     setEditTarget(null)
     setPolicyName('')
     setRules([emptyRule()])
-    setSaveError('')
+    save.clearError()
     setModalOpen(true)
-  }
+  }, [save])
 
-  const openEdit = (policy: Policy) => {
-    setEditTarget(policy)
-    setPolicyName(policy.name)
-    // Ensure each rule has at least one path entry
-    setRules(policy.rules.map(r => ({ ...r, paths: r.paths.length ? r.paths : [''] })))
-    setSaveError('')
-    setModalOpen(true)
-  }
+  const openEdit = useCallback(
+    (policy: Policy) => {
+      setEditTarget(policy)
+      setPolicyName(policy.name)
+      // `rules` is typed non-optional but comes off the wire. Unguarded, a
+      // policy without it threw on row-click and took the page to the error
+      // boundary.
+      setRules((policy.rules ?? []).map(r => ({ ...r, paths: r.paths?.length ? r.paths : [''] })))
+      save.clearError()
+      setModalOpen(true)
+    },
+    [save],
+  )
 
-  const onSave = async () => {
-    if (!policyName.trim()) {
-      setSaveError('Policy name is required')
-      return
-    }
-    setSaving(true)
-    setSaveError('')
-    try {
-      const payload: Policy = {
-        name: policyName.trim(),
-        rules: rules.map(r => ({
-          paths: r.paths.filter(p => p.trim()),
-          capabilities: r.capabilities,
-        })),
-      }
-      if (editTarget) {
-        await mutate(`${POLICIES_KEY}/${editTarget.name}`, 'PUT', payload, token, tenantId)
-      } else {
-        await mutate(POLICIES_KEY, 'POST', payload, token, tenantId)
-      }
-      await swrMutate(POLICIES_KEY)
-      setModalOpen(false)
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Failed to save policy')
-    } finally {
-      setSaving(false)
-    }
-  }
+  const onSave = useCallback(() => {
+    void save.run(
+      async () => {
+        if (!policyName.trim()) throw new Error('Policy name is required')
+        const payload: Policy = {
+          name: policyName.trim(),
+          rules: rules.map(r => ({
+            paths: r.paths.filter(p => p.trim()),
+            capabilities: r.capabilities,
+          })),
+        }
+        if (editTarget) {
+          await vaultMutate(api.policy.byName(editTarget.name), 'PUT', payload)
+        } else {
+          await vaultMutate(POLICIES_KEY, 'POST', payload)
+        }
+        await swrMutate(POLICIES_KEY)
+      },
+      { fallback: 'Failed to save policy', onSuccess: () => setModalOpen(false) },
+    )
+  }, [save, policyName, rules, editTarget, vaultMutate])
 
-  const onDelete = async () => {
+  const onDelete = useCallback(() => {
     if (!deleteTarget) return
-    setDeleting(true)
-    try {
-      await mutate(`${POLICIES_KEY}/${deleteTarget.name}`, 'DELETE', null, token, tenantId)
-      await swrMutate(POLICIES_KEY)
-      setDeleteTarget(null)
-    } catch {
-      // ignore
-    } finally {
-      setDeleting(false)
-    }
-  }
+    void remove.run(
+      async () => {
+        await vaultMutate(api.policy.byName(deleteTarget.name), 'DELETE')
+        await swrMutate(POLICIES_KEY)
+      },
+      { fallback: 'Failed to delete policy', onSuccess: () => setDeleteTarget(null) },
+    )
+  }, [remove, deleteTarget, vaultMutate])
 
   // Rule mutation helpers
   const addRule = () => setRules(r => [...r, emptyRule()])
@@ -210,7 +205,9 @@ export default function PoliciesPage() {
         }
       />
 
-      {!isLoading && (policies ?? []).length === 0 ? (
+      {loadError ? (
+        <LoadError error={loadError} what="policies" />
+      ) : !isLoading && (policies ?? []).length === 0 ? (
         <EmptyState
           icon={Shield}
           title="No policies yet"
@@ -241,15 +238,22 @@ export default function PoliciesPage() {
         size="lg"
         footer={
           <>
-            <Button variant="secondary" size="sm" onClick={() => setModalOpen(false)}>Cancel</Button>
-            <Button size="sm" loading={saving} onClick={onSave}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={save.pending}
+              onClick={() => { setModalOpen(false); save.clearError() }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" loading={save.pending} onClick={onSave}>
               {editTarget ? 'Save changes' : 'Create policy'}
             </Button>
           </>
         }
       >
         <div className="space-y-4">
-          {saveError && <p className="text-sm text-danger-600">{saveError}</p>}
+          <ErrorBanner message={save.error} onDismiss={save.clearError} />
 
           <Input
             label="Policy name"
@@ -360,12 +364,13 @@ export default function PoliciesPage() {
 
       <ConfirmModal
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => { setDeleteTarget(null); remove.clearError() }}
         onConfirm={onDelete}
         title="Delete policy"
         description={`Delete policy "${deleteTarget?.name}"? This may revoke access for API keys using this policy.`}
         confirmLabel="Delete"
-        loading={deleting}
+        loading={remove.pending}
+        error={remove.error}
       />
     </div>
   )

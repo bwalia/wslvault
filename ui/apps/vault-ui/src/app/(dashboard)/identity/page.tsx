@@ -1,14 +1,17 @@
 'use client'
-import { useState } from 'react'
-import useSWR, { mutate as swrMutate } from 'swr'
+import { useState, useCallback } from 'react'
+import { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { useVaultSWR, useVaultMutate } from '@/hooks/useVaultSWR'
+import { useAsyncAction } from '@/hooks/useAsyncAction'
+import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
+import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
@@ -43,96 +46,138 @@ interface ApiKeyFormValues {
   rate_limit_per_minute: string
 }
 
-const APIKEYS_KEY = '/api/identity/v1/api-keys'
+const APIKEYS_KEY = api.identity.apiKeys()
+
+/**
+ * Narrow an API-key mutation response, or explain why it can't be trusted.
+ *
+ * `mutate` resolves `T | null`, and the old code cast that straight to
+ * `ApiKeyCreateResponse` before reading `.key`. On any unexpected body that
+ * threw a TypeError into an empty catch — and for *rotate* the consequence is
+ * unrecoverable: the server has already invalidated the old key, so a
+ * discarded new key locks the caller out permanently. Validate before trusting.
+ */
+function requireKeyResponse(res: unknown): ApiKeyCreateResponse {
+  if (!res || typeof res !== 'object') {
+    throw new Error('Identity service returned an empty response — the key was not returned.')
+  }
+  const key = (res as { key?: unknown }).key
+  if (typeof key !== 'string' || !key) {
+    throw new Error('Identity service response contained no key value.')
+  }
+  return res as ApiKeyCreateResponse
+}
 
 export default function IdentityPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const { tenantId } = useAuth()
+  const vaultMutate = useVaultMutate()
 
-  const { data: apiKeys, isLoading } = useSWR<ApiKey[]>(APIKEYS_KEY, fetcher)
+  const { data: apiKeys, error: loadError, isLoading } = useVaultSWR<ApiKey[]>(APIKEYS_KEY)
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
   const [newKeyValue, setNewKeyValue] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
-  const [formError, setFormError] = useState('')
+  const [copyError, setCopyError] = useState('')
 
   const [rotateTarget, setRotateTarget] = useState<ApiKey | null>(null)
-  const [rotating, setRotating] = useState(false)
   const [rotatedKeyValue, setRotatedKeyValue] = useState<string | null>(null)
-
   const [deleteTarget, setDeleteTarget] = useState<ApiKey | null>(null)
-  const [deleting, setDeleting] = useState(false)
+
+  const create = useAsyncAction()
+  const rotate = useAsyncAction()
+  const remove = useAsyncAction()
 
   const form = useForm<ApiKeyFormValues>({
     defaultValues: { policies: '', path_prefixes: '', expires_in_seconds: '', rate_limit_per_minute: '60' },
   })
 
-  const onCreateKey = async (values: ApiKeyFormValues) => {
-    setCreating(true)
-    setFormError('')
-    try {
-      const body: Record<string, unknown> = {
-        name: values.name,
-        tenant_id: tenantId,
-      }
-      if (values.policies.trim()) body.policies = values.policies.split(',').map(p => p.trim()).filter(Boolean)
-      if (values.path_prefixes.trim()) body.path_prefixes = values.path_prefixes.split(',').map(p => p.trim()).filter(Boolean)
-      if (values.expires_in_seconds.trim()) body.expires_in_seconds = parseInt(values.expires_in_seconds)
-      if (values.rate_limit_per_minute.trim()) body.rate_limit_per_minute = parseInt(values.rate_limit_per_minute)
+  const onCreateKey = useCallback(
+    (values: ApiKeyFormValues) => {
+      void create.run(
+        async () => {
+          const body: Record<string, unknown> = { name: values.name, tenant_id: tenantId }
+          if (values.policies.trim())
+            body.policies = values.policies.split(',').map(p => p.trim()).filter(Boolean)
+          if (values.path_prefixes.trim())
+            body.path_prefixes = values.path_prefixes.split(',').map(p => p.trim()).filter(Boolean)
 
-      const res = await mutate(APIKEYS_KEY, 'POST', body, token, tenantId) as ApiKeyCreateResponse
-      await swrMutate(APIKEYS_KEY)
-      setNewKeyValue(res.key)
-      form.reset()
-      setCreateOpen(false)
-    } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Failed to create API key')
-    } finally {
-      setCreating(false)
-    }
-  }
+          // parseInt returns NaN on junk, and JSON.stringify turns NaN into
+          // null — the server then sees an explicit null rather than "unset".
+          if (values.expires_in_seconds.trim()) {
+            const n = Number.parseInt(values.expires_in_seconds, 10)
+            if (!Number.isFinite(n) || n <= 0) throw new Error('Expiry must be a positive number of seconds')
+            body.expires_in_seconds = n
+          }
+          if (values.rate_limit_per_minute.trim()) {
+            const n = Number.parseInt(values.rate_limit_per_minute, 10)
+            if (!Number.isFinite(n) || n < 0) throw new Error('Rate limit must be a non-negative number')
+            body.rate_limit_per_minute = n
+          }
 
-  const onRotate = async () => {
+          const res = requireKeyResponse(await vaultMutate(APIKEYS_KEY, 'POST', body))
+          await swrMutate(APIKEYS_KEY)
+          return res
+        },
+        {
+          fallback: 'Failed to create API key',
+          onSuccess: res => {
+            setNewKeyValue(res.key)
+            form.reset()
+            setCreateOpen(false)
+          },
+        },
+      )
+    },
+    [create, vaultMutate, tenantId, form],
+  )
+
+  const onRotate = useCallback(() => {
     if (!rotateTarget) return
-    setRotating(true)
-    try {
-      const res = await mutate(
-        `${APIKEYS_KEY}/${rotateTarget.id}/rotate`,
-        'POST',
-        {},
-        token,
-        tenantId,
-      ) as ApiKeyCreateResponse
-      await swrMutate(APIKEYS_KEY)
-      setRotateTarget(null)
-      setRotatedKeyValue(res.key)
-    } catch {
-      // ignore
-    } finally {
-      setRotating(false)
-    }
-  }
+    void rotate.run(
+      async () => {
+        const res = requireKeyResponse(
+          await vaultMutate(api.identity.rotateApiKey(rotateTarget.id), 'POST', {}),
+        )
+        await swrMutate(APIKEYS_KEY)
+        return res
+      },
+      {
+        fallback: 'Failed to rotate API key',
+        onSuccess: res => {
+          // Reveal the new key BEFORE dismissing the modal. If this ordering is
+          // ever reversed and the reveal throws, the only copy of the new key
+          // is gone and the old one is already dead server-side.
+          setRotatedKeyValue(res.key)
+          setRotateTarget(null)
+        },
+      },
+    )
+  }, [rotate, rotateTarget, vaultMutate])
 
-  const onDelete = async () => {
+  const onDelete = useCallback(() => {
     if (!deleteTarget) return
-    setDeleting(true)
-    try {
-      await mutate(`${APIKEYS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
-      await swrMutate(APIKEYS_KEY)
-      setDeleteTarget(null)
-    } catch {
-      // ignore
-    } finally {
-      setDeleting(false)
-    }
-  }
+    void remove.run(
+      async () => {
+        await vaultMutate(api.identity.apiKey(deleteTarget.id), 'DELETE')
+        await swrMutate(APIKEYS_KEY)
+      },
+      { fallback: 'Failed to revoke API key', onSuccess: () => setDeleteTarget(null) },
+    )
+  }, [remove, deleteTarget, vaultMutate])
 
-  const copyKey = async (val: string) => {
-    await navigator.clipboard.writeText(val)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+  const copyKey = useCallback(async (val: string) => {
+    // clipboard.writeText rejects on an insecure origin (plain HTTP) or a denied
+    // permission. Unhandled, the user believes a one-time key is on their
+    // clipboard when it is not — and it is not shown again.
+    try {
+      await navigator.clipboard.writeText(val)
+      setCopied(true)
+      setCopyError('')
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      setCopyError('Could not copy — select the key and copy it manually.')
+    }
+  }, [])
 
   const columns: Column<ApiKey>[] = [
     { field: 'name', label: 'Name', sortable: true },
@@ -147,10 +192,13 @@ export default function IdentityPage() {
     {
       field: 'policies',
       label: 'Policies',
+      // `policies` is typed non-optional but arrives from the network. If the
+      // server ever omits it, `.length` throws mid-render and takes the whole
+      // page to the error boundary over a cosmetic column.
       render: row => (
         <div className="flex flex-wrap gap-1">
-          {row.policies.length > 0
-            ? row.policies.map(p => (
+          {(row.policies ?? []).length > 0
+            ? (row.policies ?? []).map(p => (
                 <Badge key={p} variant="info" size="sm">
                   {p}
                 </Badge>
@@ -226,7 +274,11 @@ export default function IdentityPage() {
         }
       />
 
-      {!isLoading && (apiKeys ?? []).length === 0 ? (
+      {/* A failed load must not render as "No API keys yet" — that reads as a
+          confident empty vault when the truth may be a 403 or a dead backend. */}
+      {loadError ? (
+        <LoadError error={loadError} what="API keys" />
+      ) : !isLoading && (apiKeys ?? []).length === 0 ? (
         <EmptyState
           icon={Users}
           title="No API keys yet"
@@ -251,22 +303,27 @@ export default function IdentityPage() {
       {/* Create API Key modal */}
       <Modal
         open={createOpen}
-        onClose={() => { setCreateOpen(false); form.reset(); setFormError('') }}
+        onClose={() => { setCreateOpen(false); form.reset(); create.clearError() }}
         title="Create API key"
         size="md"
         footer={
           <>
-            <Button variant="secondary" size="sm" onClick={() => { setCreateOpen(false); form.reset() }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={create.pending}
+              onClick={() => { setCreateOpen(false); form.reset(); create.clearError() }}
+            >
               Cancel
             </Button>
-            <Button size="sm" loading={creating} onClick={form.handleSubmit(onCreateKey)}>
+            <Button size="sm" loading={create.pending} onClick={form.handleSubmit(onCreateKey)}>
               Create
             </Button>
           </>
         }
       >
         <form className="space-y-4" onSubmit={form.handleSubmit(onCreateKey)}>
-          {formError && <p className="text-sm text-danger-600">{formError}</p>}
+          <ErrorBanner message={create.error} onDismiss={create.clearError} />
           <Input
             label="Name"
             placeholder="my-app-key"
@@ -306,6 +363,7 @@ export default function IdentityPage() {
         title="API key created"
         keyValue={newKeyValue}
         copied={copied}
+        copyError={copyError}
         onCopy={copyKey}
         onClose={() => setNewKeyValue(null)}
       />
@@ -315,6 +373,7 @@ export default function IdentityPage() {
         title="API key rotated"
         keyValue={rotatedKeyValue}
         copied={copied}
+        copyError={copyError}
         onCopy={copyKey}
         onClose={() => setRotatedKeyValue(null)}
       />
@@ -322,23 +381,25 @@ export default function IdentityPage() {
       {/* Rotate confirm */}
       <ConfirmModal
         open={!!rotateTarget}
-        onClose={() => setRotateTarget(null)}
+        onClose={() => { setRotateTarget(null); rotate.clearError() }}
         onConfirm={onRotate}
         title="Rotate API key"
         description={`Generate a new secret for "${rotateTarget?.name}"? The existing key will be invalidated immediately.`}
         confirmLabel="Rotate"
-        loading={rotating}
+        loading={rotate.pending}
+        error={rotate.error}
       />
 
       {/* Delete confirm */}
       <ConfirmModal
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => { setDeleteTarget(null); remove.clearError() }}
         onConfirm={onDelete}
         title="Delete API key"
         description={`Are you sure you want to delete "${deleteTarget?.name}"? This action cannot be undone.`}
         confirmLabel="Delete"
-        loading={deleting}
+        loading={remove.pending}
+        error={remove.error}
       />
     </div>
   )
@@ -348,12 +409,16 @@ function KeyRevealModal({
   title,
   keyValue,
   copied,
+  copyError,
   onCopy,
   onClose,
 }: {
   title: string
   keyValue: string | null
   copied: boolean
+  /** Clipboard failure. Critical here: the key is shown exactly once, so a
+   *  silent copy failure means the user walks away with nothing. */
+  copyError?: string
   onCopy: (val: string) => void
   onClose: () => void
 }) {
@@ -385,11 +450,17 @@ function KeyRevealModal({
           <button
             onClick={() => keyValue && onCopy(keyValue)}
             aria-label={copied ? 'Copied' : 'Copy key'}
-            className="flex-shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
+            className="shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
           >
             {copied ? <Check className="w-4 h-4 text-success-600" /> : <Copy className="w-4 h-4" />}
           </button>
         </div>
+
+        {copyError && (
+          <p role="alert" className="text-xs text-danger-600">
+            {copyError}
+          </p>
+        )}
       </div>
     </Modal>
   )

@@ -1,11 +1,12 @@
 'use client'
-import { useState } from 'react'
-import useSWR, { mutate as swrMutate } from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { useState, useCallback } from 'react'
+import { mutate as swrMutate } from 'swr'
+import { useVaultSWR, useVaultMutate } from '@/hooks/useVaultSWR'
+import { useAsyncAction } from '@/hooks/useAsyncAction'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
@@ -44,7 +45,7 @@ function TTLBar({ expiresAt }: { expiresAt: string }) {
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-[13px] font-mono tabular text-ink-muted w-16 text-right flex-shrink-0">
+      <span className="text-[13px] font-mono tabular text-ink-muted w-16 text-right shrink-0">
         {remaining > 0 ? formatDuration(remaining) : 'Expired'}
       </span>
     </div>
@@ -52,45 +53,50 @@ function TTLBar({ expiresAt }: { expiresAt: string }) {
 }
 
 export default function LeasesPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const vaultMutate = useVaultMutate()
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
 
-  const { data: leasesData, isLoading } = useSWR<{ leases: Lease[] }>(LEASES_KEY, fetcher)
+  const { data: leasesData, error: loadError, isLoading } =
+    useVaultSWR<{ leases: Lease[] }>(LEASES_KEY)
   const leases = leasesData?.leases ?? []
 
   const filtered =
     stateFilter === 'all' ? leases : leases.filter(l => l.state === stateFilter)
 
   const [revokeTarget, setRevokeTarget] = useState<Lease | null>(null)
-  const [revoking, setRevoking] = useState(false)
   const [renewingId, setRenewingId] = useState<string | null>(null)
 
-  const onRenew = async (lease: Lease) => {
-    setRenewingId(lease.id)
-    try {
-      await mutate(`${LEASES_KEY}/${lease.id}/renew`, 'POST', {}, token, tenantId)
-      await swrMutate(LEASES_KEY)
-    } catch {
-      // ignore
-    } finally {
-      setRenewingId(null)
-    }
-  }
+  const renew = useAsyncAction()
+  const revoke = useAsyncAction()
 
-  const onRevoke = async () => {
+  const onRenew = useCallback(
+    (lease: Lease) => {
+      setRenewingId(lease.id)
+      void renew
+        .run(
+          async () => {
+            await vaultMutate(`${LEASES_KEY}/${lease.id}/renew`, 'POST', {})
+            await swrMutate(LEASES_KEY)
+          },
+          { fallback: 'Failed to renew lease' },
+        )
+        .finally(() => setRenewingId(null))
+    },
+    [renew, vaultMutate],
+  )
+
+  const onRevoke = useCallback(() => {
     if (!revokeTarget) return
-    setRevoking(true)
-    try {
-      await mutate(`${LEASES_KEY}/${revokeTarget.id}/revoke`, 'POST', {}, token, tenantId)
-      await swrMutate(LEASES_KEY)
-      setRevokeTarget(null)
-    } catch {
-      // ignore
-    } finally {
-      setRevoking(false)
-    }
-  }
+    // A swallowed failure here told the operator a credential was revoked when
+    // it may still be live. That is the one outcome this page must never fake.
+    void revoke.run(
+      async () => {
+        await vaultMutate(`${LEASES_KEY}/${revokeTarget.id}/revoke`, 'POST', {})
+        await swrMutate(LEASES_KEY)
+      },
+      { fallback: 'Failed to revoke lease', onSuccess: () => setRevokeTarget(null) },
+    )
+  }, [revoke, revokeTarget, vaultMutate])
 
   const columns: Column<Lease>[] = [
     {
@@ -182,7 +188,12 @@ export default function LeasesPage() {
         ))}
       </div>
 
-      {!isLoading && leases.length === 0 ? (
+      {/* Renew failures have no modal to live in — surface them on the page. */}
+      <ErrorBanner message={renew.error} onDismiss={renew.clearError} />
+
+      {loadError ? (
+        <LoadError error={loadError} what="leases" />
+      ) : !isLoading && leases.length === 0 ? (
         <EmptyState
           icon={Key}
           title="No leases yet"
@@ -200,12 +211,13 @@ export default function LeasesPage() {
 
       <ConfirmModal
         open={!!revokeTarget}
-        onClose={() => setRevokeTarget(null)}
+        onClose={() => { setRevokeTarget(null); revoke.clearError() }}
         onConfirm={onRevoke}
         title="Revoke lease"
         description={`Revoke lease for "${revokeTarget?.secret_path}"? The associated credentials will be immediately invalidated.`}
         confirmLabel="Revoke"
-        loading={revoking}
+        loading={revoke.pending}
+        error={revoke.error}
       />
     </div>
   )

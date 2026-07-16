@@ -21,6 +21,40 @@ use wslvault_storage::quota_store;
 
 use crate::kv_store::{RotationInfo, SecretEntry, SecretStoreBackend, VersionEntry, VersionMeta};
 
+/// Resolve the caller's `versions` argument for a soft delete.
+///
+/// An empty slice means "the current live version", matching KV v2 semantics
+/// and the in-memory [`crate::kv_store::KvStore`] backend.
+///
+/// This *must* be resolved to concrete version numbers before reaching SQL.
+/// The stored function filters with `version = ANY($2)`, and `= ANY('{}')` is
+/// false for every row — so forwarding an empty array updates nothing, returns
+/// a row count of 0, and the handler answers `200 {"count":0}`. The caller sees
+/// a success and the secret is still there. Returning an empty vec here means
+/// "nothing to do"; it never means "everything".
+fn resolve_soft_delete_targets(requested: &[u32], current_version: u32) -> Vec<u32> {
+    if !requested.is_empty() {
+        return requested.to_vec();
+    }
+    // current_version is 0 only when a metadata row exists with no live version.
+    if current_version == 0 {
+        return Vec::new();
+    }
+    vec![current_version]
+}
+
+/// Resolve the caller's `versions` argument for a destroy.
+///
+/// An empty slice means "every version not already destroyed", matching the
+/// in-memory backend. `live_versions` is consulted only in that case. See
+/// [`resolve_soft_delete_targets`] for why the empty case cannot reach SQL.
+fn resolve_destroy_targets(requested: &[u32], live_versions: &[u32]) -> Vec<u32> {
+    if !requested.is_empty() {
+        return requested.to_vec();
+    }
+    live_versions.to_vec()
+}
+
 /// PostgreSQL-backed secret store.
 ///
 /// Each method parses the caller-supplied `tenant_id` string into the
@@ -88,8 +122,19 @@ impl PgSecretBackend {
 impl SecretStoreBackend for PgSecretBackend {
     /// Read a secret version from PostgreSQL.
     ///
-    /// When `version` is `None`, the current (latest live) version is used as
-    /// reported by the `current_version` column on the `secrets` table.
+    /// When `version` is `None`, resolves the latest version that is neither
+    /// soft-deleted nor destroyed — mirroring `SecretEntry::current_version_number()`
+    /// in the in-memory backend.
+    ///
+    /// It deliberately does NOT use `meta.current_version`. That column is a
+    /// write pointer that `vault_soft_delete_versions` never moves back, so it
+    /// keeps naming a version after that version has been deleted. Reading
+    /// through it returned the plaintext of a secret the caller had just
+    /// deleted — the delete appeared to do nothing.
+    ///
+    /// An explicitly requested `Some(version)` is returned even when
+    /// soft-deleted (only `destroyed` is an error), matching the in-memory
+    /// backend and leaving room for undelete.
     async fn get(
         &self,
         tenant_id: &str,
@@ -99,9 +144,13 @@ impl SecretStoreBackend for PgSecretBackend {
         let tid = Self::parse_tenant_id(tenant_id)?;
         let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
 
-        let target_version = version.unwrap_or(meta.current_version);
+        let target_version = match version {
+            Some(v) => v,
+            None => secret_store::latest_live_version(&self.pool, &meta.id).await?,
+        };
+
         if target_version == 0 {
-            // No live version exists for this path.
+            // Every version is deleted or destroyed — the secret reads as absent.
             return Err(VaultError::SecretNotFound {
                 path: path.to_string(),
                 version: None,
@@ -183,6 +232,9 @@ impl SecretStoreBackend for PgSecretBackend {
     ///
     /// Requires fetching the stable `secret_id` first because the storage
     /// layer operates on `SecretId`, not on `(tenant_id, path)` pairs.
+    ///
+    /// An empty `versions` slice means "delete the current live version" — see
+    /// [`resolve_soft_delete_targets`] for why that must be resolved here.
     async fn soft_delete(
         &self,
         tenant_id: &str,
@@ -191,13 +243,22 @@ impl SecretStoreBackend for PgSecretBackend {
     ) -> Result<u32, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
         let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
-        secret_store::soft_delete_versions(&self.pool, &meta.id, versions).await
+
+        let targets = resolve_soft_delete_targets(versions, meta.current_version);
+        if targets.is_empty() {
+            return Ok(0);
+        }
+
+        secret_store::soft_delete_versions(&self.pool, &meta.id, &targets).await
     }
 
     /// Permanently destroy specific versions in PostgreSQL.
     ///
     /// This operation is irreversible: the storage layer zeroes the ciphertext
     /// column and sets `destroyed = true`.
+    ///
+    /// An empty `versions` slice means "destroy every version that is not
+    /// already destroyed" — see [`resolve_destroy_targets`].
     async fn destroy(
         &self,
         tenant_id: &str,
@@ -206,7 +267,25 @@ impl SecretStoreBackend for PgSecretBackend {
     ) -> Result<u32, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
         let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
-        secret_store::destroy_versions(&self.pool, &meta.id, versions).await
+
+        // Only pay for the history query on the "destroy everything" path.
+        let targets = if versions.is_empty() {
+            let history = secret_store::list_version_history(&self.pool, &tid, path).await?;
+            let live: Vec<u32> = history
+                .iter()
+                .filter(|v| !v.destroyed)
+                .map(|v| v.version)
+                .collect();
+            resolve_destroy_targets(versions, &live)
+        } else {
+            resolve_destroy_targets(versions, &[])
+        };
+
+        if targets.is_empty() {
+            return Ok(0);
+        }
+
+        secret_store::destroy_versions(&self.pool, &meta.id, &targets).await
     }
 
     /// List secret paths matching a prefix for the given tenant.
@@ -225,14 +304,40 @@ impl SecretStoreBackend for PgSecretBackend {
             .unwrap_or_default()
     }
 
-    /// Retrieve metadata for a secret path without loading any version data.
+    /// Retrieve metadata for a secret path without loading any secret material.
     ///
-    /// The returned `SecretEntry` has an empty `versions` vec because the
-    /// PostgreSQL backend does not eagerly load all versions — callers that
-    /// need version data should call `get` with a specific version number.
+    /// `versions` is populated with *stubs*: version number and lifecycle flags,
+    /// but empty `ciphertext`/`dek_id`. Two reasons it cannot simply be empty:
+    ///
+    ///  1. `SecretEntry::current_version_number()` derives the version by
+    ///     scanning this vec. An empty vec made `GET /v1/secret/metadata/*`
+    ///     report `current_version: 0` for every secret that exists.
+    ///  2. Callers use the lifecycle flags to reason about deleted/destroyed
+    ///     versions, which they cannot do from the count alone.
+    ///
+    /// The ciphertext is deliberately withheld — a metadata endpoint must not
+    /// carry secret material, and no caller of `get_metadata` reads it.
     async fn get_metadata(&self, tenant_id: &str, path: &str) -> Result<SecretEntry, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
         let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
+        let history = secret_store::list_version_history(&self.pool, &tid, path).await?;
+
+        let mut versions: Vec<VersionEntry> = history
+            .into_iter()
+            .map(|v| VersionEntry {
+                version: v.version,
+                ciphertext: String::new(),
+                dek_id: String::new(),
+                created_at: v.created_at,
+                deleted_at: v.deleted_at,
+                destroyed: v.destroyed,
+                custom_metadata: HashMap::new(),
+            })
+            .collect();
+
+        // `current_version_number()` scans in reverse and takes the first live
+        // hit, so ascending order is part of the contract.
+        versions.sort_by_key(|v| v.version);
 
         Ok(SecretEntry {
             secret_id: meta.id.to_string(),
@@ -242,9 +347,7 @@ impl SecretStoreBackend for PgSecretBackend {
             cas_required: meta.cas_required,
             created_at: meta.created_at,
             updated_at: meta.updated_at,
-            // Version list is not eagerly loaded for the PG backend;
-            // callers use get() to retrieve individual versions.
-            versions: Vec::new(),
+            versions,
         })
     }
 
@@ -334,5 +437,78 @@ impl SecretStoreBackend for PgSecretBackend {
             grace_ends_at: r.grace_ends_at,
             expires_at: r.expires_at,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These guard the empty-`versions` contract between the HTTP layer and SQL.
+    //
+    // The UI sends `{"versions": []}` to mean "delete this secret". The stored
+    // function filters with `version = ANY($2)`, which matches zero rows for an
+    // empty array — so an unresolved empty slice makes the delete a silent
+    // no-op that still answers 200. That shipped once; these tests exist so it
+    // cannot ship again without turning red.
+
+    #[test]
+    fn soft_delete_empty_versions_targets_current_version() {
+        assert_eq!(resolve_soft_delete_targets(&[], 7), vec![7]);
+    }
+
+    #[test]
+    fn soft_delete_empty_versions_never_yields_empty_for_a_live_secret() {
+        // The regression itself: an empty result here reaches SQL as `ANY('{}')`
+        // and deletes nothing while reporting success.
+        for current in 1..=5u32 {
+            assert!(
+                !resolve_soft_delete_targets(&[], current).is_empty(),
+                "empty targets for live version {current} would silently no-op",
+            );
+        }
+    }
+
+    #[test]
+    fn soft_delete_explicit_versions_pass_through_untouched() {
+        assert_eq!(resolve_soft_delete_targets(&[1, 3], 7), vec![1, 3]);
+    }
+
+    #[test]
+    fn soft_delete_explicit_versions_win_over_current() {
+        // An explicit request must never be silently widened to the current
+        // version.
+        assert_eq!(resolve_soft_delete_targets(&[2], 9), vec![2]);
+    }
+
+    #[test]
+    fn soft_delete_no_live_version_is_a_no_op() {
+        // current_version == 0 means metadata exists but nothing is live.
+        assert!(resolve_soft_delete_targets(&[], 0).is_empty());
+    }
+
+    #[test]
+    fn destroy_empty_versions_targets_every_live_version() {
+        assert_eq!(resolve_destroy_targets(&[], &[1, 2, 3]), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn destroy_explicit_versions_pass_through_untouched() {
+        assert_eq!(resolve_destroy_targets(&[2], &[1, 2, 3]), vec![2]);
+    }
+
+    #[test]
+    fn destroy_with_nothing_live_is_a_no_op() {
+        assert!(resolve_destroy_targets(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn resolvers_agree_with_in_memory_backend_semantics() {
+        // KvStore::soft_delete with `[]` targets the current version, and
+        // KvStore::destroy with `[]` targets all non-destroyed versions. The
+        // two backends diverging on this is what produced the original bug, so
+        // pin the contract explicitly rather than by convention.
+        assert_eq!(resolve_soft_delete_targets(&[], 4), vec![4]);
+        assert_eq!(resolve_destroy_targets(&[], &[1, 2, 4]), vec![1, 2, 4]);
     }
 }

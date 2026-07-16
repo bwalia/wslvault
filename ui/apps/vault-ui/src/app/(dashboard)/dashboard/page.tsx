@@ -1,12 +1,12 @@
 'use client'
-import useSWR from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher } from '@/lib/fetcher'
+import { useVaultSWR } from '@/hooks/useVaultSWR'
+import { api } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
 import { CodeChip } from '@/components/ui/CodeChip'
 import { formatRelativeTime } from '@/lib/utils'
 import { Activity } from 'lucide-react'
@@ -32,36 +32,41 @@ interface SecretsResponse {
 }
 
 export default function DashboardPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
-
-  const { data: tenants } = useSWR<TenantsResponse>('/api/identity/v1/tenants', fetcher)
-  const { data: apiKeys } = useSWR<ApiKeysResponse>('/api/identity/v1/api-keys', fetcher)
-  const { data: secrets } = useSWR<SecretsResponse>(
-    '/api/secret/v1/secret/list?prefix=',
-    fetcher,
-  )
-  const { data: audit } = useSWR<AuditResponse>(
+  const { data: tenants, error: tenantsError } = useVaultSWR<TenantsResponse>(api.identity.tenants())
+  const { data: apiKeys, error: apiKeysError } = useVaultSWR<ApiKeysResponse>(api.identity.apiKeys())
+  const { data: secrets, error: secretsError } = useVaultSWR<SecretsResponse>(api.secret.list())
+  const { data: audit, error: auditError } = useVaultSWR<AuditResponse>(
     '/api/audit/v1/audit/events?limit=10',
-    fetcher,
   )
+
+  // This is the landing page. Every stat previously fell back to an em-dash on
+  // error, so a completely dead backend rendered as a healthy, empty vault —
+  // the most confident possible way to be wrong. Surface it once at the top
+  // rather than four times in the cards.
+  const loadFailure = tenantsError ?? apiKeysError ?? secretsError
+  const failureMessage =
+    loadFailure instanceof Error
+      ? `Some dashboard data could not be loaded: ${loadFailure.message}`
+      : ''
 
   return (
     <div className="max-w-7xl space-y-6">
       <PageHeader title="Dashboard" description="WSLVault overview" />
 
+      <ErrorBanner message={failureMessage} />
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Tenants"
-          value={tenants?.length ?? '—'}
+          value={tenantsError ? '!' : tenants?.length ?? '—'}
         />
         <StatCard
           label="API Keys"
-          value={apiKeys?.length ?? '—'}
+          value={apiKeysError ? '!' : apiKeys?.length ?? '—'}
         />
         <StatCard
           label="Secrets"
-          value={secrets?.paths?.length ?? '—'}
+          value={secretsError ? '!' : secrets?.paths?.length ?? '—'}
         />
         <StatCard
           label="Policies"
@@ -115,6 +120,13 @@ export default function DashboardPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          ) : auditError ? (
+            // The audit widget is the most misleading of the four: "No recent
+            // activity" on a failed fetch reads as "nothing has happened",
+            // which is exactly the wrong conclusion during an incident.
+            <div className="p-4">
+              <LoadError error={auditError} what="audit events" />
             </div>
           ) : (
             <EmptyState

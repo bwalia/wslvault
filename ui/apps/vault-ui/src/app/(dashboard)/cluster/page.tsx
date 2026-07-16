@@ -1,7 +1,6 @@
 'use client'
 import useSWR from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher } from '@/lib/fetcher'
+import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { StatCard } from '@/components/ui/StatCard'
@@ -33,8 +32,7 @@ interface ClusterStatus {
 const CLUSTER_KEY = '/api/gateway/v1/cluster/status'
 
 export default function ClusterPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const {
     data,
@@ -97,13 +95,13 @@ export default function ClusterPage() {
           aria-label="Quorum status"
         >
           {data.quorum_met === true && (
-            <CheckCircle2 className="w-5 h-5 text-success-500 flex-shrink-0 mt-0.5" aria-hidden="true" />
+            <CheckCircle2 className="w-5 h-5 text-success-500 shrink-0 mt-0.5" aria-hidden="true" />
           )}
           {data.quorum_met === false && (
-            <XCircle className="w-5 h-5 text-danger-500 flex-shrink-0 mt-0.5" aria-hidden="true" />
+            <XCircle className="w-5 h-5 text-danger-500 shrink-0 mt-0.5" aria-hidden="true" />
           )}
           {data.quorum_met === null && (
-            <HelpCircle className="w-5 h-5 text-ink-faint flex-shrink-0 mt-0.5" aria-hidden="true" />
+            <HelpCircle className="w-5 h-5 text-ink-faint shrink-0 mt-0.5" aria-hidden="true" />
           )}
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold text-ink">
@@ -122,7 +120,7 @@ export default function ClusterPage() {
             </p>
           </div>
           {leaderNode && (
-            <div className="flex items-center gap-1.5 text-xs text-ink-muted flex-shrink-0">
+            <div className="flex items-center gap-1.5 text-xs text-ink-muted shrink-0">
               <Crown className="w-3.5 h-3.5 text-warn-500" aria-hidden="true" />
               <span>Leader:</span>
               <span className="font-mono text-[13px] text-ink">
@@ -189,7 +187,7 @@ export default function ClusterPage() {
                       <div className="flex items-center gap-2">
                         {node.role === 'leader' && (
                           <Crown
-                            className="w-3.5 h-3.5 text-warn-500 flex-shrink-0"
+                            className="w-3.5 h-3.5 text-warn-500 shrink-0"
                             aria-label="Leader node"
                           />
                         )}

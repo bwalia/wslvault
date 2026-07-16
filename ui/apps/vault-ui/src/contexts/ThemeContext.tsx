@@ -1,5 +1,14 @@
 'use client'
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  type ReactNode,
+} from 'react'
+import { safeStorage } from '@/lib/safe'
 
 type Theme = 'light' | 'dark' | 'system'
 
@@ -11,34 +20,55 @@ interface ThemeContextType {
 
 const ThemeContext = createContext<ThemeContextType | null>(null)
 
+const THEMES: readonly Theme[] = ['light', 'dark', 'system']
+const isTheme = (v: unknown): v is Theme => typeof v === 'string' && THEMES.includes(v as Theme)
+
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>('system')
   const [resolved, setResolved] = useState<'light' | 'dark'>('light')
 
   useEffect(() => {
-    const stored = (localStorage.getItem('vault_theme') as Theme) ?? 'system'
-    setThemeState(stored)
+    // Validate rather than cast: the old code cast whatever was in storage to
+    // `Theme`, so a junk value silently became an unhandled theme.
+    const stored = safeStorage.get('vault_theme')
+    if (isTheme(stored)) setThemeState(stored)
   }, [])
 
   useEffect(() => {
-    const apply = (t: Theme) => {
-      const isDark =
-        t === 'dark' ||
-        (t === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-      document.documentElement.classList.toggle('dark', isDark)
-      setResolved(isDark ? 'dark' : 'light')
-    }
-    apply(theme)
-    localStorage.setItem('vault_theme', theme)
+    const isDark =
+      theme === 'dark' ||
+      (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+    document.documentElement.classList.toggle('dark', isDark)
+    setResolved(isDark ? 'dark' : 'light')
+
+    // safeStorage, not localStorage.setItem: this provider wraps the entire app
+    // and sits above every error boundary. A raw setItem throws in Safari
+    // private mode, which took the whole app to a white screen — over a theme
+    // preference.
+    safeStorage.set('vault_theme', theme)
   }, [theme])
 
-  const setTheme = (t: Theme) => setThemeState(t)
+  // Follow the OS while on 'system' — previously this was read once at mount,
+  // so switching the OS to dark mid-session did nothing until a reload.
+  useEffect(() => {
+    if (theme !== 'system') return
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (e: MediaQueryListEvent) => {
+      document.documentElement.classList.toggle('dark', e.matches)
+      setResolved(e.matches ? 'dark' : 'light')
+    }
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [theme])
 
-  return (
-    <ThemeContext.Provider value={{ theme, setTheme, resolvedTheme: resolved }}>
-      {children}
-    </ThemeContext.Provider>
+  const setTheme = useCallback((t: Theme) => setThemeState(t), [])
+
+  const value = useMemo<ThemeContextType>(
+    () => ({ theme, setTheme, resolvedTheme: resolved }),
+    [theme, setTheme, resolved],
   )
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }
 
 export function useTheme() {

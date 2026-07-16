@@ -1,8 +1,10 @@
 'use client'
-import { useState } from 'react'
-import useSWR, { mutate as swrMutate } from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { useState, useCallback } from 'react'
+import { mutate as swrMutate } from 'swr'
+import { useVaultSWR, useVaultMutate } from '@/hooks/useVaultSWR'
+import { useAsyncAction } from '@/hooks/useAsyncAction'
+import { api } from '@/lib/api'
+import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -31,19 +33,17 @@ interface TenantFormValues {
   root_key_id: string
 }
 
-const TENANTS_KEY = '/api/identity/v1/tenants'
+const TENANTS_KEY = api.identity.tenants()
 
 export default function TenantsPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
-  const { data: tenants, isLoading } = useSWR<Tenant[]>(TENANTS_KEY, fetcher)
+  const vaultMutate = useVaultMutate()
+  const { data: tenants, error: loadError, isLoading } = useVaultSWR<Tenant[]>(TENANTS_KEY)
 
   const [createOpen, setCreateOpen] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState('')
-
   const [deleteTarget, setDeleteTarget] = useState<Tenant | null>(null)
-  const [deleting, setDeleting] = useState(false)
+
+  const create = useAsyncAction()
+  const remove = useAsyncAction()
 
   const {
     register,
@@ -52,34 +52,39 @@ export default function TenantsPage() {
     formState: { errors },
   } = useForm<TenantFormValues>({ defaultValues: { tier: 'shared' } })
 
-  const onCreate = async (values: TenantFormValues) => {
-    setCreating(true)
-    setCreateError('')
-    try {
-      await mutate(TENANTS_KEY, 'POST', values, token, tenantId)
-      await swrMutate(TENANTS_KEY)
-      setCreateOpen(false)
-      reset()
-    } catch (err) {
-      setCreateError(err instanceof Error ? err.message : 'Failed to create tenant')
-    } finally {
-      setCreating(false)
-    }
-  }
+  const onCreate = useCallback(
+    (values: TenantFormValues) => {
+      void create.run(
+        async () => {
+          await vaultMutate(TENANTS_KEY, 'POST', values)
+          await swrMutate(TENANTS_KEY)
+        },
+        {
+          fallback: 'Failed to create tenant',
+          onSuccess: () => {
+            setCreateOpen(false)
+            reset()
+          },
+        },
+      )
+    },
+    [create, vaultMutate, reset],
+  )
 
-  const onDelete = async () => {
+  const onDelete = useCallback(() => {
     if (!deleteTarget) return
-    setDeleting(true)
-    try {
-      await mutate(`${TENANTS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
-      await swrMutate(TENANTS_KEY)
-      setDeleteTarget(null)
-    } catch {
-      // Silently ignore — the confirm modal will close
-    } finally {
-      setDeleting(false)
-    }
-  }
+    // The previous comment here claimed "the confirm modal will close" on
+    // failure. It did not: setDeleteTarget(null) sat inside the try, so a
+    // failed delete left the modal open with the spinner stopped and no
+    // message — the failure was indistinguishable from a no-op.
+    void remove.run(
+      async () => {
+        await vaultMutate(api.identity.tenant(deleteTarget.id), 'DELETE')
+        await swrMutate(TENANTS_KEY)
+      },
+      { fallback: 'Failed to delete tenant', onSuccess: () => setDeleteTarget(null) },
+    )
+  }, [remove, deleteTarget, vaultMutate])
 
   const columns: Column<Tenant>[] = [
     { field: 'display_name', label: 'Name', sortable: true },
@@ -133,35 +138,42 @@ export default function TenantsPage() {
         }
       />
 
-      <DataTable
-        columns={columns}
-        data={(tenants as unknown as Record<string, unknown>[] | undefined) ?? []}
-        loading={isLoading}
-        keyField="id"
-        emptyMessage="No tenants yet. Create your first tenant to get started."
-      />
+      {loadError ? (
+        <LoadError error={loadError} what="tenants" />
+      ) : (
+        <DataTable
+          columns={columns}
+          data={(tenants as unknown as Record<string, unknown>[] | undefined) ?? []}
+          loading={isLoading}
+          keyField="id"
+          emptyMessage="No tenants yet. Create your first tenant to get started."
+        />
+      )}
 
       {/* Create modal */}
       <Modal
         open={createOpen}
-        onClose={() => { setCreateOpen(false); reset(); setCreateError('') }}
+        onClose={() => { setCreateOpen(false); reset(); create.clearError() }}
         title="Create Tenant"
         size="md"
         footer={
           <>
-            <Button variant="secondary" size="sm" onClick={() => { setCreateOpen(false); reset() }}>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={create.pending}
+              onClick={() => { setCreateOpen(false); reset(); create.clearError() }}
+            >
               Cancel
             </Button>
-            <Button size="sm" loading={creating} onClick={handleSubmit(onCreate)}>
+            <Button size="sm" loading={create.pending} onClick={handleSubmit(onCreate)}>
               Create
             </Button>
           </>
         }
       >
         <form className="space-y-4" onSubmit={handleSubmit(onCreate)}>
-          {createError && (
-            <p className="text-sm text-danger-600">{createError}</p>
-          )}
+          <ErrorBanner message={create.error} onDismiss={create.clearError} />
           <Input
             label="Slug"
             placeholder="my-tenant"
@@ -206,13 +218,14 @@ export default function TenantsPage() {
       {/* Delete confirm */}
       <ConfirmModal
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => { setDeleteTarget(null); remove.clearError() }}
         onConfirm={onDelete}
         title="Delete Tenant"
         description={`Are you sure you want to delete tenant "${deleteTarget?.display_name}"? This action cannot be undone.`}
         confirmText={deleteTarget?.slug}
         confirmLabel="Delete"
-        loading={deleting}
+        loading={remove.pending}
+        error={remove.error}
       />
     </div>
   )

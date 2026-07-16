@@ -16,6 +16,15 @@ interface ConfirmModalProps {
   confirmLabel?: string
   danger?: boolean
   loading?: boolean
+  /**
+   * Error from the confirmed action, rendered inside the modal.
+   *
+   * A destructive action that fails leaves the modal open. If the caller
+   * renders the error on the page behind it, the modal backdrop covers it and
+   * the user sees the spinner stop with no explanation — indistinguishable
+   * from the action silently doing nothing. The error has to live in here.
+   */
+  error?: string
 }
 
 export function ConfirmModal({
@@ -28,13 +37,22 @@ export function ConfirmModal({
   confirmLabel = 'Confirm',
   danger = true,
   loading = false,
+  error = '',
 }: ConfirmModalProps) {
   const [typed, setTyped] = useState('')
 
   const canConfirm = confirmText ? typed === confirmText : true
 
   const handleConfirm = async () => {
-    await onConfirm()
+    try {
+      await onConfirm()
+    } catch (err) {
+      // Callers are expected to guard internally (useAsyncAction) and pass
+      // `error` back in. This is a backstop so a caller that doesn't cannot
+      // produce an unhandled rejection here.
+      console.error('[ConfirmModal] onConfirm rejected:', err)
+      return
+    }
     setTyped('')
   }
 
@@ -68,7 +86,7 @@ export function ConfirmModal({
     >
       <div className="flex gap-3">
         <AlertTriangle
-          className="w-5 h-5 flex-shrink-0 mt-0.5 text-danger-600 dark:text-danger-400"
+          className="w-5 h-5 shrink-0 mt-0.5 text-danger-600 dark:text-danger-400"
           aria-hidden="true"
         />
         <div className="flex-1">
@@ -87,6 +105,14 @@ export function ConfirmModal({
                 size={undefined}
               />
             </div>
+          )}
+          {error && (
+            <p
+              role="alert"
+              className="mt-3 rounded-lg border border-danger-600/30 bg-danger-600/5 px-2.5 py-2 text-xs text-danger-600"
+            >
+              {error}
+            </p>
           )}
         </div>
       </div>

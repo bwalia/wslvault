@@ -77,7 +77,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
     >
       {/* Wordmark */}
       <div className="flex items-center h-14 px-4 border-b border-steel-line gap-3">
-        <div className="flex-shrink-0 w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center">
+        <div className="shrink-0 w-8 h-8 rounded-lg bg-primary-600 flex items-center justify-center">
           <Lock className="w-4 h-4 text-white" aria-hidden="true" />
         </div>
         {open && (
@@ -121,7 +121,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
                         />
                       )}
                       <item.icon
-                        className={cn('w-[18px] h-[18px] flex-shrink-0', active && 'text-primary-300')}
+                        className={cn('w-[18px] h-[18px] shrink-0', active && 'text-primary-300')}
                         aria-hidden="true"
                       />
                       {open && <span className="truncate">{item.label}</span>}

@@ -2,7 +2,8 @@
 import { useState } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { mutate } from '@/lib/fetcher'
+import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
@@ -84,7 +85,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
 
 export default function TransitPage() {
   const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const { data: keysData, isLoading } = useSWR<TransitKeyResponse>(TRANSIT_KEY, fetcher)
   const keys = keysData?.keys ?? []

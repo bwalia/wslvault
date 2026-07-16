@@ -39,7 +39,7 @@ export function StatusBadge({ status }: { status?: string | null }) {
   const cfg = statusMap[status.toLowerCase()] ?? { variant: 'default' as const, label: status }
   return (
     <Badge variant={cfg.variant}>
-      <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dotColor[cfg.variant])} />
+      <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', dotColor[cfg.variant])} />
       {cfg.label}
     </Badge>
   )

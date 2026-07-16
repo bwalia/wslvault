@@ -1,7 +1,6 @@
 'use client'
 import useSWR from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher } from '@/lib/fetcher'
+import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { StatCard } from '@/components/ui/StatCard'
@@ -39,8 +38,7 @@ function LagCell({ lagMs }: { lagMs: number | null }) {
 const REGIONS_KEY = '/api/gateway/v1/regions'
 
 export default function RegionsPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const { data, isLoading, error, mutate: revalidate } = useSWR<RegionsResponse>(
     REGIONS_KEY,
