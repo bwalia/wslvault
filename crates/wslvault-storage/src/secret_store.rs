@@ -115,6 +115,36 @@ pub async fn get_secret_metadata(
 }
 
 /// Retrieve a specific version of a secret.
+/// Highest version of a secret that is neither soft-deleted nor destroyed.
+/// Returns 0 when no live version remains.
+///
+/// This exists because `shared.secrets.current_version` is a *write* pointer:
+/// `vault_upsert_secret` advances it, but `vault_soft_delete_versions` does not
+/// move it back. After deleting the current version the column still names that
+/// version, so a reader that trusts it serves data the caller just deleted.
+/// This is the SQL equivalent of `SecretEntry::current_version_number()` in the
+/// in-memory backend, and the two must agree.
+pub async fn latest_live_version(
+    pool: &DbPool,
+    secret_id: &wslvault_core::SecretId,
+) -> Result<u32, VaultError> {
+    let row = sqlx::query(
+        "SELECT COALESCE(MAX(version), 0) AS version
+         FROM shared.secret_versions
+         WHERE secret_id = $1
+           AND deleted_at IS NULL
+           AND destroyed = false",
+    )
+    .bind(secret_id.0)
+    .fetch_one(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(row.get::<i32, _>("version") as u32)
+}
+
 pub async fn get_secret_version(
     pool: &DbPool,
     secret_id: &wslvault_core::SecretId,
