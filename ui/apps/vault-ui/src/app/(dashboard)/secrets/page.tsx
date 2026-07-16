@@ -1,5 +1,5 @@
 'use client'
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { createFetcher, mutate } from '@/lib/fetcher'
@@ -22,6 +22,22 @@ interface SecretData {
     versions?: number[]
   }
 }
+
+// The secret-engine REST API mounts KV operations under `/v1/secret/data/*path`
+// (read = GET, write = POST) and expects a *real* nested path — the axum `*path`
+// wildcard does not match a percent-encoded `%2F`. Encode each segment
+// individually so slashes survive as path separators.
+const encodePath = (path: string) => path.split('/').map(encodeURIComponent).join('/')
+const secretDataUrl = (path: string) => `/api/secret/v1/secret/data/${encodePath(path)}`
+const secretDeleteUrl = (path: string) => `/api/secret/v1/secret/delete/${encodePath(path)}`
+
+// The API's `data` field is a single base64 string, not a JSON object. We store
+// the key/value map as base64(JSON) and reverse it on read. Uint8Array bridges
+// keep this correct for non-ASCII secret material.
+const encodeSecretData = (obj: Record<string, string>): string =>
+  btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(obj))))
+const decodeSecretData = (b64: string): Record<string, string> =>
+  JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0))))
 
 function SecretTree({
   prefix,
@@ -97,9 +113,16 @@ function SecretEditor({
   token: string | null
   tenantId: string | null
 }) {
-  const fetcher = createFetcher(token, tenantId)
-  const secretUrl = `/api/secret/v1/secret/${encodeURIComponent(path)}`
-  const { data, isLoading, mutate: revalidate } = useSWR<SecretData>(secretUrl, fetcher)
+  const secretUrl = secretDataUrl(path)
+  // Decode the API's base64 `data` blob into the {data, metadata} shape the
+  // editor renders.
+  const { data, isLoading, mutate: revalidate } = useSWR<SecretData>(
+    secretUrl,
+    async (url: string) => {
+      const raw = (await createFetcher(token, tenantId)(url)) as { data: string; version: number }
+      return { data: decodeSecretData(raw.data), metadata: { version: raw.version } }
+    },
+  )
 
   const [kvPairs, setKvPairs] = useState<{ k: string; v: string; show: boolean }[]>([])
   const [jsonMode, setJsonMode] = useState(false)
@@ -110,14 +133,13 @@ function SecretEditor({
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
-  // Populate editor when data loads
-  useState(() => {
+  // Populate editor when data loads (or the selected secret changes).
+  useEffect(() => {
     if (data?.data) {
-      const pairs = Object.entries(data.data).map(([k, v]) => ({ k, v, show: false }))
-      setKvPairs(pairs)
+      setKvPairs(Object.entries(data.data).map(([k, v]) => ({ k, v, show: false })))
       setJsonText(JSON.stringify(data.data, null, 2))
     }
-  })
+  }, [data])
 
   const buildPayload = (): Record<string, string> => {
     if (jsonMode) {
@@ -135,7 +157,7 @@ function SecretEditor({
     setSaveError('')
     try {
       const payload = buildPayload()
-      await mutate(secretUrl, 'PUT', { data: payload }, token, tenantId)
+      await mutate(secretUrl, 'POST', { data: encodeSecretData(payload) }, token, tenantId)
       await revalidate()
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : 'Save failed')
@@ -147,7 +169,7 @@ function SecretEditor({
   const onDelete = async () => {
     setDeleting(true)
     try {
-      await mutate(secretUrl, 'DELETE', null, token, tenantId)
+      await mutate(secretDeleteUrl(path), 'POST', { versions: [] }, token, tenantId)
       await swrMutate(`/api/secret/v1/secret/list?prefix=`)
       setDeleteOpen(false)
     } catch {
@@ -160,10 +182,6 @@ function SecretEditor({
   if (isLoading) {
     return <div className="py-12 text-center text-sm text-ink-faint">Loading…</div>
   }
-
-  const pairs = data?.data
-    ? Object.entries(data.data).map(([k, v]) => ({ k, v }))
-    : kvPairs.map(p => ({ k: p.k, v: p.v }))
 
   return (
     <div className="space-y-4">
@@ -212,7 +230,7 @@ function SecretEditor({
         />
       ) : (
         <div className="space-y-2">
-          {pairs.map(({ k, v }, idx) => (
+          {kvPairs.map(({ k, v }, idx) => (
             <div key={idx} className="flex items-center gap-2">
               <input
                 value={k}
@@ -309,7 +327,7 @@ function NewSecretPanel({
     setError('')
     try {
       const data = Object.fromEntries(kvPairs.filter(p => p.k).map(p => [p.k, p.v]))
-      await mutate(`/api/secret/v1/secret/${encodeURIComponent(secretPath)}`, 'POST', { data }, token, tenantId)
+      await mutate(secretDataUrl(secretPath), 'POST', { data: encodeSecretData(data) }, token, tenantId)
       await swrMutate('/api/secret/v1/secret/list?prefix=')
       onCreated()
     } catch (err) {
