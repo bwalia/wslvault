@@ -76,7 +76,7 @@ function OneTimeKeyReveal({ value }: { value: string }) {
         </pre>
         <button
           onClick={copy}
-          className="flex-shrink-0 p-1.5 rounded-md text-ink-faint hover:text-ink hover:bg-surface-3 transition-colors focus-ring"
+          className="shrink-0 p-1.5 rounded-md text-ink-faint hover:text-ink hover:bg-surface-3 transition-colors focus-ring"
           aria-label={copied ? 'Copied' : 'Copy API key'}
         >
           {copied ? (

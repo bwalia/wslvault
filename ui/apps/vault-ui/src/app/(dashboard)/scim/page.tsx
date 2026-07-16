@@ -2,7 +2,8 @@
 import { useState, useCallback } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher, mutate } from '@/lib/fetcher'
+import { mutate, errorMessage } from '@/lib/fetcher'
+import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardBody } from '@/components/ui/Card'
 import { DataTable, Column } from '@/components/ui/DataTable'
@@ -112,7 +113,7 @@ function primaryEmail(user: ScimUser): string {
 
 function UsersTab() {
   const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const { data, isLoading } = useSWR<ScimListResponse<ScimUser>>(USERS_KEY, fetcher)
   const users: ScimUser[] = data?.Resources ?? []
@@ -122,6 +123,7 @@ function UsersTab() {
   const [deleteTarget, setDeleteTarget] = useState<ScimUser | null>(null)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [formError, setFormError] = useState('')
 
   const form = useForm<UserFormValues>({
@@ -219,12 +221,16 @@ function UsersTab() {
   const onDeleteUser = async () => {
     if (!deleteTarget) return
     setDeleting(true)
+    setDeleteError('')
     try {
       await mutate(`${USERS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
       await swrMutate(USERS_KEY)
       setDeleteTarget(null)
-    } catch {
-      // swallow — user stays in list if delete fails
+    } catch (err) {
+      // "The user stays in the list" was the whole problem: deprovisioning a
+      // user is a security action, and a silent failure means an operator
+      // believes access is gone when it is not.
+      setDeleteError(errorMessage(err, 'Failed to delete user'))
     } finally {
       setDeleting(false)
     }
@@ -383,12 +389,13 @@ function UsersTab() {
       {/* Delete confirm */}
       <ConfirmModal
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => { setDeleteTarget(null); setDeleteError('') }}
         onConfirm={onDeleteUser}
         title="Delete SCIM User"
         description={`Permanently delete user "${deleteTarget?.userName}"? This cannot be undone.`}
         confirmLabel="Delete"
         loading={deleting}
+        error={deleteError}
       />
     </div>
   )
@@ -465,7 +472,7 @@ function UserForm({
 
 function GroupsTab() {
   const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const { data, isLoading } = useSWR<ScimListResponse<ScimGroup>>(GROUPS_KEY, fetcher)
   const groups: ScimGroup[] = data?.Resources ?? []
@@ -475,6 +482,7 @@ function GroupsTab() {
   const [deleteTarget, setDeleteTarget] = useState<ScimGroup | null>(null)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
   const [formError, setFormError] = useState('')
 
   const form = useForm<GroupFormValues>({
@@ -550,12 +558,13 @@ function GroupsTab() {
   const onDeleteGroup = async () => {
     if (!deleteTarget) return
     setDeleting(true)
+    setDeleteError('')
     try {
       await mutate(`${GROUPS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
       await swrMutate(GROUPS_KEY)
       setDeleteTarget(null)
-    } catch {
-      // swallow — group stays in list if delete fails
+    } catch (err) {
+      setDeleteError(errorMessage(err, 'Failed to delete group'))
     } finally {
       setDeleting(false)
     }
@@ -731,12 +740,13 @@ function GroupsTab() {
       {/* Delete confirm */}
       <ConfirmModal
         open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
+        onClose={() => { setDeleteTarget(null); setDeleteError('') }}
         onConfirm={onDeleteGroup}
         title="Delete SCIM Group"
         description={`Permanently delete group "${deleteTarget?.displayName}"? This cannot be undone.`}
         confirmLabel="Delete"
         loading={deleting}
+        error={deleteError}
       />
     </div>
   )

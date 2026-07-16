@@ -17,15 +17,26 @@ interface CodeChipProps {
  */
 export function CodeChip({ value, truncate, copyable = false, className }: CodeChipProps) {
   const [copied, setCopied] = useState(false)
+  const [failed, setFailed] = useState(false)
 
   const display =
     truncate && value.length > truncate ? `${value.slice(0, truncate)}…` : value
 
   const copy = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await navigator.clipboard.writeText(value)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1500)
+    // clipboard.writeText rejects on an insecure origin (plain HTTP, which the
+    // dev gateway serves) or a denied permission. Unhandled it was an invisible
+    // promise rejection: the icon never changed and the user assumed the click
+    // missed. Reflect the failure in the control itself.
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      setFailed(false)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setFailed(true)
+      setTimeout(() => setFailed(false), 2500)
+    }
   }
 
   return (
@@ -40,8 +51,14 @@ export function CodeChip({ value, truncate, copyable = false, className }: CodeC
       {copyable && (
         <button
           onClick={copy}
-          className="text-ink-faint hover:text-ink transition-colors focus-ring rounded"
-          aria-label={copied ? 'Copied' : `Copy ${value}`}
+          className={cn(
+            'transition-colors focus-ring rounded',
+            failed ? 'text-danger-600' : 'text-ink-faint hover:text-ink',
+          )}
+          aria-label={
+            failed ? 'Copy failed — select the text manually' : copied ? 'Copied' : `Copy ${value}`
+          }
+          title={failed ? 'Copy failed — select the text manually' : undefined}
         >
           {copied ? <Check className="w-3 h-3 text-success-600" /> : <Copy className="w-3 h-3" />}
         </button>

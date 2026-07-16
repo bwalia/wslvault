@@ -1,8 +1,7 @@
 'use client'
 import { useState } from 'react'
 import useSWR from 'swr'
-import { useAuth } from '@/contexts/AuthContext'
-import { createFetcher } from '@/lib/fetcher'
+import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -43,8 +42,7 @@ const filterInputClass =
   'w-full px-3 py-1.5 text-sm rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 transition-colors'
 
 export default function AuditPage() {
-  const { token, tenantId } = useAuth()
-  const fetcher = createFetcher(token, tenantId)
+  const fetcher = useFetcher()
 
   const [filters, setFilters] = useState({ action: '', principal: '', from: '', to: '' })
   const [applied, setApplied] = useState({ action: '', principal: '', from: '', to: '' })
@@ -219,7 +217,7 @@ export default function AuditPage() {
 
       {/* Event detail drawer */}
       {selectedEvent && (
-        <div className="w-80 flex-shrink-0">
+        <div className="w-80 shrink-0">
           <Card className="sticky top-6">
             <CardHeader>
               <CardTitle>Event Detail</CardTitle>
