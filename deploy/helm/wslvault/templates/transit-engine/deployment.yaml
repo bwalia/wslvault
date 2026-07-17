@@ -58,16 +58,18 @@ spec:
           env:
             - name: HTTP_PORT
               value: {{ .Values.transitEngine.httpPort | quote }}
-            # gRPC address of the crypto-service for encrypt/decrypt key operations
-            - name: CRYPTO_SERVICE_ADDR
-              value: {{ printf "%s:%s"
-                          (include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $))
-                          (.Values.cryptoService.grpcPort | toString) }}
-            # gRPC address of the policy-engine for transit key access policies
-            - name: POLICY_ENGINE_ADDR
-              value: {{ printf "%s:%s"
+            # gRPC endpoints the transit-engine depends on. The binary reads the
+            # *_ENDPOINT names (services/transit-engine/src/main.rs) and needs the
+            # http:// scheme; the prior *_ADDR names were ignored. (Crypto is
+            # performed in-process, so no crypto endpoint is required here.)
+            - name: POLICY_ENGINE_ENDPOINT
+              value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
                           (.Values.policyEngine.grpcPort | toString) }}
+            - name: AUDIT_SERVICE_ENDPOINT
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "audit-service" "context" $))
+                          (.Values.auditService.grpcPort | toString) }}
             {{- with .Values.transitEngine.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
