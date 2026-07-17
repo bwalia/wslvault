@@ -58,16 +58,23 @@ spec:
           env:
             - name: HTTP_PORT
               value: {{ .Values.mcpServer.httpPort | quote }}
-            # gRPC address of the secret-engine used for MCP secret retrieval tools
-            - name: SECRET_ENGINE_ADDR
-              value: {{ printf "%s:%s"
+            # HTTP endpoints the mcp-server calls. The binary reads the
+            # VAULT_*_ADDR names below (services/mcp-server/src/main.rs) as full
+            # http:// URLs on the services' HTTP ports — not gRPC. The prior
+            # unprefixed *_ADDR names (and IDENTITY_SERVICE_ADDR, which the binary
+            # never reads) were ignored, so it fell back to unresolvable defaults.
+            - name: VAULT_SECRET_ENGINE_ADDR
+              value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $))
-                          (.Values.secretEngine.grpcPort | toString) }}
-            # gRPC address of the identity-service for MCP session authentication
-            - name: IDENTITY_SERVICE_ADDR
-              value: {{ printf "%s:%s"
-                          (include "wslvault.componentFullname" (dict "component" "identity-service" "context" $))
-                          (.Values.identityService.grpcPort | toString) }}
+                          (.Values.secretEngine.httpPort | toString) }}
+            - name: VAULT_TRANSIT_ENGINE_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "transit-engine" "context" $))
+                          (.Values.transitEngine.httpPort | toString) }}
+            - name: VAULT_AUDIT_SERVICE_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "audit-service" "context" $))
+                          (.Values.auditService.httpPort | toString) }}
             {{- with .Values.mcpServer.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
