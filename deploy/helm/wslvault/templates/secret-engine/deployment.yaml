@@ -74,16 +74,27 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            # gRPC address of the crypto-service used for all encryption calls
-            - name: CRYPTO_SERVICE_ADDR
-              value: {{ printf "%s:%s"
+            # gRPC endpoints of the services the secret-engine depends on.
+            # NOTE: the binary reads the *_ENDPOINT names below (see
+            # services/secret-engine/src/main.rs) and requires the http:// scheme
+            # for tonic. Earlier *_ADDR names (no scheme) were silently ignored,
+            # so the engine fell back to unresolvable defaults (policy-engine:50053).
+            - name: CRYPTO_SERVICE_ENDPOINT
+              value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $))
                           (.Values.cryptoService.grpcPort | toString) }}
-            # gRPC address of the policy-engine used for access-control checks
-            - name: POLICY_ENGINE_ADDR
-              value: {{ printf "%s:%s"
+            - name: POLICY_ENGINE_ENDPOINT
+              value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
                           (.Values.policyEngine.grpcPort | toString) }}
+            - name: AUDIT_SERVICE_ENDPOINT
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "audit-service" "context" $))
+                          (.Values.auditService.grpcPort | toString) }}
+            - name: LEASE_MANAGER_ENDPOINT
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $))
+                          (.Values.leaseManager.grpcPort | toString) }}
             {{- with .Values.secretEngine.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

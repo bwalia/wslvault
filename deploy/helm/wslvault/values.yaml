@@ -105,7 +105,11 @@ secrets:
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:
   enabled: true
-  replicaCount: 3
+  # -- MUST stay 1 until DEK lookups are served from the DB on-demand. The
+  # service restores wrapped keys from Postgres only at startup and otherwise
+  # serves DEKs from an in-process cache, so with >1 replica an encrypt on one
+  # pod and the matching decrypt on another fails with "key not found".
+  replicaCount: 1
   image:
     repository: bwalia/wslvault-crypto-service
     # -- Leave empty to use global.imageTag
