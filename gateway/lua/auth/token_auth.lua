@@ -15,11 +15,27 @@ local function hash_token(token)
     return resty_string.to_hex(sha:final())
 end
 
--- Extract Bearer token from Authorization header
-local function get_bearer_token()
-    local auth_header = ngx.req.get_headers()["Authorization"]
+-- Extract the caller's token.
+--
+-- Two spellings are accepted:
+--   * X-Vault-Token      — what HashiCorp Vault clients send (the vault CLI,
+--                          the Terraform provider, and the External Secrets
+--                          Operator's `vault` provider). Required for the KV v2
+--                          compatibility mount at /v1/kv/... to be reachable;
+--                          without it those clients are rejected here with 401
+--                          before ever reaching the secret-engine.
+--   * Authorization: Bearer <token> — the native wslvault spelling.
+local function get_token()
+    local headers = ngx.req.get_headers()
+
+    local vault_token = headers["X-Vault-Token"]
+    if vault_token and vault_token ~= "" then
+        return vault_token, nil
+    end
+
+    local auth_header = headers["Authorization"]
     if not auth_header then
-        return nil, "missing Authorization header"
+        return nil, "missing credentials: send X-Vault-Token or Authorization: Bearer <token>"
     end
 
     local token = auth_header:match("^Bearer%s+(.+)$")
@@ -55,7 +71,7 @@ local function cache_token(token_hash, claims, ttl)
 end
 
 -- Main authentication logic
-local token, err = get_bearer_token()
+local token, err = get_token()
 if not token then
     ngx.status = 401
     ngx.header["Content-Type"] = "application/json"

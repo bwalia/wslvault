@@ -29,6 +29,7 @@ mod grpc;
 mod ha_status;
 mod health;
 mod http;
+mod kv2;
 mod kv_store;
 mod lease_client;
 mod path;

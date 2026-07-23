@@ -89,10 +89,16 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
         .to_string()
 }
 
-/// Extract the required `X-Tenant-Id` header from an incoming request.
+/// Extract the required tenant header from an incoming request.
+///
+/// Accepts BOTH spellings on purpose. `gateway/lua/auth/token_auth.lua` injects
+/// `X-Vault-Tenant-ID` on a token-cache hit, while this service historically
+/// only read `x-tenant-id` — so a cache hit produced a request the engine then
+/// rejected with `400 missing_header`. Honouring both closes that gap.
 fn extract_tenant_id(headers: &HeaderMap) -> Result<String, Response> {
     headers
         .get("x-tenant-id")
+        .or_else(|| headers.get("x-vault-tenant-id"))
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -1609,6 +1615,11 @@ pub fn build_router(
         .route("/v1/secret/confirm/*path", post(confirm_rotation))
         .route("/v1/secret/rollback/*path", post(rollback_secret))
         .route("/v1/secret/versions/*path", get(list_versions))
+        // HashiCorp Vault KV v2-compatible surface (mount: /v1/kv/...), so
+        // Vault clients — notably the External Secrets Operator — work against
+        // wslvault unchanged. Merged here, INSIDE the gateway-auth layer below,
+        // so it inherits exactly the same origin protection as the native API.
+        .merge(crate::kv2::routes())
         .with_state(app_state)
         // Only honor tenant-identity headers on requests proven to originate
         // from the gateway (via the shared X-Gateway-Auth secret).
