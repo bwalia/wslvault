@@ -1609,6 +1609,11 @@ pub fn build_router(
         .route("/v1/secret/confirm/*path", post(confirm_rotation))
         .route("/v1/secret/rollback/*path", post(rollback_secret))
         .route("/v1/secret/versions/*path", get(list_versions))
+        // HashiCorp Vault KV v2-compatible surface (mount: /v1/kv/...), so
+        // Vault clients — notably the External Secrets Operator — work against
+        // wslvault unchanged. Merged here, INSIDE the gateway-auth layer below,
+        // so it inherits exactly the same origin protection as the native API.
+        .merge(crate::kv2::routes())
         .with_state(app_state)
         // Only honor tenant-identity headers on requests proven to originate
         // from the gateway (via the shared X-Gateway-Auth secret).
