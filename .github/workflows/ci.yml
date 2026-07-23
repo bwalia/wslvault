@@ -110,7 +110,13 @@ jobs:
 
   build-images:
     name: Build & Push Docker Images
-    runs-on: ubuntu-latest
+    # Self-hosted (the wslvault-mac runner on hh193). GitHub-hosted minutes are
+    # exhausted, which cancelled/failed these builds. NOTE: that runner is
+    # macOS/arm64, while k3s1 is amd64 — so the build below MUST pin
+    # linux/amd64 (see the QEMU + platforms settings in the build step).
+    # Building natively here would produce arm64 images that die on the cluster
+    # with "exec format error".
+    runs-on: [self-hosted, wslvault]
     # Decoupled from test/check so image builds+pushes aren't gated on the non-blocking lint/audit jobs.
     needs: []
     if: github.ref == 'refs/heads/main'
@@ -133,6 +139,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # QEMU lets the arm64 runner emit linux/amd64 images. Slower than a native
+      # amd64 build (a full Rust release build under emulation), but correctness
+      # first: the cluster is amd64.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -149,9 +163,16 @@ jobs:
           context: .
           file: deploy/docker/${{ matrix.service }}/Dockerfile
           push: true
+          # Pinned, not inferred. The Dockerfile selects its Rust musl target
+          # from `uname -m`, so an unpinned build on the arm64 runner would
+          # silently produce an aarch64 binary that the amd64 cluster cannot
+          # execute — and the failure only surfaces at pod start.
+          platforms: linux/amd64
           tags: |
             bwalia/wslvault-${{ matrix.service }}:latest
             bwalia/wslvault-${{ matrix.service }}:0.1.0
             bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # GHA cache is unavailable on a self-hosted runner without the
+          # Actions cache service; use the local buildx cache instead.
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ matrix.service }}
+          cache-to: type=local,dest=/tmp/.buildx-cache-${{ matrix.service }},mode=max
