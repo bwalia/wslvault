@@ -149,8 +149,11 @@ impl PolicyClient {
 /// policy-engine is still consulted and will deny the anonymous principal
 /// unless an explicit allow policy exists.
 pub fn extract_principal_id(headers: &axum::http::HeaderMap) -> String {
+    // Both spellings: the gateway injects `X-Vault-Principal-ID` on a
+    // token-cache hit, this service historically read only `x-principal-id`.
     headers
         .get("x-principal-id")
+        .or_else(|| headers.get("x-vault-principal-id"))
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .unwrap_or("anonymous")
@@ -164,8 +167,10 @@ pub fn extract_principal_id(headers: &axum::http::HeaderMap) -> String {
 /// e.g. `"default,readonly-secrets"`.  Whitespace around each name is trimmed.
 /// Returns an empty `Vec` when the header is absent.
 pub fn extract_policies(headers: &axum::http::HeaderMap) -> Vec<String> {
+    // Both spellings; see extract_principal_id.
     headers
         .get("x-policies")
+        .or_else(|| headers.get("x-vault-policies"))
         .and_then(|v| v.to_str().ok())
         .map(|raw| {
             raw.split(',')

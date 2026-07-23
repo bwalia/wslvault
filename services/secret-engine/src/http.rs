@@ -89,10 +89,16 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
         .to_string()
 }
 
-/// Extract the required `X-Tenant-Id` header from an incoming request.
+/// Extract the required tenant header from an incoming request.
+///
+/// Accepts BOTH spellings on purpose. `gateway/lua/auth/token_auth.lua` injects
+/// `X-Vault-Tenant-ID` on a token-cache hit, while this service historically
+/// only read `x-tenant-id` — so a cache hit produced a request the engine then
+/// rejected with `400 missing_header`. Honouring both closes that gap.
 fn extract_tenant_id(headers: &HeaderMap) -> Result<String, Response> {
     headers
         .get("x-tenant-id")
+        .or_else(|| headers.get("x-vault-tenant-id"))
         .and_then(|v| v.to_str().ok())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())

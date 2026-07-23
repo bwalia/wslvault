@@ -80,6 +80,17 @@ edgeIngress:
     - { path: /v1/quotas, component: identity-service, port: 8082 }
     - { path: /scim, component: identity-service, port: 8082 }
     - { path: /v1/secret, component: secret-engine, port: 8081 }
+    # HashiCorp Vault KV v2 compatibility mount (services/secret-engine/src/kv2.rs).
+    # This is what the External Secrets Operator talks to: `path: kv` in its
+    # SecretStore maps to GET/POST /v1/kv/data/<path>.
+    - { path: /v1/kv, component: secret-engine, port: 8081 }
+    # Vault clients probe token self-lookup before use. This MUST stay a longer
+    # prefix than /v1/auth above (which goes to identity-service) — Traefik
+    # prefers the more specific match, so /v1/auth/token lands on secret-engine
+    # while the rest of /v1/auth still reaches identity-service.
+    - { path: /v1/auth/token, component: secret-engine, port: 8081 }
+    # Vault-shaped health (/v1/sys/health), used by vault clients and probes.
+    - { path: /v1/sys, component: secret-engine, port: 8081 }
     - { path: /v1/transit, component: transit-engine, port: 8086 }
     - { path: /v1/policies, component: policy-engine, port: 8083 }
     - { path: /v1/pki, component: pki-engine, port: 8088 }

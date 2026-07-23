@@ -71,6 +71,22 @@ spec:
           - path: /v1/secret
             pathType: Prefix
             backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          # HashiCorp Vault KV v2 compatibility mount (services/secret-engine/src/kv2.rs).
+          # This is what the External Secrets Operator talks to: `path: kv` in
+          # its SecretStore maps to GET/POST /v1/kv/data/<path>.
+          - path: /v1/kv
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          # Vault clients probe token self-lookup before use. MUST remain a
+          # longer prefix than /v1/auth above (identity-service) so Traefik's
+          # more-specific match sends only this to the secret-engine.
+          - path: /v1/auth/token
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
+          # Vault-shaped health at /v1/sys/health.
+          - path: /v1/sys
+            pathType: Prefix
+            backend: { service: { name: wslvault-secret-engine, port: { number: 8081 } } }
           # --- transit-engine (8086) ---
           - path: /v1/transit
             pathType: Prefix

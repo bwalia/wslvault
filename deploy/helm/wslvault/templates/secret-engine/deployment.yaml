@@ -68,6 +68,18 @@ spec:
                   name: {{ include "wslvault.dbCredentialsSecretName" . }}
                   key: {{ include "wslvault.dbPasswordSecretKey" . }}
                   optional: false
+            # Shared HS256 signing secret, the SAME one identity-service issues
+            # tokens with. The KV v2 compatibility mount
+            # (services/secret-engine/src/kv2.rs) verifies X-Vault-Token with it,
+            # which is how Vault clients such as the External Secrets Operator
+            # authenticate. Token auth fails CLOSED without this: an
+            # unverifiable token is rejected rather than trusted.
+            - name: VAULT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.fullname" . }}-jwt-secret
+                  key: jwt-secret
+                  optional: false
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
                           .Values.postgresql.auth.username
