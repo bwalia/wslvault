@@ -121,6 +121,11 @@ jobs:
     needs: []
     if: github.ref == 'refs/heads/main'
     strategy:
+      # One failing service must not cancel the other twelve. With a single
+      # self-hosted runner these jobs queue serially, so a fail-fast cancel
+      # wipes out everything still waiting — that is exactly how a
+      # replication-agent failure took the secret-engine image down with it.
+      fail-fast: false
       matrix:
         service:
           - crypto-service
