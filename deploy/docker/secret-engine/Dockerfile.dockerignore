@@ -1,0 +1,34 @@
+# Build-context filter for the secret-engine image ONLY.
+#
+# BuildKit uses `<Dockerfile>.dockerignore` in preference to the repo-root
+# .dockerignore, so this trims the context for this image without affecting
+# vault-ui (which genuinely needs ui/) or any other build.
+#
+# Why: the root context is ~754 MB, of which ui/ alone is ~696 MB and the
+# non-Rust SDKs another ~39 MB. None of it is used to compile a Rust service,
+# but all of it was being transferred to the builder on every build — and any
+# change under ui/ invalidated the cache for a service that cannot even see it.
+# Excluding it takes the context to a few MB.
+
+.git
+target
+**/target
+
+# Frontend: not part of any Rust build (~696 MB).
+ui
+
+# Only sdks/rust is a Cargo workspace member; the rest are other languages.
+sdks/js
+sdks/python
+sdks/go
+sdks/java
+sdks/dotnet
+
+# Not needed to compile.
+deploy
+docs
+examples
+scripts
+storage
+gateway
+*.md
