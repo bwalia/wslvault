@@ -585,6 +585,20 @@ async fn lookup_self(headers: HeaderMap) -> Response {
     );
     data.insert("meta".into(), Value::Object(meta));
 
+    // Vault's own lookup-self returns these, and clients assert on them —
+    // External Secrets Operator rejects the store with "could not assert token
+    // type" if `type` is absent, so omitting them is not cosmetic. `service`
+    // is the right value: wslvault tokens are ordinary (non-batch) tokens.
+    data.insert("type".into(), Value::String("service".into()));
+    data.insert("accessor".into(), Value::String(String::new()));
+    data.insert("path".into(), Value::String("auth/token/lookup-self".into()));
+    data.insert("orphan".into(), Value::Bool(true));
+    data.insert("renewable".into(), Value::Bool(false));
+    data.insert("num_uses".into(), Value::Number(0.into()));
+    // TTL is advisory here; the JWT's own `exp` is what actually governs.
+    data.insert("ttl".into(), Value::Number(0.into()));
+    data.insert("explicit_max_ttl".into(), Value::Number(0.into()));
+
     let mut body = Map::new();
     body.insert("data".into(), Value::Object(data));
     (StatusCode::OK, Json(Value::Object(body))).into_response()
