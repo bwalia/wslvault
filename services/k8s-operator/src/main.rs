@@ -102,6 +102,10 @@ async fn main() -> anyhow::Result<()> {
 
     let vault_token = std::env::var("VAULT_TOKEN").ok().filter(|t| !t.is_empty());
 
+    // Identity the operator asserts to the gateway-fronted secret-engine.
+    let vault_tenant_id = std::env::var("VAULT_TENANT_ID").ok().filter(|t| !t.is_empty());
+    let vault_policies = std::env::var("VAULT_POLICIES").ok().filter(|t| !t.is_empty());
+
     let health_addr: SocketAddr = std::env::var("HEALTH_ADDR")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -146,6 +150,8 @@ async fn main() -> anyhow::Result<()> {
         http_client: http_client.clone(),
         default_vault_endpoint: vault_endpoint,
         default_vault_token: vault_token.clone(),
+        default_tenant_id: vault_tenant_id,
+        default_policies: vault_policies,
     });
 
     let policy_ctx = Arc::new(PolicyOperatorContext {

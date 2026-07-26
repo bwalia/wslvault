@@ -80,6 +80,18 @@ pub struct OperatorContext {
     ///
     /// Per-resource `spec.auth` configuration takes precedence.
     pub default_vault_token: Option<String>,
+
+    /// Tenant id sent as the `X-Tenant-Id` header (from `VAULT_TENANT_ID`).
+    ///
+    /// The gateway-fronted secret-engine derives the caller identity from
+    /// `X-Tenant-Id` + `X-Policies` headers (it enforces `X-Gateway-Auth` and
+    /// has no bearer-token fallback), so these must be supplied for reads to
+    /// authorize.
+    pub default_tenant_id: Option<String>,
+
+    /// Comma-separated policy names sent as the `X-Policies` header
+    /// (from `VAULT_POLICIES`).
+    pub default_policies: Option<String>,
 }
 
 // ─── Response shapes ──────────────────────────────────────────────────────────
@@ -154,6 +166,8 @@ pub async fn reconcile(
         &vault_endpoint,
         &vault_secret.spec.path,
         vault_token.as_deref(),
+        ctx.default_tenant_id.as_deref(),
+        ctx.default_policies.as_deref(),
     )
     .await;
 
@@ -300,16 +314,32 @@ async fn fetch_secret_from_vault(
     vault_endpoint: &str,
     path: &str,
     vault_token: Option<&str>,
+    tenant_id: Option<&str>,
+    policies: Option<&str>,
 ) -> Result<VaultGetSecretResponse, OperatorError> {
     let url = format!("{}/v1/secrets/{}", vault_endpoint, path);
     debug!(url = %url, "fetching secret from wslvault");
 
     let mut request = http_client.get(&url);
 
-    // Attach the vault token as a bearer token when available.
+    // Attach the vault token as a bearer token when available. Behind the
+    // gateway this satisfies the edge token check; the secret-engine itself
+    // derives identity from the headers below (it enforces X-Gateway-Auth and
+    // has no bearer-token fallback in `get_secret`).
     if let Some(token) = vault_token {
         request = request.bearer_auth(token);
     }
+
+    // Identity headers the gateway-fronted secret-engine authorizes against.
+    // Without these the read is rejected (400 "X-Tenant-Id header is required"
+    // or empty-policies 403).
+    if let Some(tenant) = tenant_id {
+        request = request.header("X-Tenant-Id", tenant);
+    }
+    if let Some(pols) = policies {
+        request = request.header("X-Policies", pols);
+    }
+    request = request.header("X-Principal-Id", "wslvault-operator");
 
     let response = request.send().await?;
 
