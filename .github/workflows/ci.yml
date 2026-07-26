@@ -145,6 +145,7 @@ jobs:
           - sync-scheduler
           - pki-engine
           - vault-ui
+          - k8s-operator
     steps:
       - uses: actions/checkout@v4
 
