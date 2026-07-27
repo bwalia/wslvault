@@ -31,8 +31,9 @@ COPY crates/ crates/
 COPY services/ services/
 COPY sdks/ sdks/
 COPY wslvault-cli/ wslvault-cli/
-# Copy deploy directory so the embedded CRD YAML is available at compile time.
-COPY deploy/ deploy/
+# Copy just the CRD YAML the operator embeds via include_str! at compile time
+# (the rest of deploy/ is excluded by .dockerignore).
+COPY deploy/kubernetes/crds/ deploy/kubernetes/crds/
 
 RUN RUST_TARGET=$(cat /tmp/rust-target) && \
     cargo build --release --target $RUST_TARGET -p k8s-operator && \
