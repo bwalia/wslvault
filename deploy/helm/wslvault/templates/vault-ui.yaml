@@ -192,4 +192,34 @@ spec:
               app.kubernetes.io/name: traefik
       ports:
         - { port: {{ $ui.port | default 3011 }}, protocol: TCP }
+{{- with $ui.wslproxyIngress }}
+{{- if .cidrs }}
+---
+# Allow host-network wslproxy instances (the edge PoP's origin hop on cluster
+# nodes) to reach the UI pod directly via the ClusterIP, bypassing Traefik.
+# Sources are the flannel host addresses of each wslproxy node; a /31 covers
+# both the flannel.1 (.0, cross-node) and cni0 (.1, same-node) source IPs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $svc }}-allow-wslproxy-hosts
+  namespace: {{ $ctx.Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "vault-ui" "componentType" "ui" "context" $ctx) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "vault-ui" "context" $ctx) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - { port: {{ $ui.port | default 3011 }}, protocol: TCP }
+{{- end }}
+{{- end }}
 {{- end }}
