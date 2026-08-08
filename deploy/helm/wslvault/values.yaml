@@ -45,6 +45,19 @@ ui:
   tls:
     # -- Leave secretName empty to serve HTTP only (TLS terminated at the edge PoP)
     secretName: ""
+  # -- Host-network wslproxy instances allowed to reach the UI port directly
+  # (bypassing Traefik). List the flannel host address of each cluster node
+  # that runs wslproxy as a /31 (covers flannel.1 .0 and cni0 .1 sources).
+  # Node flannel addresses derive from `kubectl get node -o jsonpath
+  # '{.spec.podCIDR}'` (e.g. podCIDR 10.42.16.0/24 -> host 10.42.16.0/31).
+  # Empty list renders no policy; the default-deny then blocks host traffic.
+  wslproxyIngress:
+    cidrs: []
+    # cidrs:
+    #   - 10.42.16.0/31  # cloud001 (edge PoP origin hop)
+    #   - 10.42.2.0/31   # debian001
+    #   - 10.42.3.0/31   # debian002
+    #   - 10.42.1.0/31   # debworker00
   resources: {}
 
 # -- Edge Ingress for the control plane (Traefik / k3s). Chart-managed
