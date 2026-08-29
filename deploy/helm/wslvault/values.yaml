@@ -236,11 +236,6 @@ edgeIngress:
     - { path: /v1/policies, component: policy-engine, port: 8083 }
     - { path: /v1/pki, component: pki-engine, port: 8088 }
     - { path: /v1/mcp, component: mcp-server, port: 8087 }
-    # Peer regions pull the replication outbox through here. The endpoint is
-    # NOT public: replication-agent requires the shared bearer token on
-    # /v1/replication/* and returns 401 without it (503 when no token is
-    # configured at all). See services/replication-agent/src/auth.rs.
-    - { path: /v1/replication, component: replication-agent, port: 8091 }
 
 # -- Prometheus monitoring annotations
 monitoring:
@@ -569,6 +564,24 @@ replicationAgent:
   batchSize: 100
   # -- Conflict resolution strategy: "last_write_wins", "vector_clock", or "manual"
   conflictStrategy: "last_write_wins"
+  # -- Publish /v1/replication on the edge Ingress so peer regions can pull the
+  # outbox.
+  #
+  # ⚠ KEEP THIS false UNTIL THE DEPLOYED IMAGE ENFORCES THE PEER TOKEN.
+  # The outbox serves ciphertext and DEK ids, cleartext RBAC policy documents,
+  # and the tenant roster including root_key_id. The shared-token guard lives in
+  # services/replication-agent/src/auth.rs, but a published image built BEFORE
+  # that change ignores REPLICATION_PEER_TOKEN entirely and serves the outbox to
+  # anyone who can reach the ingress — the env var being present proves nothing.
+  #
+  # Confirm the running image enforces it before flipping this on:
+  #   curl -o /dev/null -w '%{http_code}\n' \
+  #     "https://<region-host>/v1/replication/events?source_region=x"
+  #   # 401 (or 503) = guarded and safe to publish
+  #   # 200          = pre-auth image; leave this false
+  #
+  # Regions cannot replicate while this is false; that is the safe failure.
+  publishPeerEndpoint: false
   resources:
     requests:
       cpu: "100m"

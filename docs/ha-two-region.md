@@ -80,6 +80,30 @@ configured the route returns `503` rather than serving the outbox openly.
 `/health`, `/ready` and `/metrics` stay unauthenticated for probes and
 Prometheus.
 
+### ⚠ The route is not published until the image enforces the token
+
+`replicationAgent.publishPeerEndpoint` defaults to **false**, so
+`/v1/replication` is absent from the edge Ingress and peers cannot pull.
+Regions do not replicate in that state — which is the safe failure.
+
+The guard lives in the service binary, so an image built before it ignores
+`REPLICATION_PEER_TOKEN` completely and serves the outbox to anyone who reaches
+the ingress. The env var being wired by the chart proves nothing. This was
+observed for real: with `0.1.0` deployed, an unauthenticated request to
+`/v1/replication/events` returned `200`, and so did one carrying a nonsense
+bearer token.
+
+Before enabling, confirm the running image actually rejects:
+
+```bash
+curl -o /dev/null -w '%{http_code}\n' \
+  "https://<region-host>/v1/replication/events?source_region=x"
+# 401 or 503 -> guarded; safe to set publishPeerEndpoint: true
+# 200        -> pre-auth image; leave it false
+```
+
+Then set it in **every** region's values file and let Argo sync.
+
 ---
 
 ## 3. Key material — the one thing regions must share
@@ -278,16 +302,16 @@ Then check the mesh sees itself, from either region:
 curl -s https://vault-b.workstation.co.uk/v1/sys/regions | jq
 ```
 
-And that the peer API is closed to strangers but open to peers:
+And that the peer API is not published yet (see §2):
 
 ```bash
 curl -s -o /dev/null -w '%{http_code}\n' \
-  'https://vault-a.workstation.co.uk/v1/replication/events?source_region=region-b'
-# 401 — expected
+  'https://vault-b.workstation.co.uk/v1/replication/events?source_region=region-a'
+# 404 — no Ingress route, because publishPeerEndpoint is false
 
-curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  'https://vault-a.workstation.co.uk/v1/replication/events?source_region=region-b'
-# 200
+# Once an image enforcing the token is deployed and the flag is on:
+#   without a token -> 401
+#   with the mesh token -> 200
 ```
 
 ---
@@ -341,6 +365,8 @@ after three consecutive ones, polling every 10s.
 |---|---|
 | Peer polls return `401` | mesh Secret differs between regions — run `wslvault-mesh-keys.sh verify` |
 | Peer polls return `503` | `replication-peer-token` missing from the Secret; the API is failing closed |
+| Peer polls return `404` | `replicationAgent.publishPeerEndpoint` is still false (the default) |
+| Peer polls return `200` with **no** token | the deployed image predates the auth guard — set `publishPeerEndpoint: false` until a newer image ships |
 | Replication silent, no errors | peer roster only updated in one region — `validate-gitops.sh` catches this |
 | Secrets replicate but read back as garbage | `root-key` differs between regions |
 | Services crash-loop on a new region | migrations Job did not complete — `kubectl -n <ns> logs job/wslvault-migrations-<hash>` |

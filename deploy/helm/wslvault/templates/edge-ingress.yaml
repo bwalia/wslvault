@@ -45,6 +45,22 @@ spec:
                 port:
                   number: {{ .port }}
           {{- end }}
+          {{- if and $.Values.replicationAgent.enabled $.Values.replicationAgent.publishPeerEndpoint }}
+          {{/*
+          Peer-facing replication API. Gated behind
+          replicationAgent.publishPeerEndpoint because publishing it against an
+          image that predates the shared-token guard exposes the outbox — with
+          its cleartext policy documents and tenant roster — to the internet.
+          See the value's comment for the check before enabling.
+          */}}
+          - path: /v1/replication
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $ctx) }}
+                port:
+                  number: {{ $.Values.replicationAgent.httpPort }}
+          {{- end }}
 {{- if $ei.httpRedirect.enabled }}
 ---
 apiVersion: traefik.io/v1alpha1
