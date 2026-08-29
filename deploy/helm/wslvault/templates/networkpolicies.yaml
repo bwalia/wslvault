@@ -749,4 +749,42 @@ spec:
         {{- end }}
 {{- end }}
 
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+migrations Job: allow egress to PostgreSQL.
+
+The default-deny policy at the top of this file covers every pod in the
+namespace, and the per-service egress rules above enumerate the long-running
+services only. The schema bootstrap Job is not one of them, so without this
+rule it sits in `pg_isready` forever and the Job never completes — while the
+services it exists to unblock crash-loop on the missing schema. Observed
+exactly that on the first real deploy.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.migrations.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-migrations
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "migrations" "context" $) | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: {{ include "wslvault.postgresPort" . }}
+          protocol: TCP
+{{- end }}
+
 {{- end }}{{/* networkPolicies.enabled */}}

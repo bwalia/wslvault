@@ -136,19 +136,25 @@ Build the PostgreSQL port.
 {{- end }}
 
 {{/*
-Build the full DATABASE_URL environment variable value.
-Format: postgresql://<user>:<password>@<host>:<port>/<database>
-The password is embedded from postgresql.auth.password. Ensure the password
-is URL-safe (no @ / : characters) or url-encode it before supplying.
+REMOVED: wslvault.databaseURL.
+
+It inlined .Values.postgresql.auth.password into the URL, which breaks the
+moment credentials come from a Secret rather than from values — the password
+resolves to the chart default and the service crash-loops on authentication.
+
+Build DATABASE_URL from a DB_PASSWORD secretKeyRef and let the kubelet
+interpolate $(DB_PASSWORD) at container start, as every service now does:
+
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: {{ include "wslvault.dbCredentialsSecretName" . }}
+        key: {{ include "wslvault.dbPasswordSecretKey" . }}
+  - name: DATABASE_URL
+    value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s" ... }}
+
+This also keeps the password out of `kubectl get pod -o yaml`.
 */}}
-{{- define "wslvault.databaseURL" -}}
-{{- printf "postgresql://%s:%s@%s:%s/%s"
-    .Values.postgresql.auth.username
-    .Values.postgresql.auth.password
-    (include "wslvault.postgresHost" .)
-    (include "wslvault.postgresPort" .)
-    .Values.postgresql.auth.database }}
-{{- end }}
 
 {{/*
 Image reference helper.
