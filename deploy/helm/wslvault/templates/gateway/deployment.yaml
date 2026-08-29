@@ -120,16 +120,5 @@ spec:
           emptyDir: {}
         - name: openresty-cache
           emptyDir: {}
-      {{- with .Values.gateway.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.gateway.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.gateway.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.gateway "context" $) | nindent 6 }}
 {{- end }}

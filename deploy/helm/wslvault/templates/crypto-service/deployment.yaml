@@ -95,16 +95,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.cryptoService.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.cryptoService.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.cryptoService.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.cryptoService "context" $) | nindent 6 }}
 {{- end }}

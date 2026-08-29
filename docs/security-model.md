@@ -110,6 +110,28 @@ source class no other policy covers, so default-deny rejects it.
   hop encrypted (the pod-overlay VXLAN is not) and keeps Traefik as the
   single audited entry point.
 
+### wslproxy host ingress to the API services (`networkPolicies.wslproxyHostIngress`)
+
+`{release}-allow-wslproxy-hosts` (in `templates/networkpolicies.yaml`) is the
+API-side counterpart of the vault-ui policy above: when the whole release is
+pinned to the edge PoP node (`global.scheduling`), the node-local wslproxy /
+traefik-edge origin hop reaches the API pods with the node's flannel host
+address as source, which default-deny would otherwise reject. The policy
+allows only the `/31` host addresses in `cidrs` (anchored to
+`global.edgeHostCidrs`) to the declared public API HTTP ports — the same
+route set as `edgeIngress.routes`. gRPC and PostgreSQL ports stay closed to
+host traffic.
+
+### Single-node placement (`global.scheduling`)
+
+The entire release — every service, vault-ui, and PostgreSQL — is
+co-scheduled onto one node via `global.scheduling` in `values.yaml`
+(currently `cloud001`, the public edge PoP origin). This is a deliberate
+constraint: pods on cloud001 cannot reach pods on other nodes (flannel VXLAN
+to the LAN nodes is unroutable), so splitting the stack across nodes silently
+partitions it. Placement, tolerations, and the edge-host CIDRs are wired from
+a single block via YAML anchors — re-pinning the stack is a one-block edit.
+
 ### Hardening checklist for the edge path
 
 - wslproxy origin must target Traefik `websecure` (443) with SNI/Host

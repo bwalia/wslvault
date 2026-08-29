@@ -189,6 +189,31 @@ securityContext:
 {{- end }}
 
 {{/*
+Pod scheduling (nodeSelector / affinity / tolerations) for a component.
+Renders the per-service values when set, otherwise falls back to the
+cluster-wide defaults under global.scheduling. This is what pins every
+workload in the release to a single node: change
+global.scheduling.nodeSelector in values.yaml and the whole stack follows.
+Usage: {{ include "wslvault.podScheduling" (dict "service" .Values.auditService "context" $) | nindent 6 }}
+*/}}
+{{- define "wslvault.podScheduling" -}}
+{{- $global := .context.Values.global.scheduling | default dict }}
+{{- $svc := .service | default dict }}
+{{- with (default $global.nodeSelector $svc.nodeSelector) }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with (default $global.affinity $svc.affinity) }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with (default $global.tolerations $svc.tolerations) }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+
+{{/*
 Resolve the name of the DB credentials secret.
 When postgresql.auth.existingSecret is set, that secret is used directly.
 Otherwise the chart-managed "wslvault-db-credentials" secret is used.
