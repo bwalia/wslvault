@@ -67,10 +67,13 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            - name: REGION_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            {{- include "wslvault.regionEnv" . | nindent 12 }}
+            # Peers to pull replication events from, as "<region_id>=<url>"
+            # pairs (services/replication-agent/src/config.rs). Built from
+            # global.region.peers with the local region filtered out, so every
+            # region can share one identical roster.
+            - name: REPLICATION_PEERS
+              value: {{ include "wslvault.replicationPeers" . | quote }}
             - name: REPLICATION_LISTEN_ADDR
               value: {{ printf "0.0.0.0:%d" (int .Values.replicationAgent.httpPort) | quote }}
             - name: REPLICATION_POLL_INTERVAL_MS
@@ -79,6 +82,16 @@ spec:
               value: {{ .Values.replicationAgent.batchSize | quote }}
             - name: REPLICATION_CONFLICT_STRATEGY
               value: {{ .Values.replicationAgent.conflictStrategy | quote }}
+            # Shared bearer token the peer-facing replication API requires and
+            # this region's own peer polls present. The API fails CLOSED
+            # without it: the outbox carries cleartext policy documents and the
+            # tenant roster, and regions peer over the public internet.
+            - name: REPLICATION_PEER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.peerTokenSecretName" . }}
+                  key: {{ include "wslvault.peerTokenSecretKey" . }}
+                  optional: true
             {{- with .Values.replicationAgent.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

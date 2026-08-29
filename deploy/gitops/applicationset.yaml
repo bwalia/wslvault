@@ -1,0 +1,97 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# wslvault region mesh — one Argo CD Application per region.
+#
+# ADDING A REGION IS ONE LIST ENTRY.
+#   1. Add an element to the `list` generator below.
+#   2. Add deploy/gitops/regions/<id>.values.yaml (copy an existing one).
+#   3. Append the new region to the `peers` roster in EVERY region's values
+#      file — the roster is identical across regions by design; each chart
+#      filters out its own entry when building REPLICATION_PEERS.
+#   4. Point the new hostnames at the new node and copy the mesh Secret into
+#      the new namespace.
+#   Commit. Argo CD creates the namespace, runs the schema migrations and
+#   brings the region up.
+#
+# WHY A LIST GENERATOR AND NOT A GIT DIRECTORY GENERATOR
+#   A directory generator would discover regions/*.values.yaml automatically,
+#   but a region is not only a values file — it is also a namespace, a node
+#   pinning and a DNS record. Making the roster explicit here keeps "which
+#   regions exist" reviewable in a diff rather than implied by a filename.
+# ═══════════════════════════════════════════════════════════════════════════
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: wslvault-regions
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  generators:
+    - list:
+        elements:
+          - region: region-a
+            namespace: wslvault
+            node: cloud001
+            # Argo CD sync wave across regions: region A carries the live data
+            # and syncs first, so a bad chart change is caught there before it
+            # reaches region B.
+            wave: "0"
+          - region: region-b
+            namespace: wslvault-b
+            node: cloud003
+            wave: "1"
+  template:
+    metadata:
+      name: 'wslvault-{{ .region }}'
+      namespace: argocd
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{ .wave }}'
+      # Without the finalizer a deleted Application orphans the whole region's
+      # workloads (and its PVC) instead of cleaning them up.
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: wslvault
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{ .namespace }}'
+      sources:
+        - repoURL: &repo https://github.com/bwalia/wslvault.git
+          targetRevision: main
+          path: deploy/helm/wslvault
+          helm:
+            releaseName: wslvault
+            valueFiles:
+              # $values resolves to the ref source below, so the per-region
+              # file is read from the same commit as the chart.
+              - $values/deploy/gitops/regions/{{ .region }}.values.yaml
+        - repoURL: *repo
+          targetRevision: main
+          ref: values
+      ignoreDifferences:
+        # The three shared-key Secrets and the DB credentials are provisioned
+        # out-of-band and carry helm.sh/resource-policy: keep. Argo must not
+        # try to reconcile their contents.
+        - group: ""
+          kind: Secret
+          jsonPointers:
+            - /data
+      syncPolicy:
+        automated:
+          prune: true
+          # Self-heal is what makes this sustainable: a manual `kubectl edit`
+          # on a region is reverted to what Git says within minutes, so the two
+          # regions cannot silently drift apart.
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          # The migrations Job is content-addressed and immutable; replacing it
+          # rather than patching avoids "field is immutable" on every re-run.
+          - Replace=false
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

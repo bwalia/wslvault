@@ -61,13 +61,29 @@ spec:
               value: {{ .Values.cryptoService.httpPort | quote }}
             - name: GRPC_PORT
               value: {{ .Values.cryptoService.grpcPort | quote }}
+            # Read from the credentials Secret and interpolated at container
+            # start, the same as every other service. It used to be built by
+            # wslvault.databaseURL, which inlined postgresql.auth.password —
+            # so with auth.existingSecret set (no plain-text password in
+            # values) this silently became the literal default "changeme" and
+            # the service crash-looped on authentication.
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  optional: false
             - name: DATABASE_URL
-              value: {{ include "wslvault.databaseURL" . | quote }}
+              value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
+                          .Values.postgresql.auth.username
+                          (include "wslvault.postgresHost" .)
+                          (include "wslvault.postgresPort" .)
+                          .Values.postgresql.auth.database }}
             - name: VAULT_ROOT_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-root-key
-                  key: root-key
+                  name: {{ include "wslvault.rootKeySecretName" . }}
+                  key: {{ include "wslvault.rootKeySecretKey" . }}
                   optional: false
             {{- with .Values.cryptoService.extraEnv }}
             {{- toYaml . | nindent 12 }}

@@ -1,0 +1,143 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# region-b — second region, pinned to cloud003 (London PoP)
+#
+# A complete, independent wslvault stack: its own PostgreSQL, its own service
+# set, its own public hostnames. It is paired with region-a only through the
+# `peers` roster below — each region's replication-agent polls the other's
+# /v1/replication/events over the public edge and applies the events locally.
+#
+# WHY cloud003 AND NOT vps002
+#   vps002 was the original choice, but as of 2026-08-29 it cannot run this
+#   stack: its node-local CoreDNS pod has never gone Ready (its readiness probe
+#   503s because CoreDNS cannot reach the API server — the `kubernetes` Service
+#   endpoints are LAN addresses vps002 has no route to). kube-dns is
+#   internalTrafficPolicy: Local, so there is no fallback to another node's
+#   CoreDNS: pods on vps002 resolve nothing and ClusterIP times out. Every
+#   service here addresses PostgreSQL and its siblings by in-cluster DNS.
+#
+#   cloud003 has the same isolation profile as cloud001 (edge taint,
+#   cross-node=unavailable, traefik-edge, local-path) with working DNS, and is
+#   a genuinely separate site (net-region=london vs cloud001's manchester).
+#
+#   To move to vps002 once its LAN route is restored, change the two
+#   nodeSelector hostnames below and edgeHostCidrs to 10.42.17.0/31.
+#   See docs/ha-two-region.md §5.0.
+# ═══════════════════════════════════════════════════════════════════════════
+global:
+  region:
+    id: region-b
+    displayName: London
+    endpoint: https://vault-b.workstation.co.uk
+    # Identical roster to region-a's file; the chart drops the local entry.
+    peers:
+      - id: region-a
+        displayName: Manchester
+        replicationUrl: https://vault-a.workstation.co.uk
+      - id: region-b
+        displayName: London
+        replicationUrl: https://vault-b.workstation.co.uk
+
+  # Required by the PostgreSQL subchart to accept the bitnamilegacy repository.
+  security:
+    allowInsecureImages: true
+
+  scheduling:
+    nodeSelector:
+      kubernetes.io/hostname: cloud003
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    affinity: {}
+
+  # cloud003 podCIDR 10.42.0.0/24 -> host /31, covering both the flannel.1 .0
+  # and cni0 .1 source addresses.
+  edgeHostCidrs: &regionBEdgeCidrs
+    - 10.42.0.0/31
+
+networkPolicies:
+  enabled: true
+  wslproxyHostIngress:
+    cidrs: *regionBEdgeCidrs
+    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091]
+
+ui:
+  enabled: true
+  host: vault-ui-b.workstation.co.uk
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  wslproxyIngress:
+    cidrs: *regionBEdgeCidrs
+
+edgeIngress:
+  enabled: true
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  host: vault-b.workstation.co.uk
+  # NOTE: the shared alias vault.workstation.co.uk is deliberately NOT listed
+  # here. traefik-edge is one DaemonSet watching Ingresses cluster-wide, so a
+  # host claimed by two Ingresses is ambiguous: with the alias on both regions,
+  # traefik-edge on cloud003 resolved it to region A's Services and hung,
+  # because cloud003 has no pod-network route to cloud001.
+  #
+  # Exactly one region may claim the alias at a time. Failing over is therefore
+  # two coordinated changes: move the alias from region A's extraHosts to this
+  # list, and repoint the PoP origin for it at cloud003. The per-region hosts
+  # (vault-a…/vault-b…) are unambiguous and always work.
+  extraHosts: []
+  tls:
+    # Region B has no certificate of its own yet; traefik-edge serves these
+    # hosts over the web entrypoint and the PoP terminates TLS. Point this at a
+    # cert-manager secret when region B gets a trusted chain.
+    secretName: wslvault-b-gateway-tls
+    hosts:
+      - vault-b.workstation.co.uk
+      - vault.workstation.co.uk
+
+postgresql:
+  enabled: true
+  # Same legacy image as region A; the current chart default points at a
+  # repository that now requires a subscription.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+  auth:
+    database: wslvault
+    username: wslvault
+    # Created outside the chart, per region, by
+    #   ./scripts/wslvault-mesh-keys.sh db-secret wslvault-b --generate
+    # Unlike the mesh keys this is NOT shared between regions: each region has
+    # its own PostgreSQL.
+    existingSecret: wslvault-db-auth
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      # Node-local storage: longhorn does not schedule on the edge nodes, and a
+      # region must not depend on cross-node replica traffic.
+      storageClass: local-path
+    nodeSelector:
+      kubernetes.io/hostname: cloud003
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+
+# Same mesh Secret as region A, replicated into this namespace. The root key,
+# JWT secret, PKI root key and replication peer token must be byte-identical
+# across regions or replicated ciphertext will not decrypt and peer polls will
+# 401.
+# traefik-edge is the edge here too; the OpenResty gateway is not deployed.
+gateway:
+  enabled: false
+
+secrets:
+  existingSecret: wslvault-mesh-keys
+
+# Single-replica constraints carry over: crypto-service caches DEKs in-process
+# and identity-service keeps minted API keys in a HashMap.
+cryptoService:
+  replicaCount: 1
+identityService:
+  replicaCount: 1
