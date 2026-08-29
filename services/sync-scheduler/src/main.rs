@@ -19,7 +19,7 @@ use axum::extract::State;
 use axum::response::Json;
 use axum::routing::get;
 use axum::Router;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wslvault_cluster::config::ClusterConfig;
 use wslvault_cluster::leader::LeaderElector;

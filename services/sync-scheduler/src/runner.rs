@@ -1,6 +1,6 @@
 //! Sync job execution — loads the appropriate connector and runs the sync.
 
-use tracing::{info, warn};
+use tracing::info;
 use wslvault_connectors::traits::{SyncDirection, SyncResult};
 use wslvault_storage::pool::DbPool;
 
@@ -11,7 +11,7 @@ use crate::store::SyncJob;
 /// Loads the connector based on `job.connector_type`, determines the sync
 /// direction, and runs the sync operation. Integration credentials are loaded
 /// from WSLVault secrets at `system/integrations/{integration_id}/credentials`.
-pub async fn run_sync_job(pool: &DbPool, job: &SyncJob) -> anyhow::Result<SyncResult> {
+pub async fn run_sync_job(_pool: &DbPool, job: &SyncJob) -> anyhow::Result<SyncResult> {
     let direction = parse_direction(&job.direction)?;
 
     // Dispatch to the appropriate connector.
@@ -54,7 +54,7 @@ async fn run_aws_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result
     }
 }
 
-async fn run_azure_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result<SyncResult> {
+async fn run_azure_sync(job: &SyncJob, _direction: SyncDirection) -> anyhow::Result<SyncResult> {
     info!(
         integration = %job.integration_id,
         "Azure sync not yet implemented — returning empty result"
@@ -66,7 +66,7 @@ async fn run_azure_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Resu
     })
 }
 
-async fn run_gcp_sync(job: &SyncJob, direction: SyncDirection) -> anyhow::Result<SyncResult> {
+async fn run_gcp_sync(job: &SyncJob, _direction: SyncDirection) -> anyhow::Result<SyncResult> {
     info!(
         integration = %job.integration_id,
         "GCP sync not yet implemented — returning empty result"

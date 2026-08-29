@@ -15,8 +15,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Configuration

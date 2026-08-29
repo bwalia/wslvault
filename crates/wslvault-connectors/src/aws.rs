@@ -138,7 +138,7 @@ mod inner {
 
             // Attempt to parse as JSON; fall back to a plain string value.
             let value = serde_json::from_str::<serde_json::Value>(&raw_value)
-                .unwrap_or_else(|_| serde_json::Value::String(raw_value));
+                .unwrap_or(serde_json::Value::String(raw_value));
 
             debug!(version = ?version_id, "successfully pulled secret");
             Ok(SecretData {

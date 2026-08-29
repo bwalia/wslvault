@@ -8,21 +8,16 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Supported asymmetric key types for CA and leaf certificate generation.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyType {
     /// ECDSA with NIST P-256 curve (default; compact and fast).
+    #[default]
     EcdsaP256,
     /// RSA with 2048-bit modulus.
     Rsa2048,
     /// RSA with 4096-bit modulus (stronger but slower signing/verification).
     Rsa4096,
-}
-
-impl Default for KeyType {
-    fn default() -> Self {
-        KeyType::EcdsaP256
-    }
 }
 
 impl std::fmt::Display for KeyType {

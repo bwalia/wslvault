@@ -488,7 +488,7 @@ impl ApiKeyManager {
             .filter(|record| {
                 record.tenant_id == tenant_id
                     && record.revoked_at.is_none()
-                    && record.expires_at.map_or(true, |exp| now <= exp)
+                    && record.expires_at.is_none_or(|exp| now <= exp)
             })
             .map(|record| {
                 // Return a copy with the key_hash zeroed out so the SHA-256
@@ -501,7 +501,7 @@ impl ApiKeyManager {
             .collect();
 
         // Stable ordering: newest first for UI convenience.
-        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        keys.sort_by_key(|k| std::cmp::Reverse(k.created_at));
         keys
     }
 

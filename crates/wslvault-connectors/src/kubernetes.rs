@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use base64::Engine;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use crate::error::ConnectorError;
 use crate::traits::{SecretConnector, SecretData, SyncDirection, SyncResult};

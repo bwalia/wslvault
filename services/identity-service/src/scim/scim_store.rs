@@ -15,7 +15,6 @@ use std::{
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
-use tracing::warn;
 
 use super::schemas::{
     ScimEmail, ScimGroup, ScimGroupRef, ScimMemberRef, ScimMeta, ScimName, ScimUser, SCHEMA_GROUP,

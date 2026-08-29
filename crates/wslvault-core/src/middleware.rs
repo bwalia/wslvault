@@ -35,6 +35,7 @@ use axum::{
 };
 use serde::Serialize;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::types::tenant::{TenantContext, TenantId};
 
@@ -98,7 +99,7 @@ impl GatewayAuth {
             None => return true,
         };
         match provided {
-            Some(value) => ring::constant_time::verify_slices_are_equal(value, expected).is_ok(),
+            Some(value) => bool::from(value.ct_eq(expected)),
             None => false,
         }
     }

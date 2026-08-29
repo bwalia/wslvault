@@ -22,7 +22,7 @@ use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::IntoResponse;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;

@@ -14,8 +14,6 @@ jobs:
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
-    # Non-blocking: pre-existing fmt/clippy drift shouldn't gate image builds. TODO: fix and re-block.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -99,8 +97,6 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    # Non-blocking: 14 known dependency CVEs tracked separately. TODO: resolve advisories and re-block.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Install cargo-audit
