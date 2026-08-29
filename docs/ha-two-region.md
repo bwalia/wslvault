@@ -246,9 +246,18 @@ the rebuilt region B, or dump and restore before switching.
 Point the per-region hostnames at each region's node, and keep the shared alias
 on whichever region should take default traffic.
 
+Each region's Ingress serves its own per-region host; **exactly one region may
+claim the shared alias**. `traefik-edge` is a single DaemonSet watching
+Ingresses cluster-wide, so a host claimed by two Ingresses is ambiguous —
+with the alias on both regions, `traefik-edge` on cloud003 resolved
+`vault.workstation.co.uk` to region A's Services and hung, having no
+pod-network route to cloud001. Failover is therefore two coordinated changes:
+move the alias between regions' `edgeIngress.extraHosts`, and repoint the PoP
+origin.
+
 | Record | Target |
 |---|---|
-| `vault.workstation.co.uk` | PoP → region A origin (unchanged) |
+| `vault.workstation.co.uk` | PoP → region A origin (the shared alias) |
 | `vault-a.workstation.co.uk` | `72.62.211.28` (cloud001) |
 | `vault-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
 | `vault-ui-b.workstation.co.uk` | `77.68.126.63` (cloud003) |

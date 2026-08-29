@@ -74,6 +74,17 @@ edgeIngress:
   ingressClassName: traefik-edge
   entrypoint: web,websecure
   host: vault-b.workstation.co.uk
+  # NOTE: the shared alias vault.workstation.co.uk is deliberately NOT listed
+  # here. traefik-edge is one DaemonSet watching Ingresses cluster-wide, so a
+  # host claimed by two Ingresses is ambiguous: with the alias on both regions,
+  # traefik-edge on cloud003 resolved it to region A's Services and hung,
+  # because cloud003 has no pod-network route to cloud001.
+  #
+  # Exactly one region may claim the alias at a time. Failing over is therefore
+  # two coordinated changes: move the alias from region A's extraHosts to this
+  # list, and repoint the PoP origin for it at cloud003. The per-region hosts
+  # (vault-a…/vault-b…) are unambiguous and always work.
+  extraHosts: []
   tls:
     # Region B has no certificate of its own yet; traefik-edge serves these
     # hosts over the web entrypoint and the PoP terminates TLS. Point this at a
@@ -81,6 +92,7 @@ edgeIngress:
     secretName: wslvault-b-gateway-tls
     hosts:
       - vault-b.workstation.co.uk
+      - vault.workstation.co.uk
 
 postgresql:
   enabled: true

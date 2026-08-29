@@ -33,7 +33,16 @@ spec:
         - {{ . | quote }}
         {{- end }}
   rules:
-    - host: {{ $ei.host | quote }}
+    {{/*
+    One rule per host, all serving the same route map. A region needs more
+    than one name: its own per-region host (vault-a…, so peers and operators
+    can address THIS region specifically) and the shared alias
+    (vault.workstation.co.uk) that the PoP points at whichever region is
+    currently taking default traffic. Both regions answering the alias is what
+    makes failover a PoP-side change rather than a chart change.
+    */}}
+    {{- range concat (list $ei.host) ($ei.extraHosts | default list) }}
+    - host: {{ . | quote }}
       http:
         paths:
           {{- range $ei.routes }}
@@ -61,6 +70,7 @@ spec:
                 port:
                   number: {{ $.Values.replicationAgent.httpPort }}
           {{- end }}
+    {{- end }}
 {{- if $ei.httpRedirect.enabled }}
 ---
 apiVersion: traefik.io/v1alpha1

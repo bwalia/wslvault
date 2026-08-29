@@ -196,6 +196,11 @@ edgeIngress:
   # -- See ui.entrypoint: PoP terminates TLS, origin hop uses the web entrypoint.
   entrypoint: web,websecure
   host: vault.workstation.co.uk
+  # -- Additional hostnames served with the same route map. Use this for the
+  # per-region host (vault-a…/vault-b…) alongside the shared alias, so the
+  # public alias can be repointed at another region without a chart change.
+  # Every name here should also appear under tls.hosts.
+  extraHosts: []
   tls:
     # -- Self-signed by default; SANs must cover every host below. Point this at
     # a cert-manager-issued secret for a trusted chain.

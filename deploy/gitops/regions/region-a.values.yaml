@@ -59,6 +59,11 @@ edgeIngress:
   ingressClassName: traefik-edge
   entrypoint: web,websecure
   host: vault.workstation.co.uk
+  # vault-a… addresses THIS region specifically (peers and operators);
+  # vault.workstation.co.uk is the shared alias the PoP currently points here.
+  extraHosts:
+    - vault-a.workstation.co.uk
+    - wslvault.workstation.co.uk
   tls:
     secretName: wslvault-gateway-tls
     hosts:
