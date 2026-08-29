@@ -368,12 +368,10 @@ pub async fn update_group(
                 }
             }
             // Generic replace on the whole group object.
-            (PatchOpType::Replace, None, Some(val)) => {
-                if let serde_json::Value::Object(map) = val {
-                    if let Some(serde_json::Value::String(dn)) = map.get("displayName") {
-                        if !dn.trim().is_empty() {
-                            group.display_name = dn.clone();
-                        }
+            (PatchOpType::Replace, None, Some(serde_json::Value::Object(map))) => {
+                if let Some(serde_json::Value::String(dn)) = map.get("displayName") {
+                    if !dn.trim().is_empty() {
+                        group.display_name = dn.clone();
                     }
                 }
             }

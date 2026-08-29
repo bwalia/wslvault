@@ -434,7 +434,9 @@ impl KekStore {
         drop(writer);
 
         if let Some(pool) = &self.inner.db_pool {
-            let tenant_uuid = Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
+            // Validated for its side effect only: the descriptor persists the
+            // string form of the tenant id, not the parsed UUID.
+            Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
                 reason: format!("tenant_id is not a valid UUID: {e}"),
             })?;
 
@@ -508,7 +510,9 @@ impl KekStore {
 
         // Persist the wrapped DEK to PostgreSQL if a DB pool is available.
         if let Some(pool) = &self.inner.db_pool {
-            let tenant_uuid = Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
+            // Validated for its side effect only: the descriptor persists the
+            // string form of the tenant id, not the parsed UUID.
+            Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
                 reason: format!("tenant_id is not a valid UUID: {e}"),
             })?;
 
@@ -631,7 +635,9 @@ impl KekStore {
                 reason: format!("key_id is not a valid UUID: {e}"),
             })?;
 
-            let tenant_uuid = Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
+            // Validated for its side effect only: the descriptor persists the
+            // string form of the tenant id, not the parsed UUID.
+            Uuid::parse_str(tenant_id).map_err(|e| VaultError::Internal {
                 reason: format!("tenant_id is not a valid UUID: {e}"),
             })?;
 

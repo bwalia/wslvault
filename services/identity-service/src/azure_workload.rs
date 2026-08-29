@@ -22,7 +22,7 @@ use chrono::Utc;
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -376,7 +376,6 @@ pub struct JwkKey {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn extract_subscription_from_xms_mirid() {

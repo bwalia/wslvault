@@ -470,7 +470,7 @@ mod inner {
                 })?;
 
             let value = serde_json::from_str::<serde_json::Value>(&raw_str)
-                .unwrap_or_else(|_| serde_json::Value::String(raw_str));
+                .unwrap_or(serde_json::Value::String(raw_str));
 
             // Extract version identifier from the resource name.
             let version = body.name.rsplit('/').next().map(str::to_string);

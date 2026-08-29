@@ -177,6 +177,13 @@ impl Config {
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
+    // ldap3 0.12 builds its rustls `ClientConfig` from the process-level
+    // default provider. A `-p identity-service` build only enables rustls'
+    // `ring` feature so rustls would pick it up on its own, but a workspace
+    // build unifies in `aws_lc_rs` from the AWS SDK, leaving the choice
+    // ambiguous and making the first LDAPS handshake panic. Pin it here.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
     // Initialise structured JSON logging.  Log level is controlled via the
     // standard `RUST_LOG` environment variable (default: info).
     tracing_subscriber::registry()

@@ -16,8 +16,21 @@ pub struct RegionInfo {
     pub metadata: serde_json::Value,
 }
 
+/// One `system.regions` row as selected by the queries below:
+/// `(id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata)`.
+type RegionRow = (
+    String,
+    String,
+    String,
+    String,
+    bool,
+    Option<i64>,
+    DateTime<Utc>,
+    serde_json::Value,
+);
+
 pub async fn list_regions(pool: &DbPool) -> anyhow::Result<Vec<RegionInfo>> {
-    let rows: Vec<(String, String, String, String, bool, Option<i64>, DateTime<Utc>, serde_json::Value)> =
+    let rows: Vec<RegionRow> =
         sqlx::query_as(
             r#"
             SELECT id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata
@@ -57,7 +70,7 @@ pub async fn list_regions(pool: &DbPool) -> anyhow::Result<Vec<RegionInfo>> {
 }
 
 pub async fn get_region(pool: &DbPool, region_id: &str) -> anyhow::Result<Option<RegionInfo>> {
-    let row: Option<(String, String, String, String, bool, Option<i64>, DateTime<Utc>, serde_json::Value)> =
+    let row: Option<RegionRow> =
         sqlx::query_as(
             r#"
             SELECT id, display_name, endpoint, status, is_local, replication_lag_ms, last_seen, metadata

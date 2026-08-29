@@ -20,7 +20,7 @@ mod producer;
 use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use tracing::{error, info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wslvault_cluster::config::ClusterConfig;
 use wslvault_cluster::leader::LeaderElector;

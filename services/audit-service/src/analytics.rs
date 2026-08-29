@@ -210,7 +210,7 @@ pub async fn compute_analytics(
             unique_principals: principals.len(),
         })
         .collect();
-    top_resources.sort_by(|a, b| b.access_count.cmp(&a.access_count));
+    top_resources.sort_by_key(|r| std::cmp::Reverse(r.access_count));
     top_resources.truncate(10);
 
     // Build top principals (top 10 by action count).
@@ -225,7 +225,7 @@ pub async fn compute_analytics(
             },
         )
         .collect();
-    top_principals.sort_by(|a, b| b.total_actions.cmp(&a.total_actions));
+    top_principals.sort_by_key(|p| std::cmp::Reverse(p.total_actions));
     top_principals.truncate(10);
 
     let read_write_ratio = if writes > 0 {

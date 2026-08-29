@@ -14,7 +14,7 @@ const HEALTH_TIMEOUT_SECS: u64 = 5;
 const OFFLINE_CONSECUTIVE_FAILURES: u32 = 3;
 
 /// Run the region health polling loop. Only executes on the leader node.
-pub async fn run_health_poller(pool: DbPool, elector: Arc<LeaderElector>, local_region: &str) {
+pub async fn run_health_poller(pool: DbPool, elector: Arc<LeaderElector>, _local_region: &str) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(HEALTH_TIMEOUT_SECS))
         .build()
