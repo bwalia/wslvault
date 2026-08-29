@@ -100,16 +100,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.mcpServer.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.mcpServer.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.mcpServer.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.mcpServer "context" $) | nindent 6 }}
 {{- end }}

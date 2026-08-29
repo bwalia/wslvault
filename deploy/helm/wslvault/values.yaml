@@ -9,6 +9,43 @@ global:
   # -- Target namespace (used in NetworkPolicy cross-namespace selectors)
   namespace: wslvault
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Node placement — THE single place to (re)pin the whole stack.
+  #
+  # Every workload in this chart (all services, vault-ui, and the PostgreSQL
+  # subchart via the YAML anchors below) inherits these defaults unless a
+  # per-service nodeSelector/affinity/tolerations is set explicitly.
+  #
+  # To move the stack to a different node, change ONLY this block:
+  #   1. nodeSelector hostname  -> the new node's kubernetes.io/hostname
+  #   2. tolerations            -> keep/adjust for the new node's taints
+  #   3. edgeHostCidrs          -> the new node's flannel host /31, derived
+  #      from `kubectl get node <node> -o jsonpath='{.spec.podCIDR}'`
+  #      (e.g. podCIDR 10.42.16.0/24 -> 10.42.16.0/31); used by the
+  #      wslproxy/edge host-ingress NetworkPolicies further down (wired with
+  #      YAML anchors so no other edit is needed).
+  #
+  # cloud001 is the public edge PoP origin (taint node-role.kubernetes.io/edge)
+  # and pods on it cannot reach pods on other nodes (flannel VXLAN to the LAN
+  # nodes is unroutable — node label network.k3s1/cross-node=unavailable), so
+  # the entire release MUST be co-scheduled on the same node.
+  # ──────────────────────────────────────────────────────────────────────────
+  scheduling:
+    # -- Default nodeSelector for every pod in the release
+    nodeSelector: &wslvaultNodeSelector
+      kubernetes.io/hostname: cloud001
+    # -- Default tolerations (cloud001 carries the edge NoSchedule taint;
+    # harmless when pinning to an untainted node)
+    tolerations: &wslvaultTolerations
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    # -- Default affinity for every pod in the release
+    affinity: {}
+  # -- Flannel host /31 of the pinned node (see the placement notes above)
+  edgeHostCidrs: &wslvaultEdgeHostCidrs
+    - 10.42.16.0/31  # cloud001
+
 # -- Service account creation and RBAC configuration
 serviceAccount:
   # -- Whether to create a shared service account
@@ -27,12 +64,21 @@ rbac:
 networkPolicies:
   # -- Whether to create NetworkPolicy resources (default deny + explicit allow rules)
   enabled: true
+  # -- Host-network wslproxy / traefik-edge instances (the public PoP's origin
+  # hop on cluster nodes) allowed to reach the public API service ports
+  # directly via pod IPs. Follows global.edgeHostCidrs so re-pinning the stack
+  # updates this automatically. Empty cidrs renders no policy.
+  wslproxyHostIngress:
+    cidrs: *wslvaultEdgeHostCidrs
+    # -- Public API HTTP ports (mirrors the edgeIngress route map): secret-engine,
+    # identity-service, policy-engine, transit-engine, mcp-server, pki-engine
+    ports: [8081, 8082, 8083, 8086, 8087, 8088]
 
-# -- vault-ui: Next.js web console (disabled by default). When enabled it is
+# -- vault-ui: Next.js web console. When enabled it is
 # deployed with a Service, Ingress, and the additive NetworkPolicies it needs to
 # reach the backends over in-cluster DNS. Point ui.host's DNS at the same edge.
 ui:
-  enabled: false
+  enabled: true
   replicaCount: 1
   image:
     repository: bwalia/wslvault-vault-ui
@@ -40,25 +86,28 @@ ui:
     tag: ""
   port: 3011
   host: vault-ui.workstation.co.uk
-  ingressClassName: traefik
-  entrypoint: websecure
+  # -- traefik-edge is the host-network Traefik daemonset on the edge nodes
+  # (:443 on the pinned node). With the stack pinned to cloud001 the LAN
+  # Traefik LB can no longer reach these pods, so the edge node serves the
+  # public hostnames itself; the PoP origin must point at the pinned node.
+  ingressClassName: traefik-edge
+  # -- traefik-edge terminates no TLS for these hosts (the PoP holds the public
+  # certificate and proxies to the web entrypoint), so the router must bind :80.
+  entrypoint: web,websecure
   tls:
     # -- Leave secretName empty to serve HTTP only (TLS terminated at the edge PoP)
     secretName: ""
   # -- Host-network wslproxy instances allowed to reach the UI port directly
-  # (bypassing Traefik). List the flannel host address of each cluster node
-  # that runs wslproxy as a /31 (covers flannel.1 .0 and cni0 .1 sources).
-  # Node flannel addresses derive from `kubectl get node -o jsonpath
-  # '{.spec.podCIDR}'` (e.g. podCIDR 10.42.16.0/24 -> host 10.42.16.0/31).
+  # (bypassing Traefik). Follows global.edgeHostCidrs — with the whole stack
+  # pinned to one node, only that node's wslproxy can reach the UI pod anyway.
   # Empty list renders no policy; the default-deny then blocks host traffic.
   wslproxyIngress:
-    cidrs: []
-    # cidrs:
-    #   - 10.42.16.0/31  # cloud001 (edge PoP origin hop)
-    #   - 10.42.2.0/31   # debian001
-    #   - 10.42.3.0/31   # debian002
-    #   - 10.42.1.0/31   # debworker00
+    cidrs: *wslvaultEdgeHostCidrs
   resources: {}
+  # -- Optional per-service overrides of global.scheduling
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # -- Edge Ingress for the control plane (Traefik / k3s). Chart-managed
 # equivalent of deploy/k8s/wslvault-ingress.yaml — enable exactly ONE of the two
@@ -66,9 +115,11 @@ ui:
 # The route map is verified against the actual axum route registrations in
 # services/*/src; only prefixes a backend truly serves over HTTP are listed.
 edgeIngress:
-  enabled: false
-  ingressClassName: traefik
-  entrypoint: websecure
+  enabled: true
+  # -- See ui.ingressClassName: the pinned edge node serves the API hosts.
+  ingressClassName: traefik-edge
+  # -- See ui.entrypoint: PoP terminates TLS, origin hop uses the web entrypoint.
+  entrypoint: web,websecure
   host: vault.workstation.co.uk
   tls:
     # -- Self-signed by default; SANs must cover every host below. Point this at
@@ -78,8 +129,10 @@ edgeIngress:
       - vault.workstation.co.uk
       - wslvault.workstation.co.uk
   # -- HTTP:80 -> HTTPS 308 redirect (Traefik redirectScheme middleware).
+  # Disabled: traefik-edge runs without the kubernetescrd provider, so the
+  # Middleware CRD reference cannot resolve there.
   httpRedirect:
-    enabled: true
+    enabled: false
     entrypoint: web
   # -- path -> component:port. Verified 2026-07-13 against source routes.
   # Deliberately omitted (no HTTP backend): /v1/identity (unimplemented),
@@ -218,7 +271,10 @@ policyEngine:
 # -- identity-service: authentication, JWT issuance, and tenant management
 identityService:
   enabled: true
-  replicaCount: 2
+  # -- MUST stay 1 until API keys are persisted to PostgreSQL. The service
+  # stores minted API keys in an in-process HashMap only, so with >1 replica a
+  # key minted on one pod fails auth when the login lands on another.
+  replicaCount: 1
   image:
     repository: bwalia/wslvault-identity-service
     tag: ""
@@ -499,6 +555,17 @@ postgresql:
     persistence:
       enabled: true
       size: 10Gi
+      # -- Node-local storage: the pinned node keeps its own data and the
+      # DB never depends on cross-node replica traffic (broken from cloud001).
+      # NOTE: this field lands in the StatefulSet volumeClaimTemplates, which
+      # are immutable — changing it requires deleting the StatefulSet + PVC
+      # (dump/restore the data) before upgrading.
+      storageClass: local-path
+    # -- The Bitnami subchart cannot read global.scheduling, so the placement
+    # anchors from the global block are referenced here explicitly. No edit
+    # needed when re-pinning — the anchors resolve to the same single source.
+    nodeSelector: *wslvaultNodeSelector
+    tolerations: *wslvaultTolerations
     resources:
       requests:
         cpu: "250m"

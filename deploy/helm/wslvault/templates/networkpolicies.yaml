@@ -654,4 +654,44 @@ spec:
           protocol: TCP
 {{- end }}
 
+{{/*
+────────────────────────────────────────────────────────────────────────────
+Edge host ingress: allow host-network wslproxy / traefik-edge instances on
+cluster nodes (the public PoP's origin hop) to reach the public API service
+ports directly via pod IPs. Sources are the flannel host addresses of each
+edge node as a /31 (covers both the flannel.1 .0 and cni0 .1 source IPs) —
+same convention as ui.wslproxyIngress. Empty cidrs renders no policy and the
+default-deny keeps host traffic blocked.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- with .Values.networkPolicies.wslproxyHostIngress }}
+{{- if .cidrs }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" $ }}-allow-wslproxy-hosts
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: {{ include "wslvault.name" $ }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .cidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        {{- range .ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+{{- end }}
+{{- end }}
+
 {{- end }}{{/* networkPolicies.enabled */}}
