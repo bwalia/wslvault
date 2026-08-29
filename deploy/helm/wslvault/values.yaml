@@ -86,8 +86,14 @@ ui:
     tag: ""
   port: 3011
   host: vault-ui.workstation.co.uk
-  ingressClassName: traefik
-  entrypoint: websecure
+  # -- traefik-edge is the host-network Traefik daemonset on the edge nodes
+  # (:443 on the pinned node). With the stack pinned to cloud001 the LAN
+  # Traefik LB can no longer reach these pods, so the edge node serves the
+  # public hostnames itself; the PoP origin must point at the pinned node.
+  ingressClassName: traefik-edge
+  # -- traefik-edge terminates no TLS for these hosts (the PoP holds the public
+  # certificate and proxies to the web entrypoint), so the router must bind :80.
+  entrypoint: web,websecure
   tls:
     # -- Leave secretName empty to serve HTTP only (TLS terminated at the edge PoP)
     secretName: ""
@@ -109,9 +115,11 @@ ui:
 # The route map is verified against the actual axum route registrations in
 # services/*/src; only prefixes a backend truly serves over HTTP are listed.
 edgeIngress:
-  enabled: false
-  ingressClassName: traefik
-  entrypoint: websecure
+  enabled: true
+  # -- See ui.ingressClassName: the pinned edge node serves the API hosts.
+  ingressClassName: traefik-edge
+  # -- See ui.entrypoint: PoP terminates TLS, origin hop uses the web entrypoint.
+  entrypoint: web,websecure
   host: vault.workstation.co.uk
   tls:
     # -- Self-signed by default; SANs must cover every host below. Point this at
@@ -121,8 +129,10 @@ edgeIngress:
       - vault.workstation.co.uk
       - wslvault.workstation.co.uk
   # -- HTTP:80 -> HTTPS 308 redirect (Traefik redirectScheme middleware).
+  # Disabled: traefik-edge runs without the kubernetescrd provider, so the
+  # Middleware CRD reference cannot resolve there.
   httpRedirect:
-    enabled: true
+    enabled: false
     entrypoint: web
   # -- path -> component:port. Verified 2026-07-13 against source routes.
   # Deliberately omitted (no HTTP backend): /v1/identity (unimplemented),
