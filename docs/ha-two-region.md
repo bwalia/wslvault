@@ -13,7 +13,7 @@ One region is one complete, self-contained wslvault release:
 | | region-a | region-b |
 |---|---|---|
 | Namespace | `wslvault` | `wslvault-b` |
-| Node | `cloud001` (Manchester) | `vps002` (London) |
+| Node | `cloud001` (Manchester) | `cloud003` (London) |
 | API host | `vault.workstation.co.uk` | `vault-b.workstation.co.uk` |
 | Peer host | `vault-a.workstation.co.uk` | `vault-b.workstation.co.uk` |
 | UI host | `vault-ui.workstation.co.uk` | `vault-ui-b.workstation.co.uk` |
@@ -151,10 +151,10 @@ services crash-loop on the missing schema.
 
 ## 5. Standing up region B
 
-### 5.0 Prerequisite: vps002 pod networking  ⚠
+### 5.0 Node choice: cloud003, not vps002
 
-**As of 2026-08-29 region B cannot run on vps002.** Verified from inside the
-cluster:
+Region B runs on **cloud003**. vps002 was the original target but cannot run
+this stack. Verified from inside the cluster:
 
 ```
 $ kubectl -n kube-system get pods -o wide | grep vps002
@@ -192,22 +192,30 @@ kubectl -n kube-system get pods -o wide | grep vps002   # coredns-node must be 1
 `kubectl logs`/`exec` against vps002 also fail (`502` dialing `85.190.106.88:10250`),
 so the kubelet tunnel needs the same attention.
 
-**To deploy region B on a working node instead**, change two fields in
-`deploy/gitops/regions/region-b.values.yaml` — `cloud003` is the natural
-choice (London PoP, CoreDNS Ready, traefik-edge present):
+cloud003 is used instead: same isolation profile as cloud001 (edge taint,
+`cross-node=unavailable`, traefik-edge, `local-path`), CoreDNS Ready, and a
+genuinely separate site (`net-region=london` against cloud001's `manchester`).
+
+**To move region B to vps002 once its route is restored**, change the two
+`nodeSelector` hostnames in `deploy/gitops/regions/region-b.values.yaml` and
+the host CIDR, then let Argo sync:
 
 ```yaml
 global:
   scheduling:
     nodeSelector:
-      kubernetes.io/hostname: cloud003     # was vps002
+      kubernetes.io/hostname: vps002       # was cloud003
   edgeHostCidrs: &regionBEdgeCidrs
-    - 10.42.0.0/31                         # cloud003 podCIDR 10.42.0.0/24
+    - 10.42.17.0/31                        # vps002 podCIDR 10.42.17.0/24
 postgresql:
   primary:
     nodeSelector:
-      kubernetes.io/hostname: cloud003
+      kubernetes.io/hostname: vps002
 ```
+
+Note this is a **rebuild, not a migration**: PostgreSQL uses `local-path`, so
+the data stays on the old node. Let region A replicate the content back into
+the rebuilt region B, or dump and restore before switching.
 
 ### 5.1 DNS
 
@@ -218,8 +226,8 @@ on whichever region should take default traffic.
 |---|---|
 | `vault.workstation.co.uk` | PoP → region A origin (unchanged) |
 | `vault-a.workstation.co.uk` | `72.62.211.28` (cloud001) |
-| `vault-b.workstation.co.uk` | region B's node IP |
-| `vault-ui-b.workstation.co.uk` | region B's node IP |
+| `vault-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
+| `vault-ui-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
 
 The `-a`/`-b` hosts must resolve **before** the regions can peer: the
 replication URLs in the roster use them.
@@ -228,9 +236,15 @@ replication URLs in the roster use them.
 
 ```bash
 export KUBECONFIG=~/.kube/k3s1.yaml
-kubectl create namespace wslvault-b
-./scripts/wslvault-mesh-keys.sh adopt wslvault   # preserves region A's keys
+
+# Shared crypto keys: adopt region A's existing material into every region.
+./scripts/wslvault-mesh-keys.sh adopt wslvault
 ./scripts/wslvault-mesh-keys.sh verify
+
+# Database credentials are per-region, not shared. Region A adopts the password
+# its PostgreSQL already uses; region B has no database yet, so it generates one.
+./scripts/wslvault-mesh-keys.sh db-secret wslvault
+./scripts/wslvault-mesh-keys.sh db-secret wslvault-b --generate
 ```
 
 ### 5.3 Bootstrap Argo CD

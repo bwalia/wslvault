@@ -1,24 +1,27 @@
 # ═══════════════════════════════════════════════════════════════════════════
-# region-b — second region, pinned to vps002
+# region-b — second region, pinned to cloud003 (London PoP)
 #
 # A complete, independent wslvault stack: its own PostgreSQL, its own service
 # set, its own public hostnames. It is paired with region-a only through the
 # `peers` roster below — each region's replication-agent polls the other's
 # /v1/replication/events over the public edge and applies the events locally.
 #
-# ⚠ PREREQUISITE — vps002 pod networking
-#   As of 2026-08-29 vps002 cannot reach the cluster control plane from the pod
-#   network. Its node-local CoreDNS (the coredns-node DaemonSet) has never gone
-#   Ready, so pods on vps002 resolve nothing, and ClusterIP 10.43.0.1 times out.
-#   kube-dns is internalTrafficPolicy: Local, so there is no fallback to another
-#   node's CoreDNS. longhorn-manager and obs-promtail are unhealthy there for
-#   the same reason; only host-network pods work.
+# WHY cloud003 AND NOT vps002
+#   vps002 was the original choice, but as of 2026-08-29 it cannot run this
+#   stack: its node-local CoreDNS pod has never gone Ready (its readiness probe
+#   503s because CoreDNS cannot reach the API server — the `kubernetes` Service
+#   endpoints are LAN addresses vps002 has no route to). kube-dns is
+#   internalTrafficPolicy: Local, so there is no fallback to another node's
+#   CoreDNS: pods on vps002 resolve nothing and ClusterIP times out. Every
+#   service here addresses PostgreSQL and its siblings by in-cluster DNS.
 #
-#   Every service in this chart addresses PostgreSQL and its peers by in-cluster
-#   DNS name, so this stack cannot run on vps002 until that is fixed. cloud001
-#   and cloud003 both work today — switch `kubernetes.io/hostname` below (and
-#   edgeHostCidrs to match the node's podCIDR /31) to deploy there instead.
-#   See docs/ha-two-region.md § "vps002 prerequisite".
+#   cloud003 has the same isolation profile as cloud001 (edge taint,
+#   cross-node=unavailable, traefik-edge, local-path) with working DNS, and is
+#   a genuinely separate site (net-region=london vs cloud001's manchester).
+#
+#   To move to vps002 once its LAN route is restored, change the two
+#   nodeSelector hostnames below and edgeHostCidrs to 10.42.17.0/31.
+#   See docs/ha-two-region.md §5.0.
 # ═══════════════════════════════════════════════════════════════════════════
 global:
   region:
@@ -40,17 +43,17 @@ global:
 
   scheduling:
     nodeSelector:
-      kubernetes.io/hostname: vps002
+      kubernetes.io/hostname: cloud003
     tolerations:
       - key: node-role.kubernetes.io/edge
         operator: Exists
         effect: NoSchedule
     affinity: {}
 
-  # vps002 podCIDR 10.42.17.0/24 -> host /31, covering both the flannel.1 .0
+  # cloud003 podCIDR 10.42.0.0/24 -> host /31, covering both the flannel.1 .0
   # and cni0 .1 source addresses.
   edgeHostCidrs: &regionBEdgeCidrs
-    - 10.42.17.0/31
+    - 10.42.0.0/31
 
 networkPolicies:
   enabled: true
@@ -103,7 +106,7 @@ postgresql:
       # region must not depend on cross-node replica traffic.
       storageClass: local-path
     nodeSelector:
-      kubernetes.io/hostname: vps002
+      kubernetes.io/hostname: cloud003
     tolerations:
       - key: node-role.kubernetes.io/edge
         operator: Exists

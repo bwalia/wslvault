@@ -38,7 +38,7 @@ spec:
             wave: "0"
           - region: region-b
             namespace: wslvault-b
-            node: vps002
+            node: cloud003
             wave: "1"
   template:
     metadata:
