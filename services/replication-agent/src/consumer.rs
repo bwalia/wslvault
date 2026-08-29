@@ -79,7 +79,11 @@ async fn fetch_and_apply_events(
         peer.url, config.local_region, last_seq, config.batch_size
     );
 
-    let resp = client.get(&url).send().await?;
+    let mut req = client.get(&url);
+    if let Some(token) = config.peer_token.as_deref() {
+        req = req.bearer_auth(token);
+    }
+    let resp = req.send().await?;
     if !resp.status().is_success() {
         anyhow::bail!("peer {} returned status {}", peer.region_id, resp.status());
     }

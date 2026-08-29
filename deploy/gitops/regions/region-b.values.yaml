@@ -1,0 +1,104 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# region-b — second region, pinned to vps002
+#
+# A complete, independent wslvault stack: its own PostgreSQL, its own service
+# set, its own public hostnames. It is paired with region-a only through the
+# `peers` roster below — each region's replication-agent polls the other's
+# /v1/replication/events over the public edge and applies the events locally.
+#
+# ⚠ PREREQUISITE — vps002 pod networking
+#   As of 2026-08-29 vps002 cannot reach the cluster control plane from the pod
+#   network. Its node-local CoreDNS (the coredns-node DaemonSet) has never gone
+#   Ready, so pods on vps002 resolve nothing, and ClusterIP 10.43.0.1 times out.
+#   kube-dns is internalTrafficPolicy: Local, so there is no fallback to another
+#   node's CoreDNS. longhorn-manager and obs-promtail are unhealthy there for
+#   the same reason; only host-network pods work.
+#
+#   Every service in this chart addresses PostgreSQL and its peers by in-cluster
+#   DNS name, so this stack cannot run on vps002 until that is fixed. cloud001
+#   and cloud003 both work today — switch `kubernetes.io/hostname` below (and
+#   edgeHostCidrs to match the node's podCIDR /31) to deploy there instead.
+#   See docs/ha-two-region.md § "vps002 prerequisite".
+# ═══════════════════════════════════════════════════════════════════════════
+global:
+  region:
+    id: region-b
+    displayName: London
+    endpoint: https://vault-b.workstation.co.uk
+    # Identical roster to region-a's file; the chart drops the local entry.
+    peers:
+      - id: region-a
+        displayName: Manchester
+        replicationUrl: https://vault-a.workstation.co.uk
+      - id: region-b
+        displayName: London
+        replicationUrl: https://vault-b.workstation.co.uk
+
+  scheduling:
+    nodeSelector:
+      kubernetes.io/hostname: vps002
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    affinity: {}
+
+  # vps002 podCIDR 10.42.17.0/24 -> host /31, covering both the flannel.1 .0
+  # and cni0 .1 source addresses.
+  edgeHostCidrs: &regionBEdgeCidrs
+    - 10.42.17.0/31
+
+networkPolicies:
+  enabled: true
+  wslproxyHostIngress:
+    cidrs: *regionBEdgeCidrs
+    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091]
+
+ui:
+  enabled: true
+  host: vault-ui-b.workstation.co.uk
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  wslproxyIngress:
+    cidrs: *regionBEdgeCidrs
+
+edgeIngress:
+  enabled: true
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  host: vault-b.workstation.co.uk
+  tls:
+    # Region B has no certificate of its own yet; traefik-edge serves these
+    # hosts over the web entrypoint and the PoP terminates TLS. Point this at a
+    # cert-manager secret when region B gets a trusted chain.
+    secretName: wslvault-b-gateway-tls
+    hosts:
+      - vault-b.workstation.co.uk
+
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      # Node-local storage: longhorn does not schedule on the edge nodes, and a
+      # region must not depend on cross-node replica traffic.
+      storageClass: local-path
+    nodeSelector:
+      kubernetes.io/hostname: vps002
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+
+# Same mesh Secret as region A, replicated into this namespace. The root key,
+# JWT secret, PKI root key and replication peer token must be byte-identical
+# across regions or replicated ciphertext will not decrypt and peer polls will
+# 401.
+secrets:
+  existingSecret: wslvault-mesh-keys
+
+# Single-replica constraints carry over: crypto-service caches DEKs in-process
+# and identity-service keeps minted API keys in a HashMap.
+cryptoService:
+  replicaCount: 1
+identityService:
+  replicaCount: 1

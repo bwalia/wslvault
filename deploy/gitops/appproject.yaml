@@ -1,0 +1,25 @@
+# Argo CD project scoping the wslvault regions.
+#
+# Kept separate from `default` so a mistake in a region's values cannot deploy
+# into an unrelated namespace: destinations are limited to the wslvault
+# namespaces, and cluster-scoped resources are denied outright (the chart
+# creates none — every resource it renders is namespaced).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: wslvault
+  namespace: argocd
+spec:
+  description: wslvault secret-management regions (active/active HA mesh)
+  sourceRepos:
+    - https://github.com/bwalia/wslvault.git
+    - https://charts.bitnami.com/bitnami
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: wslvault
+    - server: https://kubernetes.default.svc
+      namespace: wslvault-*
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'

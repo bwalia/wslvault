@@ -10,6 +10,42 @@ global:
   namespace: wslvault
 
   # ──────────────────────────────────────────────────────────────────────────
+  # Region identity — what makes this release one member of an HA mesh.
+  #
+  # A "region" is one complete, self-contained wslvault release: its own
+  # PostgreSQL, its own service set, its own public edge hostname. Two regions
+  # deployed from this same chart with different `id`s, listing each other
+  # under `peers`, form the active/active pair: each region's
+  # replication-agent polls the other's /v1/replication/events and applies the
+  # events locally with the configured conflict strategy.
+  #
+  # Peering goes over PUBLIC URLs, not cluster DNS. Edge PoP nodes carry
+  # network.k3s1/cross-node=unavailable, so pods in one region have no
+  # pod-network route to pods in another; the traffic leaves the cluster and
+  # re-enters through the peer's ingress.
+  #
+  # `peers` is the full roster INCLUDING this region — the chart filters the
+  # local entry out — so every region's values file can carry one identical
+  # list and adding a third region is a single edit in one place.
+  # ──────────────────────────────────────────────────────────────────────────
+  region:
+    # -- Stable, mesh-unique region identifier. Stamped onto every replication
+    # event, vector-clock entry and system.regions row, so changing it on a
+    # live region orphans that region's replication state. Required.
+    # These defaults describe the FIRST region, matching the cloud001 pinning
+    # and vault.workstation.co.uk host also defaulted in this file. Per-region
+    # values files under deploy/gitops/regions/ override every field.
+    id: "region-a"
+    # -- Human-readable name shown in the regions API; defaults to id
+    displayName: "Region A"
+    # -- How peers address THIS region. Defaults to https://<edgeIngress.host>
+    endpoint: ""
+    # -- Full region roster. Each entry: {id, displayName, replicationUrl}
+    # replicationUrl is the peer's base URL; the agent appends
+    # /v1/replication/events to it.
+    peers: []
+
+  # ──────────────────────────────────────────────────────────────────────────
   # Node placement — THE single place to (re)pin the whole stack.
   #
   # Every workload in this chart (all services, vault-ui, and the PostgreSQL
@@ -70,9 +106,48 @@ networkPolicies:
   # updates this automatically. Empty cidrs renders no policy.
   wslproxyHostIngress:
     cidrs: *wslvaultEdgeHostCidrs
-    # -- Public API HTTP ports (mirrors the edgeIngress route map): secret-engine,
-    # identity-service, policy-engine, transit-engine, mcp-server, pki-engine
-    ports: [8081, 8082, 8083, 8086, 8087, 8088]
+    # -- Public API HTTP ports (mirrors the edgeIngress route map):
+    # secret-engine, identity-service, policy-engine, transit-engine,
+    # mcp-server, pki-engine, and replication-agent (8091) for peer pulls.
+    # traefik-edge is host-networked, so its source is the node's flannel host
+    # address rather than a pod IP — hence the cidr carve-out rather than a
+    # podSelector.
+    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091]
+  # -- Destination ports the replication-agent and region-health may reach on
+  # peer regions. Egress is opened to public address space only (RFC1918 and
+  # link-local are excluded) and only when global.region.peers is non-empty.
+  crossRegionEgressPorts: [443, 80]
+
+# -- Schema bootstrap. Applies deploy/helm/wslvault/files/migrations/*.sql to
+# this region's database through a ledger table (system.schema_migrations), so
+# each numbered file runs exactly once and a fresh region comes up with a
+# complete schema instead of crash-looping on missing tables. See
+# templates/migrations.yaml for the full rationale.
+migrations:
+  # -- Run the schema bootstrap Job. Disable only when the schema is managed
+  # entirely out-of-band.
+  enabled: true
+  image:
+    # -- Needs psql and pg_isready; any postgres client image works
+    repository: postgres
+    tag: "16-alpine"
+  # -- Record existing files as applied, without executing them, when the
+  # database already carries the schema but has no ledger. This is what lets
+  # the Job be introduced safely on a region that was migrated by hand.
+  # Set false to make that situation a hard failure instead.
+  baselineOnExisting: true
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # -- vault-ui: Next.js web console. When enabled it is
 # deployed with a Service, Ingress, and the additive NetworkPolicies it needs to
@@ -161,6 +236,11 @@ edgeIngress:
     - { path: /v1/policies, component: policy-engine, port: 8083 }
     - { path: /v1/pki, component: pki-engine, port: 8088 }
     - { path: /v1/mcp, component: mcp-server, port: 8087 }
+    # Peer regions pull the replication outbox through here. The endpoint is
+    # NOT public: replication-agent requires the shared bearer token on
+    # /v1/replication/* and returns 401 without it (503 when no token is
+    # configured at all). See services/replication-agent/src/auth.rs.
+    - { path: /v1/replication, component: replication-agent, port: 8091 }
 
 # -- Prometheus monitoring annotations
 monitoring:
@@ -178,6 +258,19 @@ secrets:
   jwtSecret: ""
   # -- PKI root key that envelope-encrypts tenant CA private keys (base64-encoded 32-byte key)
   pkiRootKey: ""
+  # -- Deliver the three keys above from a Secret provisioned out-of-band
+  # (SealedSecret, ExternalSecret, …) instead of from these values. REQUIRED in
+  # a multi-region mesh: replicated ciphertext is decrypted with the receiving
+  # region's root key and a token minted in one region is verified in another,
+  # so all regions must hold byte-identical material. Setting this skips
+  # creation of the chart-managed key Secrets entirely.
+  existingSecret: ""
+  # -- Key names inside existingSecret
+  existingSecretKeys:
+    rootKey: root-key
+    jwtSecret: jwt-secret
+    pkiRootKey: pki-root-key
+    replicationPeerToken: replication-peer-token
 
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:

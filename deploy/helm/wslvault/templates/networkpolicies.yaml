@@ -694,4 +694,59 @@ spec:
 {{- end }}
 {{- end }}
 
+
+{{/*
+────────────────────────────────────────────────────────────────────────────
+Cross-region replication egress.
+
+The replication-agent polls each peer region's /v1/replication/events over the
+peer's PUBLIC edge URL, and region-health probes each peer's /health the same
+way. There is no pod-network path between edge PoPs — those nodes are labelled
+network.k3s1/cross-node=unavailable — so this traffic leaves the cluster and
+comes back in through the peer's ingress.
+
+The per-service policy above allows egress to PostgreSQL only, so without this
+rule the default-deny silently blackholes every peer poll and the mesh looks
+healthy while replicating nothing.
+
+Egress is restricted to the replication ports on non-private destinations:
+the RFC1918 and link-local ranges are excluded so a compromised agent cannot
+use this hole to sweep the LAN behind the cluster.
+────────────────────────────────────────────────────────────────────────────
+*/}}
+{{- if .Values.global.region.peers }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-cross-region-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - replication-agent
+          - region-health
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        {{- range .Values.networkPolicies.crossRegionEgressPorts }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+{{- end }}
+
 {{- end }}{{/* networkPolicies.enabled */}}

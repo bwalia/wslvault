@@ -76,8 +76,8 @@ spec:
             - name: VAULT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-jwt-secret
-                  key: jwt-secret
+                  name: {{ include "wslvault.jwtSecretName" . }}
+                  key: {{ include "wslvault.jwtSecretKey" . }}
                   optional: false
             # gRPC address of the policy-engine for permission checks during token validation
             - name: POLICY_ENGINE_ADDR

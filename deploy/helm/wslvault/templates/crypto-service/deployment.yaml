@@ -66,8 +66,8 @@ spec:
             - name: VAULT_ROOT_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-root-key
-                  key: root-key
+                  name: {{ include "wslvault.rootKeySecretName" . }}
+                  key: {{ include "wslvault.rootKeySecretKey" . }}
                   optional: false
             {{- with .Values.cryptoService.extraEnv }}
             {{- toYaml . | nindent 12 }}

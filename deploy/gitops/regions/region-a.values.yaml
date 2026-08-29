@@ -1,0 +1,78 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# region-a — Manchester PoP, pinned to cloud001
+#
+# This is the ORIGINAL wslvault deployment, brought under GitOps. Its values
+# must keep describing what is already running: adopting a live release with
+# drifted values would have Argo CD rewrite a working region on first sync.
+# ═══════════════════════════════════════════════════════════════════════════
+global:
+  region:
+    id: region-a
+    displayName: Manchester
+    endpoint: https://vault.workstation.co.uk
+    # The full roster, identical in every region's file. Each region's chart
+    # filters its own entry out when building REPLICATION_PEERS.
+    peers: &meshPeers
+      - id: region-a
+        displayName: Manchester
+        replicationUrl: https://vault-a.workstation.co.uk
+      - id: region-b
+        displayName: London
+        replicationUrl: https://vault-b.workstation.co.uk
+
+  scheduling:
+    nodeSelector:
+      kubernetes.io/hostname: cloud001
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    affinity: {}
+
+  # cloud001 podCIDR 10.42.16.0/24 -> host /31
+  edgeHostCidrs: &regionAEdgeCidrs
+    - 10.42.16.0/31
+
+networkPolicies:
+  enabled: true
+  wslproxyHostIngress:
+    cidrs: *regionAEdgeCidrs
+    ports: [8081, 8082, 8083, 8086, 8087, 8088]
+
+ui:
+  enabled: true
+  host: vault-ui.workstation.co.uk
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  wslproxyIngress:
+    cidrs: *regionAEdgeCidrs
+
+edgeIngress:
+  enabled: true
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  host: vault.workstation.co.uk
+  tls:
+    secretName: wslvault-gateway-tls
+    hosts:
+      - vault.workstation.co.uk
+      - wslvault.workstation.co.uk
+      - vault-a.workstation.co.uk
+
+postgresql:
+  enabled: true
+  primary:
+    persistence:
+      storageClass: local-path
+    nodeSelector:
+      kubernetes.io/hostname: cloud001
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+
+# The three shared keys arrive from a Secret provisioned out-of-band and
+# replicated to every region's namespace — never from Git. See
+# deploy/gitops/README.md for how to create it.
+secrets:
+  existingSecret: wslvault-mesh-keys

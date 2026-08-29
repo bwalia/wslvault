@@ -62,8 +62,8 @@ spec:
             - name: PKI_ROOT_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-pki-root-key
-                  key: pki-root-key
+                  name: {{ include "wslvault.pkiRootKeySecretName" . }}
+                  key: {{ include "wslvault.pkiRootKeySecretKey" . }}
                   optional: false
             {{- with .Values.pkiEngine.extraEnv }}
             {{- toYaml . | nindent 12 }}
