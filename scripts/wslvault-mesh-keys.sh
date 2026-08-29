@@ -16,7 +16,16 @@
 #   ./scripts/wslvault-mesh-keys.sh adopt <namespace> [--release NAME]
 #   ./scripts/wslvault-mesh-keys.sh create   [--dry-run]
 #   ./scripts/wslvault-mesh-keys.sh copy-from <source-namespace>
+#   ./scripts/wslvault-mesh-keys.sh db-secret <namespace> [--generate]
 #   ./scripts/wslvault-mesh-keys.sh verify
+#
+#   db-secret   Create the region's PostgreSQL credentials Secret
+#               (wslvault-db-auth), OUTSIDE the chart's lifecycle. By default
+#               it adopts the password the region's PostgreSQL already uses;
+#               --generate mints a new one, which is only correct before the
+#               database has been initialised. Needed because the subchart's
+#               own wslvault-postgresql Secret carries no resource-policy:keep
+#               and is deleted the moment auth.existingSecret is set.
 #
 #   adopt       Consolidate a region's EXISTING per-key Secrets
 #               (<release>-root-key, -jwt-secret, -pki-root-key) into the mesh
@@ -148,6 +157,52 @@ cmd_copy_from() {
   note "done"
 }
 
+DB_SECRET_NAME="${DB_SECRET_NAME:-wslvault-db-auth}"
+
+cmd_db_secret() {
+  local ns="${1:-}" generate="${2:-}"
+  [ -n "$ns" ] || die "usage: $0 db-secret <namespace> [--generate]"
+  kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  local pw
+  if [ "$generate" = "--generate" ]; then
+    # Only safe before initdb: PostgreSQL stores the password in its data
+    # directory, so changing it after the fact locks the region out.
+    if kubectl -n "$ns" get statefulset wslvault-postgresql >/dev/null 2>&1; then
+      die "PostgreSQL already exists in $ns.
+       Its password is baked into the initialised data directory, so a
+       generated one would not match. Adopt the existing password instead:
+         $0 db-secret $ns"
+    fi
+    pw="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-32)"
+    note "generated a new database password for $ns"
+  else
+    # Adopt whatever the region is already using.
+    pw="$(kubectl -n "$ns" get secret wslvault-postgresql -o jsonpath='{.data.password}' 2>/dev/null | base64 -d || true)"
+    [ -n "$pw" ] || die "no wslvault-postgresql Secret in $ns to adopt from.
+       For a region with no database yet, use: $0 db-secret $ns --generate"
+    note "adopting the existing database password from $ns/wslvault-postgresql"
+  fi
+
+  # Both keys in one Secret: the PostgreSQL subchart reads postgres-password
+  # (superuser) and password (app user); the wslvault services read password.
+  kubectl -n "$ns" create secret generic "$DB_SECRET_NAME" \
+    --from-literal=postgres-password="$pw" \
+    --from-literal=password="$pw" \
+    --from-literal=username=wslvault \
+    --dry-run=client -o yaml | kubectl apply $DRY_RUN -f -
+  printf '  %s/%s ready\n' "$ns" "$DB_SECRET_NAME"
+
+  # The subchart's own Secret is about to disappear from the rendered manifest.
+  # Without this annotation Helm deletes it on the next upgrade — and it is the
+  # source this command just adopted from.
+  if kubectl -n "$ns" get secret wslvault-postgresql >/dev/null 2>&1; then
+    kubectl -n "$ns" annotate secret wslvault-postgresql \
+      helm.sh/resource-policy=keep --overwrite >/dev/null
+    printf '  annotated %s/wslvault-postgresql with resource-policy=keep\n' "$ns"
+  fi
+}
+
 cmd_verify() {
   note "comparing key material across regions"
   local ref="" refns="" rc=0
@@ -180,6 +235,7 @@ case "${1:-}" in
               ns="${1:-}"; shift || true
               if [ "${1:-}" = "--release" ]; then RELEASE="${2:-}"; fi
               cmd_adopt "$ns" ;;
+  db-secret) shift; cmd_db_secret "${1:-}" "${2:-}" ;;
   create)     shift; [ "${1:-}" = "--dry-run" ] && DRY_RUN="--dry-run=client"; cmd_create ;;
   copy-from)  shift; cmd_copy_from "${1:-}" ;;
   verify)     cmd_verify ;;

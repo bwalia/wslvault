@@ -34,6 +34,10 @@ global:
         displayName: London
         replicationUrl: https://vault-b.workstation.co.uk
 
+  # Required by the PostgreSQL subchart to accept the bitnamilegacy repository.
+  security:
+    allowInsecureImages: true
+
   scheduling:
     nodeSelector:
       kubernetes.io/hostname: vps002
@@ -77,6 +81,22 @@ edgeIngress:
 
 postgresql:
   enabled: true
+  # Same legacy image as region A; the current chart default points at a
+  # repository that now requires a subscription.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+  auth:
+    database: wslvault
+    username: wslvault
+    # Created outside the chart, per region, by
+    #   ./scripts/wslvault-mesh-keys.sh db-secret wslvault-b --generate
+    # Unlike the mesh keys this is NOT shared between regions: each region has
+    # its own PostgreSQL.
+    existingSecret: wslvault-db-auth
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
   primary:
     persistence:
       # Node-local storage: longhorn does not schedule on the edge nodes, and a
@@ -93,6 +113,10 @@ postgresql:
 # JWT secret, PKI root key and replication peer token must be byte-identical
 # across regions or replicated ciphertext will not decrypt and peer polls will
 # 401.
+# traefik-edge is the edge here too; the OpenResty gateway is not deployed.
+gateway:
+  enabled: false
+
 secrets:
   existingSecret: wslvault-mesh-keys
 

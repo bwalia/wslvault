@@ -20,6 +20,11 @@ global:
         displayName: London
         replicationUrl: https://vault-b.workstation.co.uk
 
+  # Required by the PostgreSQL subchart to accept the bitnamilegacy repository
+  # pinned below; without it the subchart refuses to render.
+  security:
+    allowInsecureImages: true
+
   scheduling:
     nodeSelector:
       kubernetes.io/hostname: cloud001
@@ -41,6 +46,8 @@ networkPolicies:
 
 ui:
   enabled: true
+  image:
+    tag: eb7accb12fbe4395ff9abbd3be09e2bc3e61ab36
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -61,6 +68,28 @@ edgeIngress:
 
 postgresql:
   enabled: true
+  # The live release runs the legacy Bitnami image; the current chart default
+  # points at a repository that now requires a subscription. allowInsecureImages
+  # below is what lets the subchart accept a non-default repository.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+  auth:
+    database: wslvault
+    username: wslvault
+    # The password is NOT in Git. It already lives in the wslvault-postgresql
+    # Secret created on first install; pointing at it here keeps the running
+    # password unchanged. Rendering a different one would break every service's
+    # DATABASE_URL and lock the region out of its own data.
+    # wslvault-db-auth is created OUTSIDE the chart by
+    # scripts/wslvault-mesh-keys.sh db-secret. It cannot be the subchart's own
+    # wslvault-postgresql Secret: that one carries no resource-policy:keep, so
+    # setting existingSecret makes Helm drop it from the manifest and delete
+    # the very Secret being referenced.
+    existingSecret: wslvault-db-auth
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
   primary:
     persistence:
       storageClass: local-path
@@ -74,5 +103,30 @@ postgresql:
 # The three shared keys arrive from a Secret provisioned out-of-band and
 # replicated to every region's namespace — never from Git. See
 # deploy/gitops/README.md for how to create it.
+# The OpenResty gateway is not deployed in this region — traefik-edge is the
+# edge and serves the public hosts directly.
+gateway:
+  enabled: false
+
+# Image tags actually running in region A. These are AHEAD of global.imageTag
+# (0.1.0); leaving them unset would roll these four services backwards on the
+# first Argo sync.
+identityService:
+  replicaCount: 1
+  image:
+    tag: a2dc8fe0937a8bd07873694865dce658b7c8690c
+regionHealth:
+  image:
+    tag: 3c045db9f875ad30e979c37dc8c71d65cffda786
+secretEngine:
+  image:
+    tag: kv2-56cb0cf
+cryptoService:
+  replicaCount: 1
+
+# The three shared keys arrive from a Secret provisioned out-of-band and
+# replicated to every region's namespace — never from Git. Populate it with
+# region A's EXISTING key material:
+#   ./scripts/wslvault-mesh-keys.sh adopt wslvault
 secrets:
   existingSecret: wslvault-mesh-keys
