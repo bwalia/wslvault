@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use tokio::sync::RwLock;
 use tonic::transport::Server;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 use wslvault_cluster::config::ClusterConfig;
 use wslvault_cluster::leader::LeaderElector;
@@ -109,10 +109,22 @@ impl Config {
 /// holds a write lock only during the brief swap at the end of each iteration,
 /// so it does not block concurrent authorization calls for long.
 ///
-/// When a `LeaderElector` is provided, only the leader node performs the
-/// compilation to avoid redundant database reads across replicas. Follower
-/// nodes still serve stale snapshots (safe because policy changes are
-/// eventually consistent by design).
+/// EVERY replica compiles its own snapshot. This used to be gated on leader
+/// election "to avoid redundant database reads", with followers described as
+/// serving snapshots that were "eventually consistent by design". They were
+/// not: the snapshot is per-process in-memory state, so the leader's refresh
+/// reaches no other pod. A follower kept whatever it compiled at startup, for
+/// as long as it lived, and any policy created or replicated afterwards was
+/// invisible to it permanently.
+///
+/// Observed in production: region B denied roughly a third of authorised
+/// requests — 7 allowed, 3 denied across ten identical calls — because one of
+/// two replicas had started before the policies replicated into that region
+/// and never picked them up. Intermittent authorization failures that move
+/// with load balancing are exactly the shape of this bug.
+///
+/// The read is not redundant: each replica needs its own copy. Leader election
+/// is still passed in for the caller's other uses, but must not gate this.
 ///
 /// Accepts any `Arc<dyn PolicyStoreBackend>` so that both the in-memory store
 /// and the Postgres backend can be used without changing this function.
@@ -120,7 +132,6 @@ async fn run_compilation_task(
     store: Arc<dyn PolicyStoreBackend>,
     compiled: Arc<RwLock<CompiledPolicies>>,
     interval: Duration,
-    elector: Option<Arc<LeaderElector>>,
 ) {
     let mut ticker = tokio::time::interval(interval);
     // Skip the first tick so we don't wait a full interval before the first
@@ -129,14 +140,6 @@ async fn run_compilation_task(
 
     loop {
         ticker.tick().await;
-
-        // When leader election is active, only the leader compiles policies.
-        if let Some(ref elector) = elector {
-            if !elector.is_leader() {
-                debug!("policy compilation skipped: not the leader");
-                continue;
-            }
-        }
 
         let all_docs = store.get_all().await;
         let mut new_snapshot = CompiledPolicies::new();
@@ -190,7 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // If DATABASE_URL is set, connect to PostgreSQL and use PgPolicyBackend.
     // Otherwise fall back to the in-memory PolicyStore so the service can run
     // in development and test environments without a database.
-    let (store, elector): (Arc<dyn PolicyStoreBackend>, Option<Arc<LeaderElector>>) =
+    let (store, _elector): (Arc<dyn PolicyStoreBackend>, Option<Arc<LeaderElector>>) =
         match std::env::var("DATABASE_URL") {
             Ok(database_url) => {
                 info!("DATABASE_URL set — connecting to PostgreSQL");
@@ -239,9 +242,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let store_clone = Arc::clone(&store);
         let compiled_clone = Arc::clone(&compiled);
         let interval = Duration::from_secs(config.compile_interval_secs);
-        let elector_clone = elector.clone();
         tokio::spawn(async move {
-            run_compilation_task(store_clone, compiled_clone, interval, elector_clone).await;
+            run_compilation_task(store_clone, compiled_clone, interval).await;
         });
     }
 
