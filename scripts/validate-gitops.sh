@@ -125,6 +125,40 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+note "regions run the same image for every component"
+# Two regions in an active/active pair must run the same code. They drift
+# silently: region A was pinned to newer builds while region B took the
+# global.imageTag default, so four components differed — including
+# secret-engine, where only region A carried the fix that lets External
+# Secrets Operator validate the store. Failing the shared alias over to
+# region B would have broken ESO cluster-wide, with nothing in Git saying so.
+python3 - "$GITOPS" <<'IMGCHECK' || fail=1
+import sys, pathlib, yaml, collections
+gitops = pathlib.Path(sys.argv[1])
+regions = {p.name.removesuffix(".values.yaml"): yaml.safe_load(p.read_text())
+           for p in sorted((gitops / "regions").glob("*.values.yaml"))}
+
+# Per-service image.tag, falling back to that region's global.imageTag.
+tags = collections.defaultdict(dict)
+for name, v in regions.items():
+    default = ((v.get("global") or {}).get("imageTag")) or "<chart default>"
+    for key, cfg in v.items():
+        if isinstance(cfg, dict) and isinstance(cfg.get("image"), dict):
+            tags[key][name] = cfg["image"].get("tag") or default
+
+rc = 0
+for svc, per_region in sorted(tags.items()):
+    seen = {r: per_region.get(r, "<chart default>") for r in regions}
+    if len(regions) > 1 and len(set(seen.values())) > 1:
+        print(f"  \033[31mFAIL\033[0m {svc} differs across regions: "
+              + ", ".join(f"{r}={v[:20]}" for r, v in sorted(seen.items())))
+        rc = 1
+if not rc:
+    print(f"  \033[32mok\033[0m   pinned images match across {len(regions)} regions")
+sys.exit(rc)
+IMGCHECK
+
+# ─────────────────────────────────────────────────────────────────────────────
 note "no region ships a placeholder key"
 # A region rendering REPLACE_ME_WITH_A_REAL_KEY would come up with a
 # well-known root key, and — worse in a mesh — a DIFFERENT key per region, so

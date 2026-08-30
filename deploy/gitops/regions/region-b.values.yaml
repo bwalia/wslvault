@@ -63,6 +63,8 @@ networkPolicies:
 
 ui:
   enabled: true
+  image:
+    tag: eb7accb12fbe4395ff9abbd3be09e2bc3e61ab36
   host: vault-ui-b.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -148,8 +150,38 @@ secrets:
   existingSecret: wslvault-mesh-keys
 
 # Single-replica constraints carry over: crypto-service caches DEKs in-process
-# and identity-service keeps minted API keys in a HashMap.
+# and identity-service still keeps its principal store in a HashMap.
 cryptoService:
   replicaCount: 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Image pins, matched to region A.
+#
+# Both regions must run the SAME code — they are an active/active pair and the
+# shared alias can point at either. Region A had been pinned to newer builds
+# while this region took the global.imageTag default (0.1.0), so four
+# components silently diverged and region B ran OLDER code.
+#
+# secret-engine was the dangerous one: only region A carried the lookup-self
+# fix that External Secrets Operator needs to validate a store. Verified live,
+# same token through each region's edge, before this change:
+#
+#   vault-a  /v1/auth/token/lookup-self -> type=service, expire_time, ttl
+#   vault-b  /v1/auth/token/lookup-self -> all three ABSENT
+#
+# Failing the alias over to region B would have broken ESO cluster-wide.
+# scripts/validate-gitops.sh now fails on any such drift.
+# ─────────────────────────────────────────────────────────────────────────────
 identityService:
   replicaCount: 1
+  image:
+    tag: a2dc8fe0937a8bd07873694865dce658b7c8690c
+regionHealth:
+  image:
+    tag: 3c045db9f875ad30e979c37dc8c71d65cffda786
+secretEngine:
+  # Branch build from PR #12 (fix/lookup-self-token-type) — what region A has
+  # run in production for five weeks. Move BOTH regions to a main-built tag
+  # once that PR merges and CI publishes one.
+  image:
+    tag: kv2-56cb0cf
