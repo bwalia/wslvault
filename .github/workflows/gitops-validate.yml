@@ -47,8 +47,21 @@ jobs:
       - name: Install PyYAML
         run: python3 -m pip install --quiet pyyaml
 
-      - name: Build chart dependencies
-        run: helm dependency build deploy/helm/wslvault
+      # NOT `helm dependency build`: the postgresql subchart is vendored at
+      # deploy/helm/wslvault/charts/*.tgz and committed alongside Chart.lock, so
+      # the dependency is already satisfied. Running the build asks a fresh
+      # runner to resolve the Bitnami repo it has never added, which fails with
+      # "no repository definition for https://charts.bitnami.com/bitnami" — and
+      # it would put a network dependency on the one repo that has been
+      # unreliable for this chart (hence the bitnamilegacy image pin).
+      - name: Verify the vendored subchart is present
+        run: |
+          if ! ls deploy/helm/wslvault/charts/postgresql-*.tgz >/dev/null 2>&1; then
+            echo "::error::vendored postgresql subchart missing from deploy/helm/wslvault/charts/"
+            echo "regenerate with: helm repo add bitnami https://charts.bitnami.com/bitnami && helm dependency build deploy/helm/wslvault"
+            exit 1
+          fi
+          ls -1 deploy/helm/wslvault/charts/*.tgz
 
       - name: Validate region mesh
         run: ./scripts/validate-gitops.sh
@@ -83,8 +96,21 @@ jobs:
           python3 -m pip install --quiet pyyaml
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client
 
-      - name: Build chart dependencies
-        run: helm dependency build deploy/helm/wslvault
+      # NOT `helm dependency build`: the postgresql subchart is vendored at
+      # deploy/helm/wslvault/charts/*.tgz and committed alongside Chart.lock, so
+      # the dependency is already satisfied. Running the build asks a fresh
+      # runner to resolve the Bitnami repo it has never added, which fails with
+      # "no repository definition for https://charts.bitnami.com/bitnami" — and
+      # it would put a network dependency on the one repo that has been
+      # unreliable for this chart (hence the bitnamilegacy image pin).
+      - name: Verify the vendored subchart is present
+        run: |
+          if ! ls deploy/helm/wslvault/charts/postgresql-*.tgz >/dev/null 2>&1; then
+            echo "::error::vendored postgresql subchart missing from deploy/helm/wslvault/charts/"
+            echo "regenerate with: helm repo add bitnami https://charts.bitnami.com/bitnami && helm dependency build deploy/helm/wslvault"
+            exit 1
+          fi
+          ls -1 deploy/helm/wslvault/charts/*.tgz
 
       - name: Extract the rendered migration bundle
         run: |
