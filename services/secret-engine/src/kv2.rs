@@ -601,7 +601,10 @@ async fn lookup_self(headers: HeaderMap) -> Response {
     // is the right value: wslvault tokens are ordinary (non-batch) tokens.
     data.insert("type".into(), Value::String("service".into()));
     data.insert("accessor".into(), Value::String(String::new()));
-    data.insert("path".into(), Value::String("auth/token/lookup-self".into()));
+    data.insert(
+        "path".into(),
+        Value::String("auth/token/lookup-self".into()),
+    );
     data.insert("orphan".into(), Value::Bool(true));
     data.insert("renewable".into(), Value::Bool(false));
     data.insert("num_uses".into(), Value::Number(0.into()));
