@@ -258,6 +258,14 @@ secrets:
   jwtSecret: ""
   # -- PKI root key that envelope-encrypts tenant CA private keys (base64-encoded 32-byte key)
   pkiRootKey: ""
+  # -- Bootstrap administrator token for the API key management endpoints
+  # (VAULT_ADMIN_TOKEN). Creating an API key grants whatever policies the
+  # request asks for, so those endpoints authenticate callers themselves rather
+  # than trusting the network in front of them. This token is the way to mint
+  # the FIRST key of a deployment, before any JWT exists to present; after that,
+  # a JWT carrying the administrator policy works too. Leave empty to disable
+  # the bootstrap path entirely (JWT-only). Generate with: openssl rand -hex 32
+  adminToken: ""
   # -- Deliver the three keys above from a Secret provisioned out-of-band
   # (SealedSecret, ExternalSecret, …) instead of from these values. REQUIRED in
   # a multi-region mesh: replicated ciphertext is decrypted with the receiving
@@ -271,6 +279,8 @@ secrets:
     jwtSecret: jwt-secret
     pkiRootKey: pki-root-key
     replicationPeerToken: replication-peer-token
+    # Optional: absent from existingSecret means the bootstrap path stays off.
+    adminToken: admin-token
 
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:
@@ -364,15 +374,20 @@ policyEngine:
 # -- identity-service: authentication, JWT issuance, and tenant management
 identityService:
   enabled: true
-  # -- MUST stay 1 until API keys are persisted to PostgreSQL. The service
-  # stores minted API keys in an in-process HashMap only, so with >1 replica a
-  # key minted on one pod fails auth when the login lands on another.
+  # -- MUST stay 1 until the principal store is persisted. API keys now live in
+  # `shared.api_keys` and survive restarts and replicas, but `PrincipalStore`
+  # (store.rs) is still an in-process HashMap, so a principal registered on one
+  # pod is invisible to the others.
   replicaCount: 1
   image:
     repository: bwalia/wslvault-identity-service
     tag: ""
   httpPort: 8082
   grpcPort: 50054
+  # -- Policy a JWT must carry to manage API keys. Empty uses the service
+  # default ("admin"). The bootstrap token in secrets.adminToken bypasses this
+  # and is the only way to mint the first key.
+  adminPolicy: ""
   resources:
     requests:
       cpu: "100m"

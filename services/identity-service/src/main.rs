@@ -409,8 +409,38 @@ async fn main() -> Result<(), anyhow::Error> {
     // Pre-clone the token manager so the new auth-method routers can share
     // the same signing key without re-creating the key material.
     let token_manager_for_auth_methods = token_manager_for_api_keys.clone();
+    //
+    // API keys live in PostgreSQL when DATABASE_URL is set. They used to live
+    // in a process-local map, so every restart silently invalidated every key
+    // ever issued and a second replica could not see the first replica's keys.
+    let api_key_manager = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let api_key_pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to connect to PostgreSQL for api keys: {e}")
+                })?;
+            info!("api keys: using PostgreSQL backend");
+            api_keys::ApiKeyManager::with_pool(wslvault_storage::pool::DbPool::from_pool(
+                api_key_pool,
+            ))
+        }
+        _ => {
+            warn!("api keys: DATABASE_URL not set; using in-memory store (keys lost on restart)");
+            api_keys::ApiKeyManager::new()
+        }
+    };
+
+    // Key management is privilege-granting, so it carries its own authentication
+    // rather than relying solely on the gateway-origin check: a deployment that
+    // routes around the gateway, or leaves VAULT_GATEWAY_SECRET unset, would
+    // otherwise expose key creation to anyone who can reach the port.
+    let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone());
+
     let api_key_state = api_keys::ApiKeyState {
-        manager: api_keys::ApiKeyManager::new(),
+        manager: api_key_manager,
         token_manager: token_manager_for_api_keys,
     };
 
@@ -583,7 +613,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // Fold optional auth-method routers into the protected route set.
     // Each is `Option<Router>` — absent when the feature is not configured.
     let mut protected_routes: Router = tenant_handlers::router(tenant_store)
-        .merge(api_keys::router(api_key_state))
+        .merge(api_keys::router(api_key_state, admin_auth))
         .merge(quota_handlers::router(quota_state))
         .merge(scim::router().with_state(scim_state));
 
