@@ -9,6 +9,14 @@ license = "Apache-2.0"
 name = "sync-scheduler"
 path = "src/main.rs"
 
+[features]
+# runner.rs gates the real AWS Secrets Manager path behind `cfg(feature = "aws")`.
+# The feature never existed here, so that branch was dead and every AWS job fell
+# through to the "not compiled" bail. wslvault-connectors is already pulled with
+# `all`, so the connector is present — declare the feature and default it on.
+default = ["aws"]
+aws = ["wslvault-connectors/aws"]
+
 [dependencies]
 wslvault-core = { path = "../../crates/wslvault-core" }
 wslvault-storage = { path = "../../crates/wslvault-storage" }

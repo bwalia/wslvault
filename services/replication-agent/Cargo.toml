@@ -30,4 +30,5 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 prometheus = { workspace = true }
+subtle = { workspace = true }
 lazy_static = "1.5"

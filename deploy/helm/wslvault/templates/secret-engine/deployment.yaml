@@ -77,8 +77,8 @@ spec:
             - name: VAULT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-jwt-secret
-                  key: jwt-secret
+                  name: {{ include "wslvault.jwtSecretName" . }}
+                  key: {{ include "wslvault.jwtSecretKey" . }}
                   optional: false
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
@@ -132,16 +132,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.secretEngine.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.secretEngine.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.secretEngine.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.secretEngine "context" $) | nindent 6 }}
 {{- end }}

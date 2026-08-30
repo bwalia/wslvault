@@ -9,6 +9,79 @@ global:
   # -- Target namespace (used in NetworkPolicy cross-namespace selectors)
   namespace: wslvault
 
+  # ──────────────────────────────────────────────────────────────────────────
+  # Region identity — what makes this release one member of an HA mesh.
+  #
+  # A "region" is one complete, self-contained wslvault release: its own
+  # PostgreSQL, its own service set, its own public edge hostname. Two regions
+  # deployed from this same chart with different `id`s, listing each other
+  # under `peers`, form the active/active pair: each region's
+  # replication-agent polls the other's /v1/replication/events and applies the
+  # events locally with the configured conflict strategy.
+  #
+  # Peering goes over PUBLIC URLs, not cluster DNS. Edge PoP nodes carry
+  # network.k3s1/cross-node=unavailable, so pods in one region have no
+  # pod-network route to pods in another; the traffic leaves the cluster and
+  # re-enters through the peer's ingress.
+  #
+  # `peers` is the full roster INCLUDING this region — the chart filters the
+  # local entry out — so every region's values file can carry one identical
+  # list and adding a third region is a single edit in one place.
+  # ──────────────────────────────────────────────────────────────────────────
+  region:
+    # -- Stable, mesh-unique region identifier. Stamped onto every replication
+    # event, vector-clock entry and system.regions row, so changing it on a
+    # live region orphans that region's replication state. Required.
+    # These defaults describe the FIRST region, matching the cloud001 pinning
+    # and vault.workstation.co.uk host also defaulted in this file. Per-region
+    # values files under deploy/gitops/regions/ override every field.
+    id: "region-a"
+    # -- Human-readable name shown in the regions API; defaults to id
+    displayName: "Region A"
+    # -- How peers address THIS region. Defaults to https://<edgeIngress.host>
+    endpoint: ""
+    # -- Full region roster. Each entry: {id, displayName, replicationUrl}
+    # replicationUrl is the peer's base URL; the agent appends
+    # /v1/replication/events to it.
+    peers: []
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Node placement — THE single place to (re)pin the whole stack.
+  #
+  # Every workload in this chart (all services, vault-ui, and the PostgreSQL
+  # subchart via the YAML anchors below) inherits these defaults unless a
+  # per-service nodeSelector/affinity/tolerations is set explicitly.
+  #
+  # To move the stack to a different node, change ONLY this block:
+  #   1. nodeSelector hostname  -> the new node's kubernetes.io/hostname
+  #   2. tolerations            -> keep/adjust for the new node's taints
+  #   3. edgeHostCidrs          -> the new node's flannel host /31, derived
+  #      from `kubectl get node <node> -o jsonpath='{.spec.podCIDR}'`
+  #      (e.g. podCIDR 10.42.16.0/24 -> 10.42.16.0/31); used by the
+  #      wslproxy/edge host-ingress NetworkPolicies further down (wired with
+  #      YAML anchors so no other edit is needed).
+  #
+  # cloud001 is the public edge PoP origin (taint node-role.kubernetes.io/edge)
+  # and pods on it cannot reach pods on other nodes (flannel VXLAN to the LAN
+  # nodes is unroutable — node label network.k3s1/cross-node=unavailable), so
+  # the entire release MUST be co-scheduled on the same node.
+  # ──────────────────────────────────────────────────────────────────────────
+  scheduling:
+    # -- Default nodeSelector for every pod in the release
+    nodeSelector: &wslvaultNodeSelector
+      kubernetes.io/hostname: cloud001
+    # -- Default tolerations (cloud001 carries the edge NoSchedule taint;
+    # harmless when pinning to an untainted node)
+    tolerations: &wslvaultTolerations
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    # -- Default affinity for every pod in the release
+    affinity: {}
+  # -- Flannel host /31 of the pinned node (see the placement notes above)
+  edgeHostCidrs: &wslvaultEdgeHostCidrs
+    - 10.42.16.0/31  # cloud001
+
 # -- Service account creation and RBAC configuration
 serviceAccount:
   # -- Whether to create a shared service account
@@ -27,12 +100,60 @@ rbac:
 networkPolicies:
   # -- Whether to create NetworkPolicy resources (default deny + explicit allow rules)
   enabled: true
+  # -- Host-network wslproxy / traefik-edge instances (the public PoP's origin
+  # hop on cluster nodes) allowed to reach the public API service ports
+  # directly via pod IPs. Follows global.edgeHostCidrs so re-pinning the stack
+  # updates this automatically. Empty cidrs renders no policy.
+  wslproxyHostIngress:
+    cidrs: *wslvaultEdgeHostCidrs
+    # -- Public API HTTP ports (mirrors the edgeIngress route map):
+    # secret-engine, identity-service, policy-engine, transit-engine,
+    # mcp-server, pki-engine, and replication-agent (8091) for peer pulls.
+    # traefik-edge is host-networked, so its source is the node's flannel host
+    # address rather than a pod IP — hence the cidr carve-out rather than a
+    # podSelector.
+    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091]
+  # -- Destination ports the replication-agent and region-health may reach on
+  # peer regions. Egress is opened to public address space only (RFC1918 and
+  # link-local are excluded) and only when global.region.peers is non-empty.
+  crossRegionEgressPorts: [443, 80]
 
-# -- vault-ui: Next.js web console (disabled by default). When enabled it is
+# -- Schema bootstrap. Applies deploy/helm/wslvault/files/migrations/*.sql to
+# this region's database through a ledger table (system.schema_migrations), so
+# each numbered file runs exactly once and a fresh region comes up with a
+# complete schema instead of crash-looping on missing tables. See
+# templates/migrations.yaml for the full rationale.
+migrations:
+  # -- Run the schema bootstrap Job. Disable only when the schema is managed
+  # entirely out-of-band.
+  enabled: true
+  image:
+    # -- Needs psql and pg_isready; any postgres client image works
+    repository: postgres
+    tag: "16-alpine"
+  # -- Record existing files as applied, without executing them, when the
+  # database already carries the schema but has no ledger. This is what lets
+  # the Job be introduced safely on a region that was migrated by hand.
+  # Set false to make that situation a hard failure instead.
+  baselineOnExisting: true
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 86400
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -- vault-ui: Next.js web console. When enabled it is
 # deployed with a Service, Ingress, and the additive NetworkPolicies it needs to
 # reach the backends over in-cluster DNS. Point ui.host's DNS at the same edge.
 ui:
-  enabled: false
+  enabled: true
   replicaCount: 1
   image:
     repository: bwalia/wslvault-vault-ui
@@ -40,12 +161,28 @@ ui:
     tag: ""
   port: 3011
   host: vault-ui.workstation.co.uk
-  ingressClassName: traefik
-  entrypoint: websecure
+  # -- traefik-edge is the host-network Traefik daemonset on the edge nodes
+  # (:443 on the pinned node). With the stack pinned to cloud001 the LAN
+  # Traefik LB can no longer reach these pods, so the edge node serves the
+  # public hostnames itself; the PoP origin must point at the pinned node.
+  ingressClassName: traefik-edge
+  # -- traefik-edge terminates no TLS for these hosts (the PoP holds the public
+  # certificate and proxies to the web entrypoint), so the router must bind :80.
+  entrypoint: web,websecure
   tls:
     # -- Leave secretName empty to serve HTTP only (TLS terminated at the edge PoP)
     secretName: ""
+  # -- Host-network wslproxy instances allowed to reach the UI port directly
+  # (bypassing Traefik). Follows global.edgeHostCidrs — with the whole stack
+  # pinned to one node, only that node's wslproxy can reach the UI pod anyway.
+  # Empty list renders no policy; the default-deny then blocks host traffic.
+  wslproxyIngress:
+    cidrs: *wslvaultEdgeHostCidrs
   resources: {}
+  # -- Optional per-service overrides of global.scheduling
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # -- Edge Ingress for the control plane (Traefik / k3s). Chart-managed
 # equivalent of deploy/k8s/wslvault-ingress.yaml — enable exactly ONE of the two
@@ -53,10 +190,17 @@ ui:
 # The route map is verified against the actual axum route registrations in
 # services/*/src; only prefixes a backend truly serves over HTTP are listed.
 edgeIngress:
-  enabled: false
-  ingressClassName: traefik
-  entrypoint: websecure
+  enabled: true
+  # -- See ui.ingressClassName: the pinned edge node serves the API hosts.
+  ingressClassName: traefik-edge
+  # -- See ui.entrypoint: PoP terminates TLS, origin hop uses the web entrypoint.
+  entrypoint: web,websecure
   host: vault.workstation.co.uk
+  # -- Additional hostnames served with the same route map. Use this for the
+  # per-region host (vault-a…/vault-b…) alongside the shared alias, so the
+  # public alias can be repointed at another region without a chart change.
+  # Every name here should also appear under tls.hosts.
+  extraHosts: []
   tls:
     # -- Self-signed by default; SANs must cover every host below. Point this at
     # a cert-manager-issued secret for a trusted chain.
@@ -65,8 +209,10 @@ edgeIngress:
       - vault.workstation.co.uk
       - wslvault.workstation.co.uk
   # -- HTTP:80 -> HTTPS 308 redirect (Traefik redirectScheme middleware).
+  # Disabled: traefik-edge runs without the kubernetescrd provider, so the
+  # Middleware CRD reference cannot resolve there.
   httpRedirect:
-    enabled: true
+    enabled: false
     entrypoint: web
   # -- path -> component:port. Verified 2026-07-13 against source routes.
   # Deliberately omitted (no HTTP backend): /v1/identity (unimplemented),
@@ -112,6 +258,29 @@ secrets:
   jwtSecret: ""
   # -- PKI root key that envelope-encrypts tenant CA private keys (base64-encoded 32-byte key)
   pkiRootKey: ""
+  # -- Bootstrap administrator token for the API key management endpoints
+  # (VAULT_ADMIN_TOKEN). Creating an API key grants whatever policies the
+  # request asks for, so those endpoints authenticate callers themselves rather
+  # than trusting the network in front of them. This token is the way to mint
+  # the FIRST key of a deployment, before any JWT exists to present; after that,
+  # a JWT carrying the administrator policy works too. Leave empty to disable
+  # the bootstrap path entirely (JWT-only). Generate with: openssl rand -hex 32
+  adminToken: ""
+  # -- Deliver the three keys above from a Secret provisioned out-of-band
+  # (SealedSecret, ExternalSecret, …) instead of from these values. REQUIRED in
+  # a multi-region mesh: replicated ciphertext is decrypted with the receiving
+  # region's root key and a token minted in one region is verified in another,
+  # so all regions must hold byte-identical material. Setting this skips
+  # creation of the chart-managed key Secrets entirely.
+  existingSecret: ""
+  # -- Key names inside existingSecret
+  existingSecretKeys:
+    rootKey: root-key
+    jwtSecret: jwt-secret
+    pkiRootKey: pki-root-key
+    replicationPeerToken: replication-peer-token
+    # Optional: absent from existingSecret means the bootstrap path stays off.
+    adminToken: admin-token
 
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:
@@ -205,12 +374,20 @@ policyEngine:
 # -- identity-service: authentication, JWT issuance, and tenant management
 identityService:
   enabled: true
-  replicaCount: 2
+  # -- MUST stay 1 until the principal store is persisted. API keys now live in
+  # `shared.api_keys` and survive restarts and replicas, but `PrincipalStore`
+  # (store.rs) is still an in-process HashMap, so a principal registered on one
+  # pod is invisible to the others.
+  replicaCount: 1
   image:
     repository: bwalia/wslvault-identity-service
     tag: ""
   httpPort: 8082
   grpcPort: 50054
+  # -- Policy a JWT must carry to manage API keys. Empty uses the service
+  # default ("admin"). The bootstrap token in secrets.adminToken bypasses this
+  # and is the only way to mint the first key.
+  adminPolicy: ""
   resources:
     requests:
       cpu: "100m"
@@ -407,6 +584,24 @@ replicationAgent:
   batchSize: 100
   # -- Conflict resolution strategy: "last_write_wins", "vector_clock", or "manual"
   conflictStrategy: "last_write_wins"
+  # -- Publish /v1/replication on the edge Ingress so peer regions can pull the
+  # outbox.
+  #
+  # ⚠ KEEP THIS false UNTIL THE DEPLOYED IMAGE ENFORCES THE PEER TOKEN.
+  # The outbox serves ciphertext and DEK ids, cleartext RBAC policy documents,
+  # and the tenant roster including root_key_id. The shared-token guard lives in
+  # services/replication-agent/src/auth.rs, but a published image built BEFORE
+  # that change ignores REPLICATION_PEER_TOKEN entirely and serves the outbox to
+  # anyone who can reach the ingress — the env var being present proves nothing.
+  #
+  # Confirm the running image enforces it before flipping this on:
+  #   curl -o /dev/null -w '%{http_code}\n' \
+  #     "https://<region-host>/v1/replication/events?source_region=x"
+  #   # 401 (or 503) = guarded and safe to publish
+  #   # 200          = pre-auth image; leave this false
+  #
+  # Regions cannot replicate while this is false; that is the safe failure.
+  publishPeerEndpoint: false
   resources:
     requests:
       cpu: "100m"
@@ -486,6 +681,17 @@ postgresql:
     persistence:
       enabled: true
       size: 10Gi
+      # -- Node-local storage: the pinned node keeps its own data and the
+      # DB never depends on cross-node replica traffic (broken from cloud001).
+      # NOTE: this field lands in the StatefulSet volumeClaimTemplates, which
+      # are immutable — changing it requires deleting the StatefulSet + PVC
+      # (dump/restore the data) before upgrading.
+      storageClass: local-path
+    # -- The Bitnami subchart cannot read global.scheduling, so the placement
+    # anchors from the global block are referenced here explicitly. No edit
+    # needed when re-pinning — the anchors resolve to the same single source.
+    nodeSelector: *wslvaultNodeSelector
+    tolerations: *wslvaultTolerations
     resources:
       requests:
         cpu: "250m"

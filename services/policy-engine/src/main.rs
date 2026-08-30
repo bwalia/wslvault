@@ -163,7 +163,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- Initialise structured JSON logging ---
     tracing_subscriber::fmt()
         .json()
-        .with_env_filter(EnvFilter::from_default_env())
+        // Default to `info` when RUST_LOG is unset. `from_default_env()` alone
+        // yields an empty filter, which silences the service completely — no
+        // startup line, no errors, nothing shipped to Loki — so a crash-looping
+        // or misbehaving pod leaves no trace at all.
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(true)
         .with_thread_ids(true)
         .init();

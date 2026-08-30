@@ -67,10 +67,7 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            - name: REGION_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            {{- include "wslvault.regionEnv" . | nindent 12 }}
             - name: SYNC_SCHEDULER_LISTEN_ADDR
               value: {{ printf "0.0.0.0:%d" (int .Values.syncScheduler.httpPort) | quote }}
             {{- with .Values.syncScheduler.extraEnv }}
@@ -98,16 +95,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.syncScheduler.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.syncScheduler.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.syncScheduler.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.syncScheduler "context" $) | nindent 6 }}
 {{- end }}

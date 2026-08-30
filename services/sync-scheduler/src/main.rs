@@ -19,7 +19,7 @@ use axum::extract::State;
 use axum::response::Json;
 use axum::routing::get;
 use axum::Router;
-use tracing::{info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wslvault_cluster::config::ClusterConfig;
 use wslvault_cluster::leader::LeaderElector;
@@ -35,7 +35,13 @@ struct AppState {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .json()
-        .with_env_filter(EnvFilter::from_default_env())
+        // Default to `info` when RUST_LOG is unset. `from_default_env()` alone
+        // yields an empty filter, which silences the service completely — no
+        // startup line, no errors, nothing shipped to Loki — so a crash-looping
+        // or misbehaving pod leaves no trace at all.
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(true)
         .init();
 

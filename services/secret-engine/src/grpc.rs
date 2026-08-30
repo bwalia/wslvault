@@ -211,7 +211,7 @@ impl SecretService for SecretServiceImpl {
                         "secret.read",
                         &path,
                         "failure",
-                        &e.message().to_string(),
+                        e.message(),
                         "",
                         "",
                     )
@@ -338,7 +338,7 @@ impl SecretService for SecretServiceImpl {
                         "secret.write",
                         &path,
                         "failure",
-                        &e.message().to_string(),
+                        e.message(),
                         "",
                         "",
                     )

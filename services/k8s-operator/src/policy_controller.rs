@@ -589,7 +589,7 @@ async fn add_finalizer(
         &Patch::Merge(patch_body),
     )
     .await
-    .map_err(|err| OperatorError::KubeApi(err))?;
+    .map_err(OperatorError::KubeApi)?;
 
     debug!(name = %vault_policy.name_any(), "added policy finalizer");
     Ok(())
@@ -626,7 +626,7 @@ async fn remove_finalizer(
         &Patch::Merge(patch_body),
     )
     .await
-    .map_err(|err| OperatorError::KubeApi(err))?;
+    .map_err(OperatorError::KubeApi)?;
 
     debug!(name = %vault_policy.name_any(), "removed policy finalizer");
     Ok(())

@@ -1,0 +1,36 @@
+# One-shot bootstrap: apply this by hand once, and Argo CD owns the rest.
+#
+#   kubectl apply -f deploy/gitops/bootstrap/root-app.yaml
+#
+# It watches deploy/gitops/ and applies the AppProject and the ApplicationSet
+# from Git, so subsequent changes to either — including adding a third region —
+# arrive through a pull request rather than a kubectl command.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: wslvault-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  source:
+    repoURL: https://github.com/bwalia/wslvault.git
+    targetRevision: main
+    path: deploy/gitops
+    directory:
+      recurse: false
+      # Only the two top-level manifests. regions/*.values.yaml are Helm values
+      # consumed by the ApplicationSet, not Kubernetes objects, and bootstrap/
+      # holds this file itself — including either would make Argo try to apply
+      # them as resources.
+      include: '{appproject.yaml,applicationset.yaml}'
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

@@ -9,8 +9,12 @@
 //!
 //! - The raw key (`wslv_<base64url-32-bytes>`) is generated once, returned in
 //!   the creation response, and **never stored**.
-//! - Only the SHA-256 hash of the raw key is held in memory (and persisted to
-//!   PostgreSQL via a future storage integration).
+//! - Only the SHA-256 hash of the raw key is stored, in `shared.api_keys`.
+//!   Keys therefore survive restarts and are shared across replicas; the
+//!   in-memory backend remains for tests and for running without a database.
+//! - The management endpoints carry their own authentication ([`AdminAuth`]),
+//!   independent of the gateway-origin check, because minting a key grants
+//!   whatever policies the request asks for.
 //! - Lookup during validation uses a constant-time XOR-fold comparison
 //!   (`ct_bytes_equal`) to prevent timing-based key enumeration.
 //! - The `key_prefix` (first 8 characters after the `wslv_` sentinel) is
@@ -30,11 +34,12 @@
 use std::{collections::HashMap, sync::Arc};
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::Next,
     response::IntoResponse,
     routing::{delete, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
 use rand::RngCore;
@@ -43,6 +48,8 @@ use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 use uuid::Uuid;
+
+use wslvault_storage::{api_key_store, pool::DbPool};
 
 use crate::token::TokenManager;
 
@@ -93,6 +100,20 @@ pub enum ApiKeyError {
     /// Wraps internal JWT-issuance failures surfaced from [`TokenManager`].
     #[error("token issuance failed: {0}")]
     TokenIssuance(String),
+
+    /// The `tenant_id` on the request does not name a live tenant. Only the
+    /// database backend can tell — the in-memory one has no tenant registry.
+    #[error("tenant '{0}' does not exist")]
+    TenantNotFound(String),
+
+    /// The backing store failed. Distinct from a key simply not being there.
+    #[error("api key store unavailable: {0}")]
+    Storage(String),
+
+    /// The bootstrap token is not tenant scoped, so a request authenticated
+    /// with it has to name the tenant it acts on.
+    #[error("{0}")]
+    MissingTenantId(String),
 }
 
 impl ApiKeyError {
@@ -106,6 +127,9 @@ impl ApiKeyError {
             ApiKeyError::InvalidKeyFormat => StatusCode::BAD_REQUEST,
             ApiKeyError::RateLimitExceeded => StatusCode::TOO_MANY_REQUESTS,
             ApiKeyError::TokenIssuance(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiKeyError::TenantNotFound(_) => StatusCode::NOT_FOUND,
+            ApiKeyError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiKeyError::MissingTenantId(_) => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -119,6 +143,9 @@ impl ApiKeyError {
             ApiKeyError::InvalidKeyFormat => "invalid_key_format",
             ApiKeyError::RateLimitExceeded => "rate_limit_exceeded",
             ApiKeyError::TokenIssuance(_) => "token_issuance_failed",
+            ApiKeyError::TenantNotFound(_) => "tenant_not_found",
+            ApiKeyError::Storage(_) => "storage_error",
+            ApiKeyError::MissingTenantId(_) => "missing_tenant_id",
         }
     }
 }
@@ -240,30 +267,63 @@ fn ct_bytes_equal(a: &[u8], b: &[u8]) -> bool {
 // Manager
 // ---------------------------------------------------------------------------
 
+/// Where an [`ApiKeyManager`] keeps its records.
+///
+/// PostgreSQL is the production backend. The in-memory variant is retained for
+/// tests and for running without `DATABASE_URL`; it loses every key when the
+/// process exits, which is exactly the failure this enum exists to end.
+#[derive(Clone)]
+enum Backend {
+    /// Durable, shared across replicas and restarts.
+    Database(DbPool),
+    /// Process-local. Primary index by key hash, secondary by key UUID.
+    Memory {
+        by_hash: Arc<RwLock<HashMap<Vec<u8>, ApiKeyRecord>>>,
+        id_to_hash: Arc<RwLock<HashMap<Uuid, Vec<u8>>>>,
+    },
+}
+
+/// Translates a storage-layer error into the HTTP-facing error type.
+///
+/// `ValidationError` on the `name` field is the active-name unique index
+/// firing; the caller re-labels it with the name it tried to use.
+fn store_err(e: wslvault_core::VaultError) -> ApiKeyError {
+    match e {
+        wslvault_core::VaultError::TenantNotFound { tenant_id } => {
+            ApiKeyError::TenantNotFound(tenant_id)
+        }
+        other => ApiKeyError::Storage(other.to_string()),
+    }
+}
+
 /// Manages API key lifecycle: generation, validation, revocation, and rotation.
 ///
-/// The backing store is an in-memory [`HashMap`] keyed by the SHA-256 hash of
-/// the raw key, giving O(1) average-case lookup on the hot validation path.
-/// A secondary index by [`Uuid`] supports management operations (revoke by ID,
-/// list by tenant).
-///
-/// All mutations are serialised through a [`tokio::sync::RwLock`] which allows
-/// many concurrent reads (validation) alongside exclusive writes (create/revoke).
+/// Against PostgreSQL every operation is a single indexed statement; the
+/// authentication path looks a key up by the unique `key_hash` column rather
+/// than scanning. Against the in-memory backend the primary index is a
+/// [`HashMap`] keyed by the SHA-256 hash of the raw key, with a secondary index
+/// by [`Uuid`] for management operations.
 #[derive(Clone)]
 pub struct ApiKeyManager {
-    /// Primary index: key_hash → record.  Used on the authentication hot path.
-    by_hash: Arc<RwLock<HashMap<Vec<u8>, ApiKeyRecord>>>,
-    /// Secondary index: id → key_hash.  Enables O(1) lookup by UUID for
-    /// management operations (revoke, rotate) without scanning the primary map.
-    id_to_hash: Arc<RwLock<HashMap<Uuid, Vec<u8>>>>,
+    backend: Backend,
 }
 
 impl ApiKeyManager {
-    /// Creates a new, empty `ApiKeyManager`.
+    /// Creates an in-memory manager. Keys do not survive the process.
     pub fn new() -> Self {
         Self {
-            by_hash: Arc::new(RwLock::new(HashMap::new())),
-            id_to_hash: Arc::new(RwLock::new(HashMap::new())),
+            backend: Backend::Memory {
+                by_hash: Arc::new(RwLock::new(HashMap::new())),
+                id_to_hash: Arc::new(RwLock::new(HashMap::new())),
+            },
+        }
+    }
+
+    /// Creates a PostgreSQL-backed manager. Keys survive restarts and are
+    /// visible to every replica sharing the database.
+    pub fn with_pool(pool: DbPool) -> Self {
+        Self {
+            backend: Backend::Database(pool),
         }
     }
 
@@ -303,6 +363,43 @@ impl ApiKeyManager {
             .ok_or(ApiKeyError::InvalidKeyFormat)
     }
 
+    /// Builds the record for a newly generated key, returning it alongside the
+    /// raw key string. Shared by the create and rotate paths.
+    fn mint(req: &ApiKeyCreateRequest, name: &str, created_by: &str) -> (String, ApiKeyRecord) {
+        let raw_key = Self::generate_key();
+        let key_hash = Self::hash_key(&raw_key);
+
+        // The display prefix is taken from the random portion, after `wslv_`.
+        let key_prefix = raw_key
+            .strip_prefix(RAW_KEY_PREFIX)
+            .unwrap_or(&raw_key)
+            .chars()
+            .take(KEY_PREFIX_DISPLAY_LEN)
+            .collect::<String>();
+
+        let now = Utc::now();
+        let record = ApiKeyRecord {
+            // v7 UUIDs sort by creation time, consistent with the rest of the codebase.
+            id: Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)),
+            tenant_id: req.tenant_id.clone(),
+            name: name.to_string(),
+            key_hash,
+            key_prefix,
+            path_prefixes: req.path_prefixes.clone().unwrap_or_default(),
+            policies: req.policies.clone().unwrap_or_default(),
+            created_by: created_by.to_string(),
+            created_at: now,
+            expires_at: req
+                .expires_in_seconds
+                .map(|secs| now + chrono::Duration::seconds(secs)),
+            last_used_at: None,
+            revoked_at: None,
+            rate_limit_per_minute: req.rate_limit_per_minute.unwrap_or(60),
+        };
+
+        (raw_key, record)
+    }
+
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
@@ -311,6 +408,10 @@ impl ApiKeyManager {
     ///
     /// Returns an [`ApiKeyCreateResponse`] containing the raw key string.
     /// **This is the only time the raw key is accessible.**
+    ///
+    /// On the database backend `req.tenant_id` may be a tenant UUID or a slug;
+    /// either is resolved against `system.tenants` and the response reports the
+    /// canonical UUID.
     pub async fn create_key(
         &self,
         req: ApiKeyCreateRequest,
@@ -322,187 +423,315 @@ impl ApiKeyManager {
             return Err(ApiKeyError::InvalidKeyFormat);
         }
 
-        // Duplicate-name guard: scan existing active keys for the tenant.
-        {
-            let guard = self.by_hash.read().await;
-            let duplicate = guard.values().any(|record| {
-                record.tenant_id == req.tenant_id
-                    && record.name == name
-                    && record.revoked_at.is_none()
-            });
-            if duplicate {
-                return Err(ApiKeyError::DuplicateName(name.clone()));
+        match &self.backend {
+            Backend::Database(pool) => {
+                let tenant_uuid = api_key_store::resolve_tenant_id(pool, &req.tenant_id)
+                    .await
+                    .map_err(store_err)?;
+
+                // Pre-check for a friendly 409. The partial unique index added
+                // in migration 016 is what actually enforces this under
+                // concurrency; the insert below maps that violation too.
+                if api_key_store::active_name_exists(pool, tenant_uuid, &name)
+                    .await
+                    .map_err(store_err)?
+                {
+                    return Err(ApiKeyError::DuplicateName(name));
+                }
+
+                // Report the canonical tenant UUID rather than whatever
+                // reference the caller happened to pass.
+                let canonical = ApiKeyCreateRequest {
+                    tenant_id: tenant_uuid.to_string(),
+                    name: name.clone(),
+                    policies: req.policies.clone(),
+                    path_prefixes: req.path_prefixes.clone(),
+                    expires_in_seconds: req.expires_in_seconds,
+                    rate_limit_per_minute: req.rate_limit_per_minute,
+                };
+                let (raw_key, record) = Self::mint(&canonical, &name, created_by);
+
+                let row = api_key_store::ApiKeyRow {
+                    id: record.id,
+                    tenant_id: tenant_uuid,
+                    name: record.name.clone(),
+                    key_hash: record.key_hash.clone(),
+                    key_prefix: record.key_prefix.clone(),
+                    path_prefixes: record.path_prefixes.clone(),
+                    policies: record.policies.clone(),
+                    created_by: record.created_by.clone(),
+                    created_at: record.created_at,
+                    expires_at: record.expires_at,
+                    last_used_at: None,
+                    revoked_at: None,
+                    rate_limit_per_minute: record.rate_limit_per_minute,
+                };
+
+                api_key_store::insert(pool, &row)
+                    .await
+                    .map_err(|e| match e {
+                        // The unique index fired between the pre-check and the insert.
+                        wslvault_core::VaultError::ValidationError { ref field, .. }
+                            if field == "name" =>
+                        {
+                            ApiKeyError::DuplicateName(name.clone())
+                        }
+                        other => store_err(other),
+                    })?;
+
+                info!(
+                    key_id = %record.id,
+                    tenant_id = %tenant_uuid,
+                    key_prefix = %record.key_prefix,
+                    "api key created"
+                );
+
+                Ok(Self::create_response(raw_key, &record))
+            }
+
+            Backend::Memory {
+                by_hash,
+                id_to_hash,
+            } => {
+                // Duplicate-name guard: scan existing active keys for the tenant.
+                {
+                    let guard = by_hash.read().await;
+                    let duplicate = guard.values().any(|record| {
+                        record.tenant_id == req.tenant_id
+                            && record.name == name
+                            && record.revoked_at.is_none()
+                    });
+                    if duplicate {
+                        return Err(ApiKeyError::DuplicateName(name));
+                    }
+                }
+
+                let (raw_key, record) = Self::mint(&req, &name, created_by);
+                let response = Self::create_response(raw_key, &record);
+
+                // Persist under both indexes, acquiring write locks in a
+                // consistent order (hash map first, then id map) to avoid deadlocks.
+                let mut by_hash = by_hash.write().await;
+                let mut id_to_hash = id_to_hash.write().await;
+                id_to_hash.insert(record.id, record.key_hash.clone());
+                by_hash.insert(record.key_hash.clone(), record.clone());
+
+                info!(
+                    key_id = %record.id,
+                    tenant_id = %record.tenant_id,
+                    key_prefix = %record.key_prefix,
+                    "api key created"
+                );
+
+                Ok(response)
             }
         }
+    }
 
-        let raw_key = Self::generate_key();
-        let key_hash = Self::hash_key(&raw_key);
-
-        // Extract the display prefix from the random portion (after `wslv_`).
-        let random_portion = Self::parse_key_random_portion(&raw_key)?;
-        let key_prefix = random_portion
-            .chars()
-            .take(KEY_PREFIX_DISPLAY_LEN)
-            .collect::<String>();
-
-        let now = Utc::now();
-        let expires_at = req
-            .expires_in_seconds
-            .map(|secs| now + chrono::Duration::seconds(secs));
-
-        // Generate a random UUID using a timestamp-based v7 UUID so records
-        // sort naturally by creation time (consistent with the rest of the codebase).
-        let record = ApiKeyRecord {
-            id: Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)),
-            tenant_id: req.tenant_id.clone(),
-            name: name.clone(),
-            key_hash: key_hash.clone(),
-            key_prefix: key_prefix.clone(),
-            path_prefixes: req.path_prefixes.clone().unwrap_or_default(),
-            policies: req.policies.clone().unwrap_or_default(),
-            created_by: created_by.to_string(),
-            created_at: now,
-            expires_at,
-            last_used_at: None,
-            revoked_at: None,
-            rate_limit_per_minute: req.rate_limit_per_minute.unwrap_or(60),
-        };
-
-        let response = ApiKeyCreateResponse {
+    /// Builds the one-time creation response for a freshly minted record.
+    fn create_response(raw_key: String, record: &ApiKeyRecord) -> ApiKeyCreateResponse {
+        ApiKeyCreateResponse {
             id: record.id,
             key: raw_key,
-            key_prefix: key_prefix.clone(),
-            name: name.clone(),
-            tenant_id: req.tenant_id.clone(),
+            key_prefix: record.key_prefix.clone(),
+            name: record.name.clone(),
+            tenant_id: record.tenant_id.clone(),
             policies: record.policies.clone(),
             path_prefixes: record.path_prefixes.clone(),
-            expires_at,
-            created_at: now,
-        };
-
-        // Persist under both indexes atomically (we acquire write locks in a
-        // consistent order to avoid deadlocks: hash map first, then id map).
-        let mut by_hash = self.by_hash.write().await;
-        let mut id_to_hash = self.id_to_hash.write().await;
-        by_hash.insert(key_hash.clone(), record.clone());
-        id_to_hash.insert(record.id, key_hash);
-
-        info!(
-            key_id = %record.id,
-            tenant_id = %req.tenant_id,
-            key_prefix = %key_prefix,
-            "api key created"
-        );
-
-        Ok(response)
+            expires_at: record.expires_at,
+            created_at: record.created_at,
+        }
     }
 
     /// Validates a raw API key string, returning tenant / policy metadata.
     ///
-    /// The lookup is O(1) and uses a constant-time byte comparison to prevent
-    /// timing-based key enumeration.  `last_used_at` is updated on success.
+    /// `last_used_at` is stamped on success. On the database backend that
+    /// stamp is best-effort: a write failure is logged but does not fail an
+    /// otherwise valid authentication.
     pub async fn validate_key(&self, raw_key: &str) -> Result<ApiKeyValidationResult, ApiKeyError> {
         // Reject obviously malformed keys before touching the store.
         Self::parse_key_random_portion(raw_key)?;
 
         let candidate_hash = Self::hash_key(raw_key);
 
-        let mut by_hash = self.by_hash.write().await;
+        match &self.backend {
+            Backend::Database(pool) => {
+                // Indexed equality lookup on the unique key_hash column. The
+                // hash is a SHA-256 digest of the presented key, so an attacker
+                // cannot steer the comparison toward a stored value without
+                // already holding a key that hashes to it.
+                let row = api_key_store::find_by_hash(pool, &candidate_hash)
+                    .await
+                    .map_err(store_err)?
+                    .ok_or(ApiKeyError::KeyNotFound)?;
 
-        // Find a record whose stored hash matches the candidate via constant-time compare.
-        // `ct_bytes_equal` XORs all bytes and folds the result so that execution
-        // time is independent of where (or whether) a differing byte occurs.
-        // This prevents timing-based key enumeration attacks.
-        let record = by_hash
-            .iter_mut()
-            .find(|(stored_hash, _)| ct_bytes_equal(stored_hash, &candidate_hash))
-            .map(|(_, record)| record)
-            .ok_or(ApiKeyError::KeyNotFound)?;
+                if row.revoked_at.is_some() {
+                    warn!(key_id = %row.id, "attempt to use revoked api key");
+                    return Err(ApiKeyError::KeyRevoked);
+                }
 
-        if record.revoked_at.is_some() {
-            warn!(key_id = %record.id, "attempt to use revoked api key");
-            return Err(ApiKeyError::KeyRevoked);
-        }
+                if let Some(expires_at) = row.expires_at {
+                    if Utc::now() > expires_at {
+                        warn!(key_id = %row.id, "attempt to use expired api key");
+                        return Err(ApiKeyError::KeyExpired);
+                    }
+                }
 
-        if let Some(expires_at) = record.expires_at {
-            if Utc::now() > expires_at {
-                warn!(key_id = %record.id, "attempt to use expired api key");
-                return Err(ApiKeyError::KeyExpired);
+                if let Err(e) = api_key_store::touch_last_used(pool, row.id).await {
+                    warn!(key_id = %row.id, error = %e, "failed to stamp last_used_at");
+                }
+
+                Ok(ApiKeyValidationResult {
+                    key_id: row.id,
+                    tenant_id: row.tenant_id.to_string(),
+                    policies: row.policies,
+                    path_prefixes: row.path_prefixes,
+                    rate_limit_per_minute: row.rate_limit_per_minute,
+                })
+            }
+
+            Backend::Memory { by_hash, .. } => {
+                let mut by_hash = by_hash.write().await;
+
+                // Constant-time compare across the map so that execution time
+                // does not reveal where (or whether) a differing byte occurs,
+                // preventing timing-based key enumeration.
+                let record = by_hash
+                    .iter_mut()
+                    .find(|(stored_hash, _)| ct_bytes_equal(stored_hash, &candidate_hash))
+                    .map(|(_, record)| record)
+                    .ok_or(ApiKeyError::KeyNotFound)?;
+
+                if record.revoked_at.is_some() {
+                    warn!(key_id = %record.id, "attempt to use revoked api key");
+                    return Err(ApiKeyError::KeyRevoked);
+                }
+
+                if let Some(expires_at) = record.expires_at {
+                    if Utc::now() > expires_at {
+                        warn!(key_id = %record.id, "attempt to use expired api key");
+                        return Err(ApiKeyError::KeyExpired);
+                    }
+                }
+
+                // Stamp last_used_at in-place; the record lives behind the write lock.
+                record.last_used_at = Some(Utc::now());
+
+                Ok(ApiKeyValidationResult {
+                    key_id: record.id,
+                    tenant_id: record.tenant_id.clone(),
+                    policies: record.policies.clone(),
+                    path_prefixes: record.path_prefixes.clone(),
+                    rate_limit_per_minute: record.rate_limit_per_minute,
+                })
             }
         }
-
-        // Stamp last_used_at in-place; the record lives behind the write lock.
-        record.last_used_at = Some(Utc::now());
-
-        let result = ApiKeyValidationResult {
-            key_id: record.id,
-            tenant_id: record.tenant_id.clone(),
-            policies: record.policies.clone(),
-            path_prefixes: record.path_prefixes.clone(),
-            rate_limit_per_minute: record.rate_limit_per_minute,
-        };
-
-        Ok(result)
     }
 
     /// Revokes an API key by its UUID.
     ///
     /// The caller must supply the owning `tenant_id` to prevent cross-tenant
-    /// revocation (even if a key UUID is somehow leaked).
+    /// revocation (even if a key UUID is somehow leaked). Revoking a key that
+    /// is already revoked is a no-op.
     pub async fn revoke_key(&self, key_id: Uuid, tenant_id: &str) -> Result<(), ApiKeyError> {
-        let id_to_hash = self.id_to_hash.read().await;
-        let hash = id_to_hash
-            .get(&key_id)
-            .ok_or(ApiKeyError::KeyNotFound)?
-            .clone();
-        drop(id_to_hash);
+        match &self.backend {
+            Backend::Database(pool) => {
+                let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
+                    .await
+                    .map_err(store_err)?;
 
-        let mut by_hash = self.by_hash.write().await;
-        let record = by_hash.get_mut(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+                if api_key_store::revoke(pool, key_id, tenant_uuid)
+                    .await
+                    .map_err(store_err)?
+                {
+                    info!(key_id = %key_id, tenant_id = %tenant_uuid, "api key revoked");
+                    return Ok(());
+                }
 
-        if record.tenant_id != tenant_id {
-            // Do not reveal that the key exists under a different tenant.
-            return Err(ApiKeyError::KeyNotFound);
+                // Nothing was updated: either the key belongs to another
+                // tenant (or does not exist), or it was already revoked.
+                match api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                    .await
+                    .map_err(store_err)?
+                {
+                    Some(_) => Ok(()),
+                    None => Err(ApiKeyError::KeyNotFound),
+                }
+            }
+
+            Backend::Memory {
+                by_hash,
+                id_to_hash,
+            } => {
+                let hash = {
+                    let id_to_hash = id_to_hash.read().await;
+                    id_to_hash
+                        .get(&key_id)
+                        .ok_or(ApiKeyError::KeyNotFound)?
+                        .clone()
+                };
+
+                let mut by_hash = by_hash.write().await;
+                let record = by_hash.get_mut(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+                if record.tenant_id != tenant_id {
+                    // Do not reveal that the key exists under a different tenant.
+                    return Err(ApiKeyError::KeyNotFound);
+                }
+
+                if record.revoked_at.is_some() {
+                    // Idempotent: revoking an already-revoked key is a no-op.
+                    return Ok(());
+                }
+
+                record.revoked_at = Some(Utc::now());
+                info!(key_id = %key_id, tenant_id = %tenant_id, "api key revoked");
+                Ok(())
+            }
         }
-
-        if record.revoked_at.is_some() {
-            // Idempotent: revoking an already-revoked key is a no-op.
-            return Ok(());
-        }
-
-        record.revoked_at = Some(Utc::now());
-        info!(key_id = %key_id, tenant_id = %tenant_id, "api key revoked");
-        Ok(())
     }
 
     /// Lists all active (non-revoked, non-expired) API keys for a tenant.
     ///
-    /// The returned records never contain the raw key or its hash;
-    /// only metadata safe for administrative display is included.
-    pub async fn list_keys(&self, tenant_id: &str) -> Vec<ApiKeyRecord> {
-        let now = Utc::now();
-        let by_hash = self.by_hash.read().await;
+    /// The returned records never carry the raw key or its hash; only metadata
+    /// safe for administrative display.
+    pub async fn list_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyRecord>, ApiKeyError> {
+        match &self.backend {
+            Backend::Database(pool) => {
+                let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
+                    .await
+                    .map_err(store_err)?;
 
-        let mut keys: Vec<ApiKeyRecord> = by_hash
-            .values()
-            .filter(|record| {
-                record.tenant_id == tenant_id
-                    && record.revoked_at.is_none()
-                    && record.expires_at.map_or(true, |exp| now <= exp)
-            })
-            .map(|record| {
-                // Return a copy with the key_hash zeroed out so the SHA-256
-                // digest is never serialised into a response body.
-                ApiKeyRecord {
-                    key_hash: vec![],
-                    ..record.clone()
-                }
-            })
-            .collect();
+                let rows = api_key_store::list_active_for_tenant(pool, tenant_uuid)
+                    .await
+                    .map_err(store_err)?;
 
-        // Stable ordering: newest first for UI convenience.
-        keys.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        keys
+                Ok(rows.into_iter().map(record_from_row).collect())
+            }
+
+            Backend::Memory { by_hash, .. } => {
+                let now = Utc::now();
+                let by_hash = by_hash.read().await;
+
+                let mut keys: Vec<ApiKeyRecord> = by_hash
+                    .values()
+                    .filter(|record| {
+                        record.tenant_id == tenant_id
+                            && record.revoked_at.is_none()
+                            && record.expires_at.is_none_or(|exp| now <= exp)
+                    })
+                    .map(|record| ApiKeyRecord {
+                        // Zero the digest so it is never serialised into a response.
+                        key_hash: vec![],
+                        ..record.clone()
+                    })
+                    .collect();
+
+                // Stable ordering: newest first for UI convenience.
+                keys.sort_by_key(|k| std::cmp::Reverse(k.created_at));
+                Ok(keys)
+            }
+        }
     }
 
     /// Rotates an API key: revokes the existing key and issues a new one with
@@ -515,31 +744,57 @@ impl ApiKeyManager {
         tenant_id: &str,
     ) -> Result<ApiKeyCreateResponse, ApiKeyError> {
         // Capture the old record's configuration before revoking it.
-        let (old_name, old_policies, old_path_prefixes, old_rate_limit, old_created_by) = {
-            let id_to_hash = self.id_to_hash.read().await;
-            let hash = id_to_hash
-                .get(&key_id)
-                .ok_or(ApiKeyError::KeyNotFound)?
-                .clone();
-            drop(id_to_hash);
+        let (old_name, old_policies, old_path_prefixes, old_rate_limit, old_created_by) =
+            match &self.backend {
+                Backend::Database(pool) => {
+                    let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
+                        .await
+                        .map_err(store_err)?;
 
-            let by_hash = self.by_hash.read().await;
-            let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+                    let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                        .await
+                        .map_err(store_err)?
+                        .ok_or(ApiKeyError::KeyNotFound)?;
 
-            if record.tenant_id != tenant_id {
-                return Err(ApiKeyError::KeyNotFound);
-            }
+                    (
+                        row.name,
+                        row.policies,
+                        row.path_prefixes,
+                        row.rate_limit_per_minute,
+                        row.created_by,
+                    )
+                }
 
-            (
-                record.name.clone(),
-                record.policies.clone(),
-                record.path_prefixes.clone(),
-                record.rate_limit_per_minute,
-                record.created_by.clone(),
-            )
-        };
+                Backend::Memory {
+                    by_hash,
+                    id_to_hash,
+                } => {
+                    let hash = {
+                        let id_to_hash = id_to_hash.read().await;
+                        id_to_hash
+                            .get(&key_id)
+                            .ok_or(ApiKeyError::KeyNotFound)?
+                            .clone()
+                    };
 
-        // Revoke the old key first.
+                    let by_hash = by_hash.read().await;
+                    let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+                    if record.tenant_id != tenant_id {
+                        return Err(ApiKeyError::KeyNotFound);
+                    }
+
+                    (
+                        record.name.clone(),
+                        record.policies.clone(),
+                        record.path_prefixes.clone(),
+                        record.rate_limit_per_minute,
+                        record.created_by.clone(),
+                    )
+                }
+            };
+
+        // Revoke the old key first so the name frees up for the replacement.
         self.revoke_key(key_id, tenant_id).await?;
 
         // Create the replacement key with the same logical identity.
@@ -568,6 +823,29 @@ impl ApiKeyManager {
     }
 }
 
+/// Converts a persisted row into the in-process record shape.
+///
+/// The stored digest is dropped rather than carried across: nothing downstream
+/// of a list operation needs it, and leaving it behind removes any chance of it
+/// reaching a response body.
+fn record_from_row(row: api_key_store::ApiKeyRow) -> ApiKeyRecord {
+    ApiKeyRecord {
+        id: row.id,
+        tenant_id: row.tenant_id.to_string(),
+        name: row.name,
+        key_hash: vec![],
+        key_prefix: row.key_prefix,
+        path_prefixes: row.path_prefixes,
+        policies: row.policies,
+        created_by: row.created_by,
+        created_at: row.created_at,
+        expires_at: row.expires_at,
+        last_used_at: row.last_used_at,
+        revoked_at: row.revoked_at,
+        rate_limit_per_minute: row.rate_limit_per_minute,
+    }
+}
+
 impl Default for ApiKeyManager {
     fn default() -> Self {
         Self::new()
@@ -583,6 +861,200 @@ impl Default for ApiKeyManager {
 pub struct ApiKeyState {
     pub manager: ApiKeyManager,
     pub token_manager: TokenManager,
+}
+
+// ---------------------------------------------------------------------------
+// Administrative authentication
+// ---------------------------------------------------------------------------
+
+/// Environment variable holding the bootstrap administrator token.
+pub const ADMIN_TOKEN_ENV: &str = "VAULT_ADMIN_TOKEN";
+
+/// Environment variable naming the policy a JWT must carry to manage keys.
+pub const ADMIN_POLICY_ENV: &str = "VAULT_ADMIN_POLICY";
+
+/// Policy required of a JWT caller when `VAULT_ADMIN_POLICY` is unset.
+const DEFAULT_ADMIN_POLICY: &str = "admin";
+
+/// Header carrying the bootstrap administrator token.
+pub const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
+
+/// Who is making a key-management request, once authenticated.
+#[derive(Clone, Debug)]
+pub struct AdminIdentity {
+    /// Recorded as `created_by` on any key this request mints.
+    pub principal_id: String,
+    /// Tenant this caller is confined to. `Some` for a JWT caller, taken from
+    /// its own claims; `None` for the bootstrap token, which is not tenant
+    /// scoped and must therefore name its tenant explicitly on each request.
+    pub tenant_id: Option<String>,
+}
+
+/// Authenticates callers of the key-management endpoints.
+///
+/// Minting an API key is a privilege-granting operation: the returned key
+/// carries whatever policies the request asks for. These endpoints are designed
+/// to sit behind the gateway, but a deployment that routes around the gateway —
+/// or simply leaves `VAULT_GATEWAY_SECRET` unset, which disables that check —
+/// would otherwise expose key creation to anyone who can reach the port. This
+/// gate is enforced by the service itself and fails closed.
+///
+/// Two credentials are accepted:
+///
+/// 1. `Authorization: Bearer <jwt>` — a token minted by this deployment whose
+///    `policies` claim contains the configured administrator policy. The
+///    caller is pinned to the tenant in its own claims.
+/// 2. `X-Admin-Token: <secret>` — the bootstrap credential from
+///    `VAULT_ADMIN_TOKEN`, for creating the first key of a deployment, before
+///    any JWT can be obtained. Not tenant scoped.
+#[derive(Clone)]
+pub struct AdminAuth {
+    /// `None` when `VAULT_ADMIN_TOKEN` is unset; the bootstrap path is then
+    /// unavailable and only JWT callers can manage keys.
+    bootstrap_token: Option<Arc<Vec<u8>>>,
+    /// Policy a JWT must carry to be treated as an administrator.
+    required_policy: Arc<String>,
+    /// Verifies presented JWTs. Shares the deployment's signing secret.
+    token_manager: TokenManager,
+}
+
+impl AdminAuth {
+    /// Builds the gate from the environment.
+    ///
+    /// Logs at startup which credentials are live so an operator can tell,
+    /// from the logs alone, whether bootstrap is possible.
+    pub fn from_env(token_manager: TokenManager) -> Self {
+        let bootstrap_token = std::env::var(ADMIN_TOKEN_ENV)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| Arc::new(s.into_bytes()));
+
+        let required_policy = std::env::var(ADMIN_POLICY_ENV)
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| DEFAULT_ADMIN_POLICY.to_string());
+
+        if bootstrap_token.is_none() {
+            warn!(
+                "{ADMIN_TOKEN_ENV} is not set — api key management accepts only JWTs carrying \
+                 the '{required_policy}' policy. Set it to bootstrap the first key."
+            );
+        }
+
+        Self {
+            bootstrap_token,
+            required_policy: Arc::new(required_policy),
+            token_manager,
+        }
+    }
+
+    /// Builds the gate explicitly. Used by tests.
+    #[cfg(test)]
+    pub fn new(
+        token_manager: TokenManager,
+        bootstrap_token: Option<Vec<u8>>,
+        required_policy: impl Into<String>,
+    ) -> Self {
+        Self {
+            bootstrap_token: bootstrap_token.map(Arc::new),
+            required_policy: Arc::new(required_policy.into()),
+            token_manager,
+        }
+    }
+
+    /// Authenticates one request, returning the caller's identity.
+    ///
+    /// Returns `None` when no acceptable credential is present.
+    fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
+        // 1. Bootstrap token, compared in constant time.
+        if let Some(expected) = &self.bootstrap_token {
+            if let Some(provided) = headers.get(ADMIN_TOKEN_HEADER).map(|v| v.as_bytes()) {
+                if ct_bytes_equal(provided, expected) {
+                    return Some(AdminIdentity {
+                        principal_id: "bootstrap-admin".to_string(),
+                        tenant_id: None,
+                    });
+                }
+            }
+        }
+
+        // 2. Bearer JWT carrying the administrator policy.
+        let bearer = headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())?;
+
+        let claims = self.token_manager.validate_token(bearer).ok()?;
+
+        if !claims
+            .policies
+            .iter()
+            .any(|p| p == self.required_policy.as_str())
+        {
+            warn!(
+                principal = %claims.sub,
+                "token presented to api key management lacks the '{}' policy",
+                self.required_policy
+            );
+            return None;
+        }
+
+        Some(AdminIdentity {
+            principal_id: claims.sub,
+            tenant_id: Some(claims.tenant_id),
+        })
+    }
+}
+
+/// Axum middleware enforcing [`AdminAuth`] on the key-management routes.
+///
+/// Rejects with `401` and inserts the resolved [`AdminIdentity`] into the
+/// request extensions on success, so handlers never re-parse credentials.
+pub async fn require_admin(
+    State(auth): State<AdminAuth>,
+    mut request: Request,
+    next: Next,
+) -> axum::response::Response {
+    match auth.authenticate(request.headers()) {
+        Some(identity) => {
+            request.extensions_mut().insert(identity);
+            next.run(request).await
+        }
+        None => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({
+                "code": "admin_auth_required",
+                "message": "api key management requires an administrator credential: \
+                            a Bearer token carrying the administrator policy, or X-Admin-Token",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+/// Determines which tenant a management request acts on.
+///
+/// A JWT caller is pinned to the tenant in its own claims — an `X-Tenant-Id`
+/// header cannot widen that, which is what stops one tenant's administrator
+/// from minting keys inside another. The bootstrap token is not tenant scoped,
+/// so it must name the tenant on each request.
+fn request_tenant(identity: &AdminIdentity, headers: &HeaderMap) -> Result<String, ApiKeyError> {
+    if let Some(tenant) = &identity.tenant_id {
+        return Ok(tenant.clone());
+    }
+
+    headers
+        .get("x-tenant-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            ApiKeyError::MissingTenantId(
+                "X-Tenant-Id header is required when authenticating with X-Admin-Token".to_string(),
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -645,18 +1117,22 @@ pub struct ApiKeyAuthResponse {
 
 /// `POST /v1/api-keys` — create a new API key.
 ///
-/// Requires a JSON body of [`ApiKeyCreateRequest`].  The `created_by` field is
-/// populated from the `X-Principal-Id` header when present; otherwise it falls
-/// back to `"api"`.
+/// Requires an administrator credential (see [`AdminAuth`]) and a JSON body of
+/// [`ApiKeyCreateRequest`].  `created_by` is taken from the authenticated
+/// identity, never from a caller-supplied header, so it stands as audit
+/// evidence.  A JWT caller may only mint keys inside its own tenant.
 #[utoipa::path(
     post,
     path = "/v1/api-keys",
     params(
-        ("x-principal-id" = Option<String>, Header, description = "Identity of the creator (defaults to 'api')"),
+        ("authorization" = Option<String>, Header, description = "Bearer JWT carrying the administrator policy"),
+        ("x-admin-token" = Option<String>, Header, description = "Bootstrap administrator token (alternative to the Bearer JWT)"),
     ),
     request_body = ApiKeyCreateRequest,
     responses(
         (status = 201, description = "API key created; raw key is shown only once", body = ApiKeyCreateResponse),
+        (status = 401, description = "Missing or insufficient administrator credential"),
+        (status = 404, description = "The named tenant does not exist"),
         (status = 409, description = "An active API key with this name already exists for the tenant"),
         (status = 500, description = "Internal error during key creation"),
     ),
@@ -664,15 +1140,22 @@ pub struct ApiKeyAuthResponse {
 )]
 pub async fn handle_create_api_key(
     State(state): State<ApiKeyState>,
-    headers: HeaderMap,
-    Json(payload): Json<ApiKeyCreateRequest>,
+    Extension(identity): Extension<AdminIdentity>,
+    Json(mut payload): Json<ApiKeyCreateRequest>,
 ) -> impl IntoResponse {
-    // Derive the creator identity from the request context header if available.
-    let created_by = headers
-        .get("x-principal-id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("api")
-        .to_string();
+    // The creator is whoever the admin gate authenticated, not a header the
+    // caller controls — `created_by` is audit evidence and must not be forgeable.
+    let created_by = identity.principal_id.clone();
+
+    // A JWT caller mints only inside its own tenant, whatever the body says.
+    if let Some(tenant) = &identity.tenant_id {
+        payload.tenant_id = tenant.clone();
+    } else if payload.tenant_id.trim().is_empty() {
+        return ApiKeyError::MissingTenantId(
+            "tenant_id is required when authenticating with X-Admin-Token".to_string(),
+        )
+        .into_response();
+    }
 
     match state.manager.create_key(payload, &created_by).await {
         Ok(response) => (StatusCode::CREATED, Json(response)).into_response(),
@@ -695,30 +1178,31 @@ pub async fn handle_create_api_key(
     responses(
         (status = 200, description = "Active API keys for the tenant (key hashes never included)", body = Vec<ApiKeyMetadataResponse>),
         (status = 400, description = "Missing X-Tenant-Id header"),
+        (status = 401, description = "Missing or insufficient administrator credential"),
     ),
     tag = "api-keys"
 )]
 pub async fn handle_list_api_keys(
     State(state): State<ApiKeyState>,
+    Extension(identity): Extension<AdminIdentity>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "missing_tenant_id",
-                    "message": "X-Tenant-Id header is required",
-                })),
-            )
-                .into_response();
-        }
+    let tenant_id = match request_tenant(&identity, &headers) {
+        Ok(id) => id,
+        Err(err) => return err.into_response(),
     };
 
-    let keys = state.manager.list_keys(&tenant_id).await;
-    let body: Vec<ApiKeyMetadataResponse> = keys.iter().map(ApiKeyMetadataResponse::from).collect();
-    (StatusCode::OK, Json(body)).into_response()
+    match state.manager.list_keys(&tenant_id).await {
+        Ok(keys) => {
+            let body: Vec<ApiKeyMetadataResponse> =
+                keys.iter().map(ApiKeyMetadataResponse::from).collect();
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        Err(err) => {
+            warn!(error = %err, tenant_id = %tenant_id, "failed to list api keys");
+            err.into_response()
+        }
+    }
 }
 
 /// `DELETE /v1/api-keys/:id` — revoke an API key.
@@ -734,12 +1218,14 @@ pub async fn handle_list_api_keys(
     responses(
         (status = 204, description = "API key revoked (idempotent)"),
         (status = 400, description = "Invalid UUID or missing X-Tenant-Id header"),
+        (status = 401, description = "Missing or insufficient administrator credential"),
         (status = 404, description = "API key not found"),
     ),
     tag = "api-keys"
 )]
 pub async fn handle_revoke_api_key(
     State(state): State<ApiKeyState>,
+    Extension(identity): Extension<AdminIdentity>,
     Path(id_str): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -757,18 +1243,9 @@ pub async fn handle_revoke_api_key(
         }
     };
 
-    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "missing_tenant_id",
-                    "message": "X-Tenant-Id header is required",
-                })),
-            )
-                .into_response();
-        }
+    let tenant_id = match request_tenant(&identity, &headers) {
+        Ok(id) => id,
+        Err(err) => return err.into_response(),
     };
 
     match state.manager.revoke_key(key_id, &tenant_id).await {
@@ -794,12 +1271,14 @@ pub async fn handle_revoke_api_key(
     responses(
         (status = 200, description = "Old key revoked and new key issued; raw key shown once", body = ApiKeyCreateResponse),
         (status = 400, description = "Invalid UUID or missing X-Tenant-Id header"),
+        (status = 401, description = "Missing or insufficient administrator credential"),
         (status = 404, description = "API key not found"),
     ),
     tag = "api-keys"
 )]
 pub async fn handle_rotate_api_key(
     State(state): State<ApiKeyState>,
+    Extension(identity): Extension<AdminIdentity>,
     Path(id_str): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
@@ -817,18 +1296,9 @@ pub async fn handle_rotate_api_key(
         }
     };
 
-    let tenant_id = match headers.get("x-tenant-id").and_then(|v| v.to_str().ok()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "code": "missing_tenant_id",
-                    "message": "X-Tenant-Id header is required",
-                })),
-            )
-                .into_response();
-        }
+    let tenant_id = match request_tenant(&identity, &headers) {
+        Ok(id) => id,
+        Err(err) => return err.into_response(),
     };
 
     match state.manager.rotate_key(key_id, &tenant_id).await {
@@ -910,22 +1380,35 @@ pub async fn handle_auth_api_key(
 
 /// Builds an [`axum::Router`] containing all API-key routes.
 ///
+/// The four management routes sit behind [`require_admin`]; `/v1/auth/api-key`
+/// deliberately does not, because it *is* the login endpoint — its credential
+/// is the API key in the request body.
+///
 /// Mount alongside other service routers at startup:
 /// ```no_run
 /// let app = health::router()
 ///     .merge(tenant_handlers::router(tenant_store))
-///     .merge(api_keys::router(api_key_state));
+///     .merge(api_keys::router(api_key_state, admin_auth));
 /// ```
-pub fn router(state: ApiKeyState) -> Router {
-    Router::new()
+pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
+    let management = Router::new()
         .route(
             "/v1/api-keys",
             post(handle_create_api_key).get(handle_list_api_keys),
         )
         .route("/v1/api-keys/:id", delete(handle_revoke_api_key))
         .route("/v1/api-keys/:id/rotate", post(handle_rotate_api_key))
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(
+            admin_auth,
+            require_admin,
+        ));
+
+    let exchange = Router::new()
         .route("/v1/auth/api-key", post(handle_auth_api_key))
-        .with_state(state)
+        .with_state(state);
+
+    management.merge(exchange)
 }
 
 // ---------------------------------------------------------------------------
@@ -950,6 +1433,22 @@ mod tests {
             manager: ApiKeyManager::new(),
             token_manager: make_token_manager(),
         }
+    }
+
+    /// Bootstrap credential used by the HTTP tests.
+    const TEST_ADMIN_TOKEN: &str = "test-bootstrap-admin-token";
+
+    fn make_admin_auth() -> AdminAuth {
+        AdminAuth::new(
+            make_token_manager(),
+            Some(TEST_ADMIN_TOKEN.as_bytes().to_vec()),
+            "admin",
+        )
+    }
+
+    /// Builds the full router with the admin gate active.
+    fn make_app() -> Router {
+        router(make_state(), make_admin_auth())
     }
 
     // -----------------------------------------------------------------------
@@ -1197,17 +1696,17 @@ mod tests {
         let resp_b = mgr.create_key(req_b, "op").await.unwrap();
 
         // Revoke one tenant-a key.
-        let all_a = mgr.list_keys("tenant-a").await;
+        let all_a = mgr.list_keys("tenant-a").await.unwrap();
         mgr.revoke_key(all_a[0].id, "tenant-a").await.unwrap();
 
-        let active_a = mgr.list_keys("tenant-a").await;
+        let active_a = mgr.list_keys("tenant-a").await.unwrap();
         assert_eq!(
             active_a.len(),
             1,
             "only 1 active key should remain for tenant-a"
         );
 
-        let active_b = mgr.list_keys("tenant-b").await;
+        let active_b = mgr.list_keys("tenant-b").await.unwrap();
         assert_eq!(active_b.len(), 1);
         assert_eq!(active_b[0].id, resp_b.id);
     }
@@ -1225,7 +1724,7 @@ mod tests {
         };
         mgr.create_key(req, "op").await.unwrap();
 
-        let keys = mgr.list_keys("tenant-hg").await;
+        let keys = mgr.list_keys("tenant-hg").await.unwrap();
         assert_eq!(keys.len(), 1);
         assert!(
             keys[0].key_hash.is_empty(),
@@ -1277,7 +1776,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_create_api_key_returns_201() {
-        let app = router(make_state());
+        let app = make_app();
         let body = serde_json::json!({
             "name": "http-test-key",
             "tenant_id": "http-tenant",
@@ -1287,7 +1786,7 @@ mod tests {
             .method("POST")
             .uri("/v1/api-keys")
             .header("content-type", "application/json")
-            .header("x-principal-id", "test-operator")
+            .header(ADMIN_TOKEN_HEADER, TEST_ADMIN_TOKEN)
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1296,10 +1795,11 @@ mod tests {
 
     #[tokio::test]
     async fn http_list_api_keys_requires_tenant_header() {
-        let app = router(make_state());
+        let app = make_app();
         let req = Request::builder()
             .method("GET")
             .uri("/v1/api-keys")
+            .header(ADMIN_TOKEN_HEADER, TEST_ADMIN_TOKEN)
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -1320,7 +1820,7 @@ mod tests {
         };
         let create_resp = state.manager.create_key(req, "op").await.unwrap();
 
-        let app = router(state);
+        let app = router(state, make_admin_auth());
         let body = serde_json::json!({ "api_key": create_resp.key });
         let req = Request::builder()
             .method("POST")
@@ -1332,9 +1832,295 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    // -----------------------------------------------------------------------
+    // Administrative authentication on the management routes
+    // -----------------------------------------------------------------------
+
+    /// Body helper: creates a key-creation request for `tenant`.
+    fn create_body(name: &str, tenant: &str) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "name": name,
+            "tenant_id": tenant,
+            "policies": ["read"],
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_without_any_credential_is_rejected() {
+        let app = make_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .body(Body::from(create_body("no-cred", "t")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "minting a key must not be possible without an administrator credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_wrong_bootstrap_token_is_rejected() {
+        let app = make_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header(ADMIN_TOKEN_HEADER, "not-the-token")
+            .body(Body::from(create_body("wrong-cred", "t")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn create_with_bootstrap_token_prefix_is_rejected() {
+        // A truncated token must not authenticate: the comparison is over the
+        // whole value, not a prefix.
+        let app = make_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header(
+                ADMIN_TOKEN_HEADER,
+                &TEST_ADMIN_TOKEN[..TEST_ADMIN_TOKEN.len() - 1],
+            )
+            .body(Body::from(create_body("prefix-cred", "t")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn create_with_jwt_lacking_admin_policy_is_rejected() {
+        let app = make_app();
+        let (token, _) = make_token_manager()
+            .issue_token("user-1", "tenant-x", vec!["read".into()], 3600)
+            .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(create_body("non-admin", "tenant-x")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "a valid token without the admin policy must not mint keys"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_admin_jwt_succeeds() {
+        let app = make_app();
+        let (token, _) = make_token_manager()
+            .issue_token("admin-1", "tenant-x", vec!["admin".into()], 3600)
+            .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(create_body("admin-made", "tenant-x")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn expired_admin_jwt_is_rejected() {
+        let app = make_app();
+        let (token, _) = make_token_manager()
+            .issue_token("admin-1", "tenant-x", vec!["admin".into()], -1)
+            .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(create_body("expired-admin", "tenant-x")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_jwt_cannot_mint_into_another_tenant() {
+        let state = make_state();
+        let app = router(state.clone(), make_admin_auth());
+        let (token, _) = make_token_manager()
+            .issue_token("admin-1", "tenant-own", vec!["admin".into()], 3600)
+            .unwrap();
+
+        // Ask for a key in "tenant-victim" while holding a "tenant-own" token.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(create_body("cross-tenant", "tenant-victim")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+
+        let body = axum::body::to_bytes(resp.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            parsed["tenant_id"], "tenant-own",
+            "the token's tenant must win over the request body"
+        );
+
+        // And nothing landed in the tenant the body named.
+        assert!(
+            state
+                .manager
+                .list_keys("tenant-victim")
+                .await
+                .unwrap()
+                .is_empty(),
+            "no key may be created in a tenant the caller does not hold"
+        );
+    }
+
+    #[tokio::test]
+    async fn created_by_records_the_authenticated_principal() {
+        let state = make_state();
+        let app = router(state.clone(), make_admin_auth());
+        let (token, _) = make_token_manager()
+            .issue_token("admin-jane", "tenant-cb", vec!["admin".into()], 3600)
+            .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            // A forged principal header must not be believed.
+            .header("x-principal-id", "somebody-else")
+            .body(Body::from(create_body("audit-key", "tenant-cb")))
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let keys = state.manager.list_keys("tenant-cb").await.unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(
+            keys[0].created_by, "admin-jane",
+            "created_by must come from the authenticated identity, not a header"
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_and_rotate_require_admin() {
+        for (method, uri) in [
+            (
+                "DELETE",
+                "/v1/api-keys/019f5b59-385c-7f61-b073-8a1ae402cf4c",
+            ),
+            (
+                "POST",
+                "/v1/api-keys/019f5b59-385c-7f61-b073-8a1ae402cf4c/rotate",
+            ),
+        ] {
+            let app = make_app();
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("x-tenant-id", "t")
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must require an administrator credential"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn listing_requires_admin() {
+        let app = make_app();
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/api-keys")
+            .header("x-tenant-id", "t")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn key_exchange_stays_open_without_admin_credential() {
+        // /v1/auth/api-key is the login endpoint: its credential is the API key
+        // in the body, so the admin gate must not apply to it.
+        let state = make_state();
+        let created = state
+            .manager
+            .create_key(
+                ApiKeyCreateRequest {
+                    name: "login-key".into(),
+                    tenant_id: "tenant-login".into(),
+                    policies: Some(vec!["read".into()]),
+                    path_prefixes: None,
+                    expires_in_seconds: None,
+                    rate_limit_per_minute: None,
+                },
+                "op",
+            )
+            .await
+            .unwrap();
+
+        let app = router(state, make_admin_auth());
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/auth/api-key")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "api_key": created.key }).to_string(),
+            ))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_path_is_unavailable_when_no_token_is_configured() {
+        // With VAULT_ADMIN_TOKEN unset there is no bootstrap credential at all,
+        // so an X-Admin-Token header must never authenticate.
+        let app = router(
+            make_state(),
+            AdminAuth::new(make_token_manager(), None, "admin"),
+        );
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header(ADMIN_TOKEN_HEADER, "")
+            .body(Body::from(create_body("no-bootstrap", "t")))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn http_auth_invalid_api_key_returns_401() {
-        let app = router(make_state());
+        let app = make_app();
         let body = serde_json::json!({ "api_key": "wslv_invalidkeyinvalidkeyinvalidkey00000" });
         let req = Request::builder()
             .method("POST")

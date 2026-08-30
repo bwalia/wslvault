@@ -39,6 +39,9 @@ chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 sha2 = "0.10"
+# Constant-time byte comparison. ring's verify_slices_are_equal is deprecated
+# ("internal function not intended for external use"); subtle is its replacement.
+subtle = "2.6"
 hkdf = "0.12"
 argon2 = "0.5"
 rsa = { version = "0.9", features = ["sha2"] }
@@ -56,7 +59,10 @@ chrono = { version = "0.4", features = ["serde"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 async-trait = "0.1"
 zeroize = { version = "1.8", features = ["derive"] }
-prometheus = { version = "0.13", features = ["process"] }
+# default-features = false drops the deprecated protobuf exposition format
+# (and with it protobuf 2.x, RUSTSEC-2024-0437). We only ever emit text format
+# via TextEncoder, so nothing is lost.
+prometheus = { version = "0.14", default-features = false, features = ["process"] }
 metrics = "0.23"
 metrics-exporter-prometheus = "0.15"
 rand = "0.8"

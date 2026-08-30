@@ -100,16 +100,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.auditService.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.auditService.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.auditService.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.auditService "context" $) | nindent 6 }}
 {{- end }}

@@ -36,7 +36,10 @@ rand = { workspace = true }
 base64 = { workspace = true }
 x509-parser = { version = "0.16", features = ["verify"] }
 pem = "3"
-ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+# Direct dep only so main() can install ring as the process-level rustls
+# provider for ldap3; the version tracks whatever ldap3/tokio-rustls resolve to.
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
 

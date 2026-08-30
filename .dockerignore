@@ -3,6 +3,10 @@ target
 **/target
 ui/node_modules
 deploy
+# …except the CRD YAML the k8s-operator embeds via include_str! at build time.
+# (Docker requires parent dirs to be re-included for a nested un-ignore.)
+!deploy/kubernetes
+!deploy/kubernetes/crds
 docs
 examples
 scripts

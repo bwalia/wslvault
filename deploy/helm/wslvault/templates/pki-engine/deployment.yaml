@@ -62,8 +62,8 @@ spec:
             - name: PKI_ROOT_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-pki-root-key
-                  key: pki-root-key
+                  name: {{ include "wslvault.pkiRootKeySecretName" . }}
+                  key: {{ include "wslvault.pkiRootKeySecretKey" . }}
                   optional: false
             {{- with .Values.pkiEngine.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -90,16 +90,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.pkiEngine.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.pkiEngine.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.pkiEngine.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.pkiEngine "context" $) | nindent 6 }}
 {{- end }}

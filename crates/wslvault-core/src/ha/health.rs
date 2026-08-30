@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::cluster::{ClusterSummary, NodeState, SharedClusterState};
+use super::cluster::{ClusterSummary, SharedClusterState};
 use super::failover::FailoverManager;
 
 /// Overall HA health status.

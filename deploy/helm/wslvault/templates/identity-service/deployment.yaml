@@ -76,9 +76,28 @@ spec:
             - name: VAULT_JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "wslvault.fullname" . }}-jwt-secret
-                  key: jwt-secret
+                  name: {{ include "wslvault.jwtSecretName" . }}
+                  key: {{ include "wslvault.jwtSecretKey" . }}
                   optional: false
+            # Bootstrap credential for the API key management endpoints. Those
+            # endpoints authenticate callers themselves — minting a key grants
+            # whatever policies the request asks for, so they cannot rely on
+            # the gateway-origin check alone, which a deployment that routes
+            # around the gateway (or leaves VAULT_GATEWAY_SECRET unset) does
+            # not apply. Optional: when the key is absent the service starts
+            # with the bootstrap path disabled and accepts only JWTs carrying
+            # the administrator policy.
+            - name: VAULT_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.adminTokenSecretName" . }}
+                  key: {{ include "wslvault.adminTokenSecretKey" . }}
+                  optional: true
+            {{- with .Values.identityService.adminPolicy }}
+            # Policy a JWT must carry to manage API keys (default: "admin").
+            - name: VAULT_ADMIN_POLICY
+              value: {{ . | quote }}
+            {{- end }}
             # gRPC address of the policy-engine for permission checks during token validation
             - name: POLICY_ENGINE_ADDR
               value: {{ printf "%s:%s"
@@ -109,16 +128,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.identityService.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.identityService.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.identityService.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.identityService "context" $) | nindent 6 }}
 {{- end }}

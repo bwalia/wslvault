@@ -10,6 +10,7 @@
 //! actively consumes and applies events — preventing duplicate processing.
 
 mod applier;
+mod auth;
 mod config;
 mod conflict;
 mod consumer;
@@ -20,7 +21,7 @@ mod producer;
 use std::sync::Arc;
 
 use axum::{routing::get, Router};
-use tracing::{error, info, warn};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 use wslvault_cluster::config::ClusterConfig;
 use wslvault_cluster::leader::LeaderElector;
@@ -33,7 +34,13 @@ use crate::config::ReplicationAgentConfig;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .json()
-        .with_env_filter(EnvFilter::from_default_env())
+        // Default to `info` when RUST_LOG is unset. `from_default_env()` alone
+        // yields an empty filter, which silences the service completely — no
+        // startup line, no errors, nothing shipped to Loki — so a crash-looping
+        // or misbehaving pod leaves no trace at all.
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .with_target(true)
         .init();
 
@@ -81,15 +88,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     metrics::register_metrics();
 
-    let app = Router::new()
-        .route("/health", get(health::health_handler))
-        .route("/ready", get(health::ready_handler))
+    if agent_config.peer_token.is_none() {
+        tracing::warn!(
+            "REPLICATION_PEER_TOKEN is not set: the peer-facing replication API \
+             will refuse all requests. Peers cannot pull events from this region \
+             until a shared token is configured."
+        );
+    }
+
+    // The peer-facing routes serve the replication outbox — ciphertext, DEK
+    // ids, cleartext policy documents and the tenant roster — to callers
+    // reaching this region over the public internet. They sit behind the
+    // shared-token guard. /health, /ready and /metrics stay open so kubelet
+    // probes and Prometheus keep working.
+    let peer_routes = Router::new()
         .route("/v1/replication/events", get(producer::get_events_handler))
         .route(
             "/v1/replication/ack",
             axum::routing::post(producer::ack_handler),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            auth::PeerToken(agent_config.peer_token.clone()),
+            auth::require_peer_token,
+        ));
+
+    let app = Router::new()
+        .route("/health", get(health::health_handler))
+        .route("/ready", get(health::ready_handler))
         .route("/metrics", get(metrics::metrics_handler))
+        .merge(peer_routes)
         .with_state(pool);
 
     info!(addr = %http_addr, "replication-agent HTTP server starting");

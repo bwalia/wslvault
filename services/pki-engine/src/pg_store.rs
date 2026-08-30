@@ -21,7 +21,6 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde_json;
 use sqlx::Row;
 use uuid::Uuid;
 

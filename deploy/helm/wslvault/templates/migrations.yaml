@@ -1,0 +1,273 @@
+{{/*
+migrations.yaml — schema bootstrap for a region's PostgreSQL.
+
+WHY THIS EXISTS
+  Nothing in this chart used to create the wslvault schema. The SQL under
+  storage/postgres/init/ was only ever mounted into the docker-compose Postgres
+  (/docker-entrypoint-initdb.d) and into the raw kustomize manifest; the Helm
+  path — the Bitnami postgresql subchart — never applied it. The first region
+  was schema'd by hand, which is exactly what makes standing up a *second*
+  region unrepeatable. A fresh region's database comes up empty and every
+  service crash-loops.
+
+MIGRATION LEDGER, NOT RE-RUN-EVERY-TIME
+  The SQL is not idempotent (001 has bare CREATE TABLE, 002 bare CREATE INDEX,
+  004 bare CREATE POLICY), so it cannot simply be replayed. The Job keeps a
+  ledger in system.schema_migrations and applies each file at most once, in
+  lexical order, each inside its own transaction.
+
+BASELINING AN ALREADY-MIGRATED DATABASE
+  Region A's database already carries the schema but has no ledger. Applying
+  001 there would fail on "relation already exists". When the ledger is absent
+  AND the schema is already present, the Job *baselines*: it records every
+  current file as applied without executing it. Controlled by
+  migrations.baselineOnExisting (default true).
+
+DRIFT DETECTION
+  Each applied file's sha256 is recorded. If a file already applied is later
+  edited in place, the Job fails loudly rather than silently diverging the
+  regions. Add a new numbered file instead of editing an applied one.
+
+WHY A PLAIN RESOURCE AND NOT A HELM HOOK
+  A pre-install hook would deadlock on a fresh install (Postgres does not exist
+  yet), and a post-install hook maps to Argo CD PostSync, which never fires
+  while the services are crash-looping on the missing schema. As an ordinary
+  resource the Job is created in the same sync as Postgres, waits for it, and
+  the services back off until it lands. The name carries a content hash so the
+  Job is immutable and re-runs precisely when the SQL or region registry
+  changes.
+*/}}
+{{- if .Values.migrations.enabled }}
+{{- $hash := include "wslvault.migrationsHash" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "wslvault.fullname" . }}-migrations-{{ $hash }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+data:
+  {{- range $path, $_ := .Files.Glob "files/migrations/*.sql" }}
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+  {{- end }}
+
+  {{/*
+  Region registry seed. Runs after the numbered migrations on every change to
+  the region roster, and is a pure UPSERT so endpoints can be corrected in
+  place. Without these rows region-health has nothing to poll and the mesh
+  reports no peers at all — system.regions was empty on region A.
+  */}}
+  zz-regions.sql: |
+    -- Generated from global.region by the wslvault chart. Do not edit by hand.
+    INSERT INTO system.regions (id, display_name, endpoint, status, is_local)
+    VALUES ({{ include "wslvault.sqlLiteral" (include "wslvault.regionId" .) }},
+            {{ include "wslvault.sqlLiteral" (include "wslvault.regionDisplayName" .) }},
+            {{ include "wslvault.sqlLiteral" (include "wslvault.regionEndpoint" .) }},
+            'active', true)
+    ON CONFLICT (id) DO UPDATE
+      SET display_name = EXCLUDED.display_name,
+          endpoint     = EXCLUDED.endpoint,
+          is_local     = true;
+    {{- $local := include "wslvault.regionId" . }}
+    {{- range .Values.global.region.peers }}
+    {{- if ne .id $local }}
+    INSERT INTO system.regions (id, display_name, endpoint, status, is_local)
+    VALUES ({{ include "wslvault.sqlLiteral" .id }},
+            {{ include "wslvault.sqlLiteral" (.displayName | default .id) }},
+            {{ include "wslvault.sqlLiteral" (required (printf "global.region.peers entry %q needs a replicationUrl" .id) .replicationUrl) }},
+            'degraded', false)
+    ON CONFLICT (id) DO UPDATE
+      SET display_name = EXCLUDED.display_name,
+          endpoint     = EXCLUDED.endpoint,
+          is_local     = false;
+    {{- end }}
+    {{- end }}
+    -- Every region needs a sequence row before it can emit replication events.
+    INSERT INTO system.region_sequences (region_id, sequence)
+    VALUES ({{ include "wslvault.sqlLiteral" (include "wslvault.regionId" .) }}, 0)
+    ON CONFLICT (region_id) DO NOTHING;
+
+  migrate.sh: |
+    #!/bin/sh
+    # Apply the wslvault schema exactly once per file, tracked in a ledger.
+    set -eu
+
+    # /migrations is where the ConfigMap mounts in the Job. Overridable so the
+    # script can be exercised anywhere the bundle is unpacked — CI extracts it
+    # to /tmp/migrations and runs this verbatim.
+    SQL_DIR="${SQL_DIR:-/migrations}"
+    PSQL="psql --no-psqlrc --set ON_ERROR_STOP=1 --quiet"
+
+    # An unmatched glob expands to the literal pattern, which previously turned
+    # into `apply [0-9]*.sql` and a confusing sha256sum error rather than an
+    # honest failure. Refuse to run against an empty or wrong directory.
+    if [ ! -d "$SQL_DIR" ]; then
+      echo "!! SQL_DIR $SQL_DIR does not exist" >&2
+      exit 1
+    fi
+    if [ -z "$(find "$SQL_DIR" -maxdepth 1 -name '[0-9]*.sql' -print -quit)" ]; then
+      echo "!! no numbered .sql files in $SQL_DIR — refusing to run" >&2
+      exit 1
+    fi
+
+    echo "==> waiting for postgres at ${PGHOST}:${PGPORT}"
+    until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; do
+      sleep 3
+    done
+    echo "==> postgres is accepting connections"
+
+    # The ledger lives in its own schema-qualified table. system may not exist
+    # yet on a fresh database, so create it first.
+    $PSQL <<'LEDGER'
+    CREATE SCHEMA IF NOT EXISTS system;
+    CREATE TABLE IF NOT EXISTS system.schema_migrations (
+        filename    TEXT PRIMARY KEY,
+        checksum    TEXT NOT NULL,
+        applied_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        baselined   BOOLEAN NOT NULL DEFAULT false
+    );
+    LEDGER
+
+    applied_count=$($PSQL -tAc "SELECT count(*) FROM system.schema_migrations")
+
+    # Baseline: schema present but no ledger => this database was migrated by
+    # hand before the ledger existed. Record the files as applied rather than
+    # replaying non-idempotent DDL over a live database.
+    if [ "$applied_count" = "0" ]; then
+      has_schema=$($PSQL -tAc "SELECT to_regclass('system.tenants') IS NOT NULL")
+      if [ "$has_schema" = "t" ]; then
+        if [ "${BASELINE_ON_EXISTING}" != "true" ]; then
+          echo "!! system.tenants exists but the ledger is empty and"
+          echo "!! migrations.baselineOnExisting=false. Refusing to replay DDL"
+          echo "!! over a populated database." >&2
+          exit 1
+        fi
+        echo "==> existing schema detected with no ledger: baselining"
+        for f in "$SQL_DIR"/[0-9]*.sql; do
+          n=$(basename "$f")
+          c=$(sha256sum "$f" | cut -d' ' -f1)
+          $PSQL -c "INSERT INTO system.schema_migrations (filename, checksum, baselined)
+                    VALUES ('$n', '$c', true) ON CONFLICT (filename) DO NOTHING;"
+          echo "    baselined $n"
+        done
+      fi
+    fi
+
+    for f in "$SQL_DIR"/[0-9]*.sql; do
+      n=$(basename "$f")
+      c=$(sha256sum "$f" | cut -d' ' -f1)
+      recorded=$($PSQL -tAc "SELECT checksum FROM system.schema_migrations WHERE filename = '$n'")
+
+      if [ -n "$recorded" ]; then
+        if [ "$recorded" != "$c" ]; then
+          echo "!! $n was already applied with checksum $recorded but now hashes to $c." >&2
+          echo "!! An applied migration was edited in place; regions will diverge." >&2
+          echo "!! Add a new numbered migration instead of editing this one." >&2
+          exit 1
+        fi
+        echo "    skip    $n (already applied)"
+        continue
+      fi
+
+      echo "    apply   $n"
+      # One transaction per file: a failure leaves no half-applied file and no
+      # ledger row, so the Job can simply be re-run after a fix.
+      $PSQL --single-transaction \
+        -c "\\i $f" \
+        -c "INSERT INTO system.schema_migrations (filename, checksum) VALUES ('$n', '$c');"
+    done
+
+    # The region registry is a UPSERT, replayed on every run so that endpoint
+    # and peer changes take effect without a new migration.
+    echo "==> seeding region registry"
+    $PSQL --single-transaction -f "$SQL_DIR/zz-regions.sql"
+
+    echo "==> schema up to date"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Content-addressed: a new Job object appears only when the SQL or the region
+  # roster actually changes. Job specs are immutable, so a stable name would
+  # make `helm upgrade` fail on the second run.
+  name: {{ include "wslvault.fullname" . }}-migrations-{{ $hash }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "migrations" "componentType" "bootstrap" "context" $) | nindent 4 }}
+  annotations:
+    # Argo CD: run before the workloads that need the schema. Plain `helm
+    # install` ignores this and relies on the wait loop instead.
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrations.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "migrations" "componentType" "bootstrap" "context" $) | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.serviceAccountName" . }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: migrate
+          image: {{ printf "%s:%s" .Values.migrations.image.repository .Values.migrations.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          command: ["/bin/sh", "/scripts/migrate.sh"]
+          env:
+            - name: PGHOST
+              value: {{ include "wslvault.postgresHost" . | quote }}
+            - name: PGPORT
+              value: {{ include "wslvault.postgresPort" . | quote }}
+            - name: PGUSER
+              value: {{ .Values.postgresql.auth.username | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.postgresql.auth.database | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.dbCredentialsSecretName" . }}
+                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  optional: false
+            - name: BASELINE_ON_EXISTING
+              value: {{ .Values.migrations.baselineOnExisting | quote }}
+          volumeMounts:
+            - name: migrations
+              mountPath: /migrations
+            - name: scripts
+              mountPath: /scripts
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+      volumes:
+        # Same ConfigMap twice: the SQL is globbed by the loop, the script is
+        # invoked by path, and keeping them apart stops migrate.sh from being
+        # picked up as a migration.
+        - name: migrations
+          configMap:
+            name: {{ include "wslvault.fullname" . }}-migrations-{{ $hash }}
+            items:
+              {{- range $path, $_ := .Files.Glob "files/migrations/*.sql" }}
+              - key: {{ base $path }}
+                path: {{ base $path }}
+              {{- end }}
+              - key: zz-regions.sql
+                path: zz-regions.sql
+        - name: scripts
+          configMap:
+            name: {{ include "wslvault.fullname" . }}-migrations-{{ $hash }}
+            items:
+              - key: migrate.sh
+                path: migrate.sh
+        - name: tmp
+          emptyDir: {}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.migrations "context" $) | nindent 6 }}
+{{- end }}

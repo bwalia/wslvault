@@ -90,7 +90,7 @@ impl LeaseService for LeaseServiceImpl {
             .store
             .renew_lease(&lease_id, req.increment_seconds)
             .await
-            .map_err(|e| Status::failed_precondition(e))?;
+            .map_err(Status::failed_precondition)?;
 
         let response = RenewLeaseResponse {
             lease_id: updated.id.to_string(),
@@ -115,7 +115,7 @@ impl LeaseService for LeaseServiceImpl {
         self.store
             .revoke_lease(&lease_id)
             .await
-            .map_err(|e| Status::not_found(e))?;
+            .map_err(Status::not_found)?;
 
         Ok(Response::new(RevokeLeaseResponse {}))
     }

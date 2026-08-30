@@ -251,13 +251,13 @@ pub fn issue_leaf(
     params.extended_key_usages = role
         .key_usages
         .iter()
-        .filter_map(|ku| match ku {
-            KeyUsage::ServerAuth => Some(ExtendedKeyUsagePurpose::ServerAuth),
-            KeyUsage::ClientAuth => Some(ExtendedKeyUsagePurpose::ClientAuth),
-            KeyUsage::CodeSigning => Some(ExtendedKeyUsagePurpose::CodeSigning),
-            KeyUsage::EmailProtection => Some(ExtendedKeyUsagePurpose::EmailProtection),
-            KeyUsage::TimeStamping => Some(ExtendedKeyUsagePurpose::TimeStamping),
-            KeyUsage::OcspSigning => Some(ExtendedKeyUsagePurpose::OcspSigning),
+        .map(|ku| match ku {
+            KeyUsage::ServerAuth => ExtendedKeyUsagePurpose::ServerAuth,
+            KeyUsage::ClientAuth => ExtendedKeyUsagePurpose::ClientAuth,
+            KeyUsage::CodeSigning => ExtendedKeyUsagePurpose::CodeSigning,
+            KeyUsage::EmailProtection => ExtendedKeyUsagePurpose::EmailProtection,
+            KeyUsage::TimeStamping => ExtendedKeyUsagePurpose::TimeStamping,
+            KeyUsage::OcspSigning => ExtendedKeyUsagePurpose::OcspSigning,
         })
         .collect();
 

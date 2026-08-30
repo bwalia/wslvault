@@ -321,6 +321,11 @@ pub fn select_provider() -> Result<Box<dyn RootKeyProvider>, RootKeyError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// ENV_LOCK below is deliberately held across `.await`: it serialises mutation of
+// process-wide env vars for the whole body of each test, which is exactly the
+// window the awaited provider call reads them in. An async mutex would not help
+// — these tests must exclude each other, not yield.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, MutexGuard};

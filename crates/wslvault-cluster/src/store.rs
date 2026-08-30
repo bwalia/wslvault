@@ -66,21 +66,25 @@ pub async fn deregister_node(pool: &DbPool, node_id: &NodeId) -> Result<(), Clus
     Ok(())
 }
 
+/// One `system.cluster_nodes` row as returned by the `list_nodes` queries:
+/// `(id, service_name, node_id, region, is_leader, last_heartbeat, started_at, metadata)`.
+type ClusterNodeRow = (
+    Uuid,
+    String,
+    String,
+    String,
+    bool,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    serde_json::Value,
+);
+
 /// List all nodes for a given service, ordered by leader status then heartbeat.
 pub async fn list_nodes(
     pool: &DbPool,
     service_name: Option<&str>,
 ) -> Result<Vec<NodeInfo>, ClusterError> {
-    let rows: Vec<(
-        Uuid,
-        String,
-        String,
-        String,
-        bool,
-        DateTime<Utc>,
-        DateTime<Utc>,
-        serde_json::Value,
-    )> = if let Some(svc) = service_name {
+    let rows: Vec<ClusterNodeRow> = if let Some(svc) = service_name {
         sqlx::query_as(
             r#"
             SELECT id, service_name, node_id, region, is_leader, last_heartbeat, started_at, metadata

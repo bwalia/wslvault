@@ -1,0 +1,149 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# region-a — Manchester PoP, pinned to cloud001
+#
+# This is the ORIGINAL wslvault deployment, brought under GitOps. Its values
+# must keep describing what is already running: adopting a live release with
+# drifted values would have Argo CD rewrite a working region on first sync.
+# ═══════════════════════════════════════════════════════════════════════════
+global:
+  region:
+    id: region-a
+    displayName: Manchester
+    endpoint: https://vault.workstation.co.uk
+    # The full roster, identical in every region's file. Each region's chart
+    # filters its own entry out when building REPLICATION_PEERS.
+    peers: &meshPeers
+      - id: region-a
+        displayName: Manchester
+        replicationUrl: https://vault-a.workstation.co.uk
+      - id: region-b
+        displayName: London
+        replicationUrl: https://vault-b.workstation.co.uk
+
+  # Required by the PostgreSQL subchart to accept the bitnamilegacy repository
+  # pinned below; without it the subchart refuses to render.
+  security:
+    allowInsecureImages: true
+
+  scheduling:
+    nodeSelector:
+      kubernetes.io/hostname: cloud001
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+    affinity: {}
+
+  # cloud001 podCIDR 10.42.16.0/24 -> host /31
+  edgeHostCidrs: &regionAEdgeCidrs
+    - 10.42.16.0/31
+
+networkPolicies:
+  enabled: true
+  wslproxyHostIngress:
+    cidrs: *regionAEdgeCidrs
+    ports: [8081, 8082, 8083, 8086, 8087, 8088]
+
+ui:
+  enabled: true
+  image:
+    tag: eb7accb12fbe4395ff9abbd3be09e2bc3e61ab36
+  host: vault-ui.workstation.co.uk
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  wslproxyIngress:
+    cidrs: *regionAEdgeCidrs
+
+edgeIngress:
+  enabled: true
+  ingressClassName: traefik-edge
+  entrypoint: web,websecure
+  host: vault.workstation.co.uk
+  # vault-a… addresses THIS region specifically (peers and operators);
+  # vault.workstation.co.uk is the shared alias the PoP currently points here.
+  extraHosts:
+    - vault-a.workstation.co.uk
+    - wslvault.workstation.co.uk
+  tls:
+    secretName: wslvault-gateway-tls
+    hosts:
+      - vault.workstation.co.uk
+      - wslvault.workstation.co.uk
+      - vault-a.workstation.co.uk
+
+postgresql:
+  enabled: true
+  # The live release runs the legacy Bitnami image; the current chart default
+  # points at a repository that now requires a subscription. allowInsecureImages
+  # below is what lets the subchart accept a non-default repository.
+  image:
+    registry: docker.io
+    repository: bitnamilegacy/postgresql
+  auth:
+    database: wslvault
+    username: wslvault
+    # The password is NOT in Git. It already lives in the wslvault-postgresql
+    # Secret created on first install; pointing at it here keeps the running
+    # password unchanged. Rendering a different one would break every service's
+    # DATABASE_URL and lock the region out of its own data.
+    # wslvault-db-auth is created OUTSIDE the chart by
+    # scripts/wslvault-mesh-keys.sh db-secret. It cannot be the subchart's own
+    # wslvault-postgresql Secret: that one carries no resource-policy:keep, so
+    # setting existingSecret makes Helm drop it from the manifest and delete
+    # the very Secret being referenced.
+    existingSecret: wslvault-db-auth
+    secretKeys:
+      adminPasswordKey: postgres-password
+      userPasswordKey: password
+  primary:
+    persistence:
+      storageClass: local-path
+    nodeSelector:
+      kubernetes.io/hostname: cloud001
+    tolerations:
+      - key: node-role.kubernetes.io/edge
+        operator: Exists
+        effect: NoSchedule
+
+# The three shared keys arrive from a Secret provisioned out-of-band and
+# replicated to every region's namespace — never from Git. See
+# deploy/gitops/README.md for how to create it.
+# The OpenResty gateway is not deployed in this region — traefik-edge is the
+# edge and serves the public hosts directly.
+gateway:
+  enabled: false
+
+# Image tags actually running in region A. These are AHEAD of global.imageTag
+# (0.1.0); leaving them unset would roll these four services backwards on the
+# first Argo sync.
+identityService:
+  replicaCount: 1
+  image:
+    tag: a2dc8fe0937a8bd07873694865dce658b7c8690c
+regionHealth:
+  image:
+    tag: 3c045db9f875ad30e979c37dc8c71d65cffda786
+secretEngine:
+  image:
+    tag: kv2-56cb0cf
+cryptoService:
+  replicaCount: 1
+
+# The three shared keys arrive from a Secret provisioned out-of-band and
+# replicated to every region's namespace — never from Git. Populate it with
+# region A's EXISTING key material:
+#   ./scripts/wslvault-mesh-keys.sh adopt wslvault
+replicationAgent:
+  # Verified guarded before enabling, against the deployed image via
+  # port-forward: no token -> 401, bogus token -> 401, mesh token -> 200,
+  # /health open for probes.
+  publishPeerEndpoint: true
+  # Pinned to the first image built from main that contains the shared-token
+  # guard in services/replication-agent/src/auth.rs. global.imageTag (0.1.0) was
+  # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
+  # keep the cached pre-auth layer — only a new tag actually pulls it.
+  image:
+    tag: "4168bb718f35c99987994c6402f22328e960ce62"
+
+secrets:
+  existingSecret: wslvault-mesh-keys

@@ -54,7 +54,7 @@ use serde_json::json;
 
 use crate::store::PrincipalStore;
 
-use self::schemas::{ScimGroup, ScimUser, SCHEMA_GROUP, SCHEMA_LIST_RESPONSE, SCHEMA_USER};
+use self::schemas::{SCHEMA_GROUP, SCHEMA_LIST_RESPONSE, SCHEMA_USER};
 use self::scim_store::{MemoryScimStore, ScimStore};
 
 // ---------------------------------------------------------------------------

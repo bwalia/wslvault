@@ -48,7 +48,11 @@ prometheus = { workspace = true }
 
 # AWS KMS root key provider (optional — only compiled when `aws-kms` feature is active).
 # Version matches the aws-sdk-secretsmanager version already in the workspace lock file.
-aws-sdk-kms = { version = "1", optional = true }
+# default-features = false drops the SDK's `rustls` feature, which is the
+# legacy hyper 0.14 + rustls 0.21 stack (h2 0.3 / rustls-webpki 0.101 —
+# RUSTSEC-2026-0258, -0098, -0099, -0104). `default-https-client` keeps the
+# current hyper 1.x + rustls 0.23 client, which is what the SDK actually uses.
+aws-sdk-kms = { version = "1", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { version = "1", optional = true }
 
 [build-dependencies]

@@ -16,6 +16,11 @@ pub struct ReplicationAgentConfig {
     pub batch_size: usize,
     /// Conflict resolution strategy.
     pub conflict_strategy: String,
+    /// Shared bearer token authenticating peers on the replication API.
+    /// `None` disables the peer-facing endpoints entirely (fail closed) — the
+    /// outbox carries cleartext policy documents and the tenant roster, so it
+    /// is never served unauthenticated.
+    pub peer_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -39,6 +44,11 @@ impl ReplicationAgentConfig {
             .unwrap_or(100);
         let conflict_strategy = std::env::var("REPLICATION_CONFLICT_STRATEGY")
             .unwrap_or_else(|_| "last_write_wins".to_string());
+        // An empty value is treated as absent so an unset Secret key cannot
+        // silently become a valid empty token.
+        let peer_token = std::env::var("REPLICATION_PEER_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
 
         // Parse REPLICATION_PEERS as comma-separated "region_id=url" pairs.
         let peer_endpoints = std::env::var("REPLICATION_PEERS")
@@ -65,6 +75,7 @@ impl ReplicationAgentConfig {
             poll_interval_ms,
             batch_size,
             conflict_strategy,
+            peer_token,
         }
     }
 }

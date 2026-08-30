@@ -322,7 +322,7 @@ mod inner {
                 .map(str::to_string);
 
             let value = serde_json::from_str::<serde_json::Value>(&body.value)
-                .unwrap_or_else(|_| serde_json::Value::String(body.value));
+                .unwrap_or(serde_json::Value::String(body.value));
 
             let metadata: HashMap<String, String> =
                 body.tags.unwrap_or_default().into_iter().collect();

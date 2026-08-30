@@ -67,10 +67,7 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            - name: REGION_ID
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.labels['topology.kubernetes.io/region']
+            {{- include "wslvault.regionEnv" . | nindent 12 }}
             - name: REGION_HEALTH_LISTEN_ADDR
               value: {{ printf "0.0.0.0:%d" (int .Values.regionHealth.httpPort) | quote }}
             {{- with .Values.regionHealth.extraEnv }}
@@ -98,16 +95,5 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {}
-      {{- with .Values.regionHealth.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.regionHealth.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.regionHealth.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.regionHealth "context" $) | nindent 6 }}
 {{- end }}

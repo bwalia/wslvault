@@ -33,7 +33,16 @@ spec:
         - {{ . | quote }}
         {{- end }}
   rules:
-    - host: {{ $ei.host | quote }}
+    {{/*
+    One rule per host, all serving the same route map. A region needs more
+    than one name: its own per-region host (vault-a…, so peers and operators
+    can address THIS region specifically) and the shared alias
+    (vault.workstation.co.uk) that the PoP points at whichever region is
+    currently taking default traffic. Both regions answering the alias is what
+    makes failover a PoP-side change rather than a chart change.
+    */}}
+    {{- range concat (list $ei.host) ($ei.extraHosts | default list) }}
+    - host: {{ . | quote }}
       http:
         paths:
           {{- range $ei.routes }}
@@ -45,6 +54,42 @@ spec:
                 port:
                   number: {{ .port }}
           {{- end }}
+          {{- if and $.Values.replicationAgent.enabled $.Values.replicationAgent.publishPeerEndpoint }}
+          {{/*
+          Peer-facing replication API. Gated behind
+          replicationAgent.publishPeerEndpoint because publishing it against an
+          image that predates the shared-token guard exposes the outbox — with
+          its cleartext policy documents and tenant roster — to the internet.
+          See the value's comment for the check before enabling.
+          */}}
+          - path: /v1/replication
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $ctx) }}
+                port:
+                  number: {{ $.Values.replicationAgent.httpPort }}
+          {{/*
+          Peer liveness. region-health polls "<endpoint>/health" for every peer
+          in system.regions (services/region-health/src/poller.rs), and that
+          path is hardcoded — the chart's /healthz route reaches secret-engine
+          and does not answer it. Without this the probe 404s, every peer is
+          marked offline after three failures, and the mesh reports itself down
+          while replicating perfectly well.
+
+          Unauthenticated by design: /health sits outside the shared-token guard
+          in the replication-agent so kubelet probes and peers can reach it. It
+          returns a bare 200 and discloses nothing.
+          */}}
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $ctx) }}
+                port:
+                  number: {{ $.Values.replicationAgent.httpPort }}
+          {{- end }}
+    {{- end }}
 {{- if $ei.httpRedirect.enabled }}
 ---
 apiVersion: traefik.io/v1alpha1
@@ -111,7 +156,7 @@ spec:
             matchLabels:
               app.kubernetes.io/name: traefik
       ports:
-        {{- range (list 8081 8082 8083 8084 8085 8086 8087 8088) }}
+        {{- range (list 8081 8082 8083 8084 8085 8086 8087 8088 8091) }}
         - port: {{ . }}
           protocol: TCP
         {{- end }}
