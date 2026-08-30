@@ -35,7 +35,9 @@ function LagCell({ lagMs }: { lagMs: number | null }) {
   )
 }
 
-const REGIONS_KEY = '/api/gateway/v1/regions'
+// region-health serves /v1/sys/regions (services/region-health/src/main.rs).
+// The bare /v1/regions here is a pre-gateway path and 404s.
+const REGIONS_KEY = '/api/gateway/v1/sys/regions'
 
 export default function RegionsPage() {
   const fetcher = useFetcher()

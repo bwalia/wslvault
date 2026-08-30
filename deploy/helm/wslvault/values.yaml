@@ -112,7 +112,7 @@ networkPolicies:
     # traefik-edge is host-networked, so its source is the node's flannel host
     # address rather than a pod IP — hence the cidr carve-out rather than a
     # podSelector.
-    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091]
+    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091, 8092]
   # -- Destination ports the replication-agent and region-health may reach on
   # peer regions. Egress is opened to public address space only (RFC1918 and
   # link-local are excluded) and only when global.region.peers is non-empty.
@@ -237,6 +237,14 @@ edgeIngress:
     - { path: /v1/auth/token, component: secret-engine, port: 8081 }
     # Vault-shaped health (/v1/sys/health), used by vault clients and probes.
     - { path: /v1/sys, component: secret-engine, port: 8081 }
+    # The multi-region views live on region-health, NOT secret-engine. These
+    # MUST stay longer prefixes than /v1/sys above — Traefik prefers the more
+    # specific match, so /v1/sys/regions lands on region-health while the rest
+    # of /v1/sys (notably /v1/sys/health) still reaches secret-engine.
+    # Without them the vault-ui Regions and Cluster pages 404, and so does the
+    # `curl .../v1/sys/regions` in docs/ha-two-region.md.
+    - { path: /v1/sys/regions, component: region-health, port: 8092 }
+    - { path: /v1/sys/cluster, component: region-health, port: 8092 }
     - { path: /v1/transit, component: transit-engine, port: 8086 }
     - { path: /v1/policies, component: policy-engine, port: 8083 }
     - { path: /v1/pki, component: pki-engine, port: 8088 }
