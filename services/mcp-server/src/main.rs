@@ -217,6 +217,12 @@ async fn run_stdio(state: AppState) -> anyhow::Result<()> {
         principal_id: std::env::var("VAULT_MCP_PRINCIPAL_ID")
             .ok()
             .filter(|s| !s.is_empty()),
+        // stdio transport is a local/dev path with no HTTP request to carry a
+        // bearer token. Backends therefore fall back to whatever the headers
+        // above allow, which they only honour when explicitly configured to.
+        token: std::env::var("VAULT_MCP_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty()),
     };
 
     let stdin = tokio::io::stdin();

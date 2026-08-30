@@ -780,6 +780,7 @@ mod tests {
         let ctx = CallerContext {
             policies: Some("read_secrets".into()),
             principal_id: Some("svc-account-1".into()),
+            token: Some("test-token".into()),
         };
         let resp = dispatch(req, &state, ctx)
             .await
