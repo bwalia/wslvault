@@ -25,6 +25,7 @@ pub async fn apply_event(
         "key_rotate" => apply_key_rotate(pool, event).await,
         "policy_update" => apply_policy_update(pool, event).await,
         "tenant_update" => apply_tenant_update(pool, event).await,
+        "api_key_upsert" => apply_api_key_upsert(pool, event).await,
         "region_failover" => {
             info!(
                 source = %event.source_region,
@@ -348,6 +349,95 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
 ///
 /// Note: `system.tenants` does NOT have row-level security, so no session
 /// variable needs to be set before writing.
+/// Apply an `api_key_upsert` event from a peer region.
+///
+/// API keys used to exist only in the region that minted them, so a key issued
+/// against region A returned `key_not_found` on region B and a failover
+/// invalidated every login at once. They now replicate like policies and
+/// tenants.
+///
+/// Only the SHA-256 hash travels — the raw key is returned once at mint time
+/// and never stored anywhere — so this carries exactly what the table already
+/// holds.
+///
+/// `last_used_at` is deliberately not replicated: it is per-region telemetry,
+/// and feeding it into the conflict key would have two regions overwriting each
+/// other on every authentication.
+async fn apply_api_key_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+    use base64::Engine as _;
+
+    let field = |k: &str| -> anyhow::Result<String> {
+        event.payload[k]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("missing {k} in api_key_upsert payload"))
+    };
+
+    let id = field("id")?;
+    let tenant_id = field("tenant_id")?;
+    let name = field("name")?;
+    let key_prefix = field("key_prefix")?;
+    let created_by = field("created_by")?;
+    let key_hash = base64::engine::general_purpose::STANDARD
+        .decode(field("key_hash_b64")?)
+        .map_err(|e| anyhow::anyhow!("key_hash_b64 is not valid base64: {e}"))?;
+
+    let policies: Vec<String> =
+        serde_json::from_value(event.payload["policies"].clone()).unwrap_or_default();
+    let path_prefixes: Vec<String> =
+        serde_json::from_value(event.payload["path_prefixes"].clone()).unwrap_or_default();
+    let expires_at: Option<chrono::DateTime<chrono::Utc>> =
+        serde_json::from_value(event.payload["expires_at"].clone()).unwrap_or(None);
+    let revoked_at: Option<chrono::DateTime<chrono::Utc>> =
+        serde_json::from_value(event.payload["revoked_at"].clone()).unwrap_or(None);
+    let rate_limit = event.payload["rate_limit_per_minute"]
+        .as_i64()
+        .unwrap_or(60) as i32;
+
+    // Stop the local trigger re-emitting this write as a fresh outbox event,
+    // which would bounce the row between regions forever.
+    sqlx::query("SET LOCAL app.replication_agent = 'true'")
+        .execute(pool.inner())
+        .await?;
+
+    // Revocation must never be undone by an older event arriving late, so a row
+    // already revoked locally keeps its revoked_at. Everything else takes the
+    // remote value.
+    sqlx::query(
+        r#"
+        INSERT INTO shared.api_keys
+            (id, tenant_id, name, key_hash, key_prefix, path_prefixes, policies,
+             created_by, created_at, expires_at, revoked_at, rate_limit_per_minute)
+        VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, now(), $9, $10, $11)
+        ON CONFLICT (id) DO UPDATE SET
+            name                  = EXCLUDED.name,
+            key_hash              = EXCLUDED.key_hash,
+            key_prefix            = EXCLUDED.key_prefix,
+            path_prefixes         = EXCLUDED.path_prefixes,
+            policies              = EXCLUDED.policies,
+            expires_at            = EXCLUDED.expires_at,
+            revoked_at            = COALESCE(shared.api_keys.revoked_at, EXCLUDED.revoked_at),
+            rate_limit_per_minute = EXCLUDED.rate_limit_per_minute
+        "#,
+    )
+    .bind(&id)
+    .bind(&tenant_id)
+    .bind(&name)
+    .bind(&key_hash)
+    .bind(&key_prefix)
+    .bind(&path_prefixes)
+    .bind(&policies)
+    .bind(&created_by)
+    .bind(expires_at)
+    .bind(revoked_at)
+    .bind(rate_limit)
+    .execute(pool.inner())
+    .await?;
+
+    debug!(key_id = %id, key_prefix = %key_prefix, "replicated api key");
+    Ok(())
+}
+
 async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
     let tenant_id = event.payload["id"]
         .as_str()
