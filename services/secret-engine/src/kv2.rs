@@ -109,6 +109,9 @@ pub struct Identity {
     pub tenant_id: String,
     pub principal_id: String,
     pub policies: Vec<String>,
+    /// Unix expiry when the caller authenticated with a token. `None` for the
+    /// gateway header paths, which carry no token lifetime of their own.
+    pub expires_at: Option<i64>,
 }
 
 /// Claims issued by identity-service (`services/identity-service/src/token.rs`).
@@ -119,6 +122,10 @@ struct TokenClaims {
     tenant_id: String,
     #[serde(default)]
     policies: Vec<String>,
+    /// Unix expiry. Surfaced by lookup-self as `expire_time`/`ttl`, which
+    /// Vault clients require — ESO rejects a store with "no expiration time
+    /// found in response" when it is missing.
+    exp: i64,
 }
 
 fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
@@ -190,6 +197,7 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
                 .unwrap_or("anonymous")
                 .to_string(),
             policies: split_csv(header_value(headers, "x-policies")),
+            expires_at: None,
         });
     }
 
@@ -203,6 +211,7 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
                 .unwrap_or("anonymous")
                 .to_string(),
             policies: split_csv(header_value(headers, "x-vault-policies")),
+            expires_at: None,
         });
     }
 
@@ -213,6 +222,7 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
                 tenant_id: claims.tenant_id,
                 principal_id: claims.sub,
                 policies: claims.policies,
+                expires_at: Some(claims.exp),
             }),
             Err(e) => Err(vault_error(StatusCode::FORBIDDEN, e)),
         };
@@ -584,6 +594,36 @@ async fn lookup_self(headers: HeaderMap) -> Response {
         Value::String(identity.tenant_id.clone()),
     );
     data.insert("meta".into(), Value::Object(meta));
+
+    // Vault's own lookup-self returns these, and clients assert on them —
+    // External Secrets Operator rejects the store with "could not assert token
+    // type" if `type` is absent, so omitting them is not cosmetic. `service`
+    // is the right value: wslvault tokens are ordinary (non-batch) tokens.
+    data.insert("type".into(), Value::String("service".into()));
+    data.insert("accessor".into(), Value::String(String::new()));
+    data.insert(
+        "path".into(),
+        Value::String("auth/token/lookup-self".into()),
+    );
+    data.insert("orphan".into(), Value::Bool(true));
+    data.insert("renewable".into(), Value::Bool(false));
+    data.insert("num_uses".into(), Value::Number(0.into()));
+    // Expiry is REQUIRED by clients: ESO refuses a store with "no expiration
+    // time found in response" if absent. Derive both from the JWT's `exp`.
+    // Header-authenticated callers carry no token lifetime, so fall back to a
+    // nominal window rather than claiming the credential never expires.
+    let now = chrono::Utc::now().timestamp();
+    let exp = identity.expires_at.unwrap_or(now + 86_400);
+    let ttl = (exp - now).max(0);
+    data.insert("ttl".into(), Value::Number(ttl.into()));
+    data.insert("explicit_max_ttl".into(), Value::Number(0.into()));
+    if let Some(dt) = chrono::DateTime::from_timestamp(exp, 0) {
+        data.insert("expire_time".into(), Value::String(dt.to_rfc3339()));
+        data.insert(
+            "issue_time".into(),
+            Value::String(chrono::Utc::now().to_rfc3339()),
+        );
+    }
 
     let mut body = Map::new();
     body.insert("data".into(), Value::Object(data));

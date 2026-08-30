@@ -142,6 +142,54 @@ curl -sS https://vault.workstation.co.uk/v1/auth/token/lookup-self \
   -H "X-Vault-Token: $TOKEN"
 ```
 
+## Cluster prerequisites (learned the hard way)
+
+Two things block ESO even when the mount itself is correct:
+
+**1. NetworkPolicy.** The `wslvault` namespace is default-deny, so ESO cannot
+reach the secret-engine and the store fails with `dial tcp …: connect:
+connection refused`. Allow exactly that path:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: { name: wslvault-allow-external-secrets, namespace: wslvault }
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: wslvault
+      app.kubernetes.io/name: secret-engine
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: external-secrets }
+      ports: [{ protocol: TCP, port: 8081 }]
+```
+
+**2. Ingress routes.** `/v1/kv`, `/v1/auth/token` and `/v1/sys` must route to the
+secret-engine, or requests 404 at the edge. `/v1/auth/token` has to be a *longer*
+prefix than `/v1/auth` (identity-service) so Traefik's more-specific match wins.
+Both the chart (`edgeIngress.routes`) and `deploy/k8s/wslvault-ingress.yaml`
+carry these.
+
+Pointing ESO at the in-cluster service (`http://wslvault-secret-engine.wslvault.svc.cluster.local:8081`)
+avoids the public edge entirely and is the recommended configuration.
+
+## What store validation actually requires
+
+ESO does **not** just read the secret — it validates the store by calling
+`/v1/auth/token/lookup-self` and asserting on the response. Two fields are
+mandatory and their absence produces misleading "invalid vault credentials"
+errors even when the credentials are perfect:
+
+| Missing field | ESO error |
+|---|---|
+| `data.type` | `could not assert token type` |
+| `data.expire_time` / non-zero `ttl` | `no expiration time found in response` |
+
+Both are now returned, derived from the JWT's `exp`.
+
 ## Known gaps
 
 Deliberately not implemented yet — add them if a client needs them:
