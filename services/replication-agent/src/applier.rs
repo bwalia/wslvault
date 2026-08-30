@@ -92,7 +92,23 @@ async fn apply_secret_upsert(
             remote_region: event.source_region.clone(),
         };
 
-        match conflict::resolve(conflict_strategy, &ctx) {
+        // Every conflict is counted by outcome. ManualReview in particular is
+        // silent data divergence — the write is skipped and the regions stay
+        // different — so it needs to be visible on a dashboard, not only in a
+        // log line nobody is tailing.
+        let resolution = conflict::resolve(conflict_strategy, &ctx);
+        crate::metrics::CONFLICTS_TOTAL
+            .with_label_values(&[
+                event.source_region.as_str(),
+                match resolution {
+                    Resolution::KeepLocal => "keep_local",
+                    Resolution::ManualReview => "manual_review",
+                    Resolution::AcceptRemote => "accept_remote",
+                },
+            ])
+            .inc();
+
+        match resolution {
             Resolution::KeepLocal => {
                 debug!(path, "conflict resolved: keeping local version");
                 return Ok(());

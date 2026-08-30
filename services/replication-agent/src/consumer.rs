@@ -97,8 +97,16 @@ async fn fetch_and_apply_events(
     // fewer or more positions than the events actually cover.
     let max_seq = events_last_seq(&events, last_seq);
 
+    // Replication lag: how far behind the peer's newest event we are at the
+    // moment we finish reading it. Measured from the event's own created_at so
+    // it reflects end-to-end staleness (produce -> poll -> apply), not just the
+    // request round trip. Reported per peer, since a mesh can be healthy toward
+    // one region and lagging toward another.
+    let newest = events.iter().map(|e| e.created_at).max();
+
+    let mut applied = 0u64;
     for event in events {
-        if let Err(e) = applier::apply_event(
+        match applier::apply_event(
             pool,
             &event,
             &config.conflict_strategy,
@@ -106,13 +114,40 @@ async fn fetch_and_apply_events(
         )
         .await
         {
-            error!(
-                event_id = %event.id,
-                error = %e,
-                "failed to apply replication event"
-            );
+            Ok(()) => {
+                applied += 1;
+                crate::metrics::EVENTS_APPLIED
+                    .with_label_values(&[peer.region_id.as_str(), "applied"])
+                    .inc();
+            }
+            Err(e) => {
+                crate::metrics::EVENTS_APPLIED
+                    .with_label_values(&[peer.region_id.as_str(), "failed"])
+                    .inc();
+                error!(
+                    event_id = %event.id,
+                    error = %e,
+                    "failed to apply replication event"
+                );
+            }
         }
     }
+
+    if let Some(newest) = newest {
+        let lag_ms = (chrono::Utc::now() - newest).num_milliseconds().max(0) as f64;
+        // (source_region, dest_region): the peer produced it, we consumed it.
+        crate::metrics::REPLICATION_LAG_MS
+            .with_label_values(&[peer.region_id.as_str(), config.local_region.as_str()])
+            .set(lag_ms);
+    }
+
+    // A poll that returns nothing means we are caught up with this peer. Record
+    // it so a flat-lining lag gauge is distinguishable from an agent that has
+    // simply stopped polling.
+    crate::metrics::POLLS_TOTAL
+        .with_label_values(&[peer.region_id.as_str()])
+        .inc();
+    debug!(peer = %peer.region_id, applied, "replication poll complete");
 
     // ACK the last sequence processed.
     if count > 0 {
