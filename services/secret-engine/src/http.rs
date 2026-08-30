@@ -641,7 +641,7 @@ pub async fn put_secret(
         .with_label_values(&["write", &tenant_id, "success"])
         .inc();
     SECRETS_MANAGED
-        .with_label_values(&[&tenant_id, "kv-v2"])
+        .with_label_values(&[tenant_id.as_str(), "kv-v2"])
         .inc();
 
     state
