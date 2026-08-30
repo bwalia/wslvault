@@ -136,6 +136,7 @@ jobs:
           PGDATABASE: wslvault
           PGPASSWORD: testpassword
           BASELINE_ON_EXISTING: 'true'
+          SQL_DIR: /tmp/migrations
         run: sh /tmp/migrations/migrate.sh
 
       - name: Re-run is a no-op
@@ -146,6 +147,7 @@ jobs:
           PGDATABASE: wslvault
           PGPASSWORD: testpassword
           BASELINE_ON_EXISTING: 'true'
+          SQL_DIR: /tmp/migrations
         run: |
           sh /tmp/migrations/migrate.sh | tee /tmp/rerun.log
           if grep -q '    apply ' /tmp/rerun.log; then
@@ -175,6 +177,7 @@ jobs:
           PGDATABASE: wslvault
           PGPASSWORD: testpassword
           BASELINE_ON_EXISTING: 'true'
+          SQL_DIR: /tmp/migrations
         run: |
           echo '-- tampered' >> /tmp/migrations/007_regions.sql
           if sh /tmp/migrations/migrate.sh; then

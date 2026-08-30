@@ -94,8 +94,23 @@ data:
     # Apply the wslvault schema exactly once per file, tracked in a ledger.
     set -eu
 
-    SQL_DIR=/migrations
+    # /migrations is where the ConfigMap mounts in the Job. Overridable so the
+    # script can be exercised anywhere the bundle is unpacked — CI extracts it
+    # to /tmp/migrations and runs this verbatim.
+    SQL_DIR="${SQL_DIR:-/migrations}"
     PSQL="psql --no-psqlrc --set ON_ERROR_STOP=1 --quiet"
+
+    # An unmatched glob expands to the literal pattern, which previously turned
+    # into `apply [0-9]*.sql` and a confusing sha256sum error rather than an
+    # honest failure. Refuse to run against an empty or wrong directory.
+    if [ ! -d "$SQL_DIR" ]; then
+      echo "!! SQL_DIR $SQL_DIR does not exist" >&2
+      exit 1
+    fi
+    if [ -z "$(find "$SQL_DIR" -maxdepth 1 -name '[0-9]*.sql' -print -quit)" ]; then
+      echo "!! no numbered .sql files in $SQL_DIR — refusing to run" >&2
+      exit 1
+    fi
 
     echo "==> waiting for postgres at ${PGHOST}:${PGPORT}"
     until pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; do
