@@ -69,7 +69,11 @@ const DEFAULT_AUDIT_ENDPOINT: &str = "http://audit-service:50056";
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialise structured tracing; RUST_LOG controls the filter level.
     tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env())
+        // Default to `info` when RUST_LOG is unset. `from_default_env()` alone
+        // yields an empty filter, which silences the service completely — no
+        // startup line, no errors, nothing shipped to Loki — so a crash-looping
+        // or misbehaving pod leaves no trace at all.
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer())
         .init();
 
