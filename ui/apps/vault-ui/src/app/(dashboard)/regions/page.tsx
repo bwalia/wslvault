@@ -10,19 +10,24 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { Globe, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 
+// Mirrors the RegionInfo that region-health serves from GET /v1/sys/regions
+// (services/region-health/src/store.rs). The page previously declared
+// `name`, `leader` and `last_sync_at`, none of which that endpoint returns —
+// so every field rendered as undefined even when the request succeeded.
 interface Region {
   id: string
-  name: string
-  status: 'active' | 'standby' | 'degraded' | string
+  display_name: string
+  status: 'active' | 'degraded' | 'offline' | string
   replication_lag_ms: number | null
-  leader: boolean
-  last_sync_at: string | null
+  is_local: boolean
+  last_seen: string | null
   endpoint: string | null
 }
 
-interface RegionsResponse {
-  regions: Region[]
-}
+// The endpoint returns a BARE ARRAY, not an envelope. Reading `data.regions`
+// off it yields undefined, which the page rendered as "No regions configured"
+// — a successful 200 that looked like an empty cluster.
+type RegionsResponse = Region[]
 
 function LagCell({ lagMs }: { lagMs: number | null }) {
   if (lagMs === null) return <span className="font-mono text-[13px] text-ink-faint">—</span>
@@ -48,13 +53,13 @@ export default function RegionsPage() {
     { refreshInterval: 15_000 },
   )
 
-  const regions = data?.regions ?? []
+  const regions = data ?? []
 
   const activeCount = regions.filter(r => r.status === 'active').length
   const standbyCount = regions.filter(r => r.status === 'standby').length
   const degradedCount = regions.filter(r => r.status === 'degraded').length
   const maxLagMs = regions
-    .filter(r => !r.leader && r.replication_lag_ms !== null)
+    .filter(r => !r.is_local && r.replication_lag_ms !== null)
     .reduce((max, r) => Math.max(max, r.replication_lag_ms as number), -1)
 
   return (
@@ -123,7 +128,7 @@ export default function RegionsPage() {
                     Status
                   </th>
                   <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
-                    Role
+                    Locality
                   </th>
                   <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
                     Replication Lag
@@ -143,8 +148,8 @@ export default function RegionsPage() {
                     className="hover:bg-surface-2 transition-colors"
                   >
                     <td className="px-4 py-2.5 text-ink">
-                      <span className="font-medium">{region.name ?? region.id}</span>
-                      {region.name && region.name !== region.id && (
+                      <span className="font-medium">{region.display_name ?? region.id}</span>
+                      {region.display_name && region.display_name !== region.id && (
                         <span className="block font-mono text-[13px] text-ink-faint mt-0.5">
                           {region.id}
                         </span>
@@ -154,18 +159,18 @@ export default function RegionsPage() {
                       <StatusBadge status={region.status} />
                     </td>
                     <td className="px-4 py-2.5">
-                      <StatusBadge status={region.leader ? 'leader' : 'follower'} />
+                      <StatusBadge status={region.is_local ? 'local' : 'peer'} />
                     </td>
                     <td className="px-4 py-2.5">
-                      {region.leader ? (
+                      {region.is_local ? (
                         <span className="font-mono text-[13px] text-ink-faint">—</span>
                       ) : (
                         <LagCell lagMs={region.replication_lag_ms} />
                       )}
                     </td>
                     <td className="px-4 py-2.5 font-mono text-[13px] text-ink-faint">
-                      {region.last_sync_at
-                        ? new Date(region.last_sync_at).toLocaleString('en-GB', {
+                      {region.last_seen
+                        ? new Date(region.last_seen).toLocaleString('en-GB', {
                             day: '2-digit',
                             month: 'short',
                             year: 'numeric',
