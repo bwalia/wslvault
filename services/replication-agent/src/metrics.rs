@@ -16,6 +16,16 @@ lazy_static::lazy_static! {
         &["region", "status"]
     ).unwrap();
 
+    /// Completed polls per peer. Without this a flat lag gauge is ambiguous:
+    /// it could mean "caught up" or "the agent stopped polling entirely".
+    pub static ref POLLS_TOTAL: IntCounterVec = IntCounterVec::new(
+        Opts::new(
+            "vault_replication_polls_total",
+            "Completed replication polls, by peer region"
+        ),
+        &["peer_region"]
+    ).expect("valid metric definition");
+
     pub static ref CONFLICTS_TOTAL: IntCounterVec = IntCounterVec::new(
         Opts::new("vault_replication_conflicts_total", "Total replication conflicts"),
         &["region", "resolution"]
@@ -28,7 +38,7 @@ lazy_static::lazy_static! {
 /// twice) are logged rather than panicking the service, so a metrics setup
 /// mistake never brings down the data path.
 pub fn register_metrics() {
-    let collectors: [(&str, Box<dyn prometheus::core::Collector>); 3] = [
+    let collectors: [(&str, Box<dyn prometheus::core::Collector>); 4] = [
         (
             "vault_replication_lag_ms",
             Box::new(REPLICATION_LAG_MS.clone()),
@@ -40,6 +50,10 @@ pub fn register_metrics() {
         (
             "vault_replication_conflicts_total",
             Box::new(CONFLICTS_TOTAL.clone()),
+        ),
+        (
+            "vault_replication_polls_total",
+            Box::new(POLLS_TOTAL.clone()),
         ),
     ];
     for (name, collector) in collectors {
@@ -65,4 +79,52 @@ pub async fn metrics_handler() -> impl IntoResponse {
         tracing::error!(error = %e, "prometheus metrics were not valid UTF-8");
         String::new()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three original metrics were registered and wired to /metrics, but
+    /// nothing ever wrote to them — so the endpoint returned HTTP 200 with an
+    /// empty body and multi-region replication had no observability at all.
+    /// A Vec metric emits nothing until a label set is touched, so registration
+    /// alone proves nothing; this asserts real output.
+    #[test]
+    fn metrics_render_once_populated() {
+        register_metrics();
+
+        REPLICATION_LAG_MS
+            .with_label_values(&["region-b", "region-a"])
+            .set(21.0);
+        EVENTS_APPLIED
+            .with_label_values(&["region-b", "applied"])
+            .inc();
+        EVENTS_APPLIED
+            .with_label_values(&["region-b", "failed"])
+            .inc();
+        POLLS_TOTAL.with_label_values(&["region-b"]).inc();
+        CONFLICTS_TOTAL
+            .with_label_values(&["region-b", "manual_review"])
+            .inc();
+
+        let mut buf = Vec::new();
+        TextEncoder::new()
+            .encode(&REGISTRY.gather(), &mut buf)
+            .expect("metrics encode");
+        let out = String::from_utf8(buf).expect("utf8 metrics");
+
+        for name in [
+            "vault_replication_lag_ms",
+            "vault_replication_events_applied_total",
+            "vault_replication_polls_total",
+            "vault_replication_conflicts_total",
+        ] {
+            assert!(out.contains(name), "{name} missing from /metrics output");
+        }
+        assert!(
+            out.contains(r#"region="region-b""#),
+            "per-peer label missing: a mesh-wide gauge cannot be read per peer"
+        );
+    }
 }
