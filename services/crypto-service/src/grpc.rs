@@ -129,7 +129,7 @@ impl CryptoService for CryptoServiceImpl {
 
         let dek = self
             .kek_store
-            .get_dek(&key_id)
+            .get_dek(&key_id, tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 
@@ -183,7 +183,7 @@ impl CryptoService for CryptoServiceImpl {
 
         let dek = self
             .kek_store
-            .get_dek(dek_id)
+            .get_dek(dek_id, tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 
@@ -220,7 +220,7 @@ impl CryptoService for CryptoServiceImpl {
 
         let (wrapped_dek_b64, version) = self
             .kek_store
-            .get_dek_metadata(&key_id)
+            .get_dek_metadata(&key_id, tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 
@@ -276,9 +276,9 @@ impl CryptoService for CryptoServiceImpl {
 
         debug!(key_id = key_id_str, "Handling GetKeyDescriptor request");
 
-        let (_, version) = self
+        let version = self
             .kek_store
-            .get_dek_metadata(key_id_str)
+            .get_dek_version_unscoped(key_id_str)
             .await
             .map_err(vault_error_to_status)?;
 

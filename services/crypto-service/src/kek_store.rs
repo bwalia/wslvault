@@ -546,11 +546,34 @@ impl KekStore {
 
     /// Look up an existing DEK by its key_id. Returns a `VaultError::KeyNotFound`
     /// if no DEK with that id is registered.
-    pub async fn get_dek(&self, key_id: &str) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+    pub async fn get_dek(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+    ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         let reader = self.inner.deks.read().await;
         let entry = reader.get(key_id).ok_or_else(|| VaultError::KeyNotFound {
             key_id: key_id.to_string(),
         })?;
+
+        // A DEK is owned by exactly one tenant. Without this check, knowing a
+        // key_id was enough to decrypt another tenant's data: the caller's
+        // tenant_id was accepted, logged, and then ignored. Isolation rested
+        // entirely on the layers above rather than on the key store itself.
+        //
+        // Reports KeyNotFound rather than PermissionDenied so the API cannot be
+        // used as an oracle for which key ids exist; the mismatch is logged at
+        // WARN so operators still see attempted cross-tenant access.
+        if entry.tenant_id != tenant_id {
+            warn!(
+                key_id,
+                requesting_tenant = tenant_id,
+                "cross-tenant DEK access denied"
+            );
+            return Err(VaultError::KeyNotFound {
+                key_id: key_id.to_string(),
+            });
+        }
 
         let mut out = Zeroizing::new([0u8; 32]);
         out.copy_from_slice(&*entry.raw_dek);
@@ -559,12 +582,44 @@ impl KekStore {
 
     /// Return the wrapped DEK (base64 envelope) and version for a key_id.
     /// Used when returning `wrapped_dek` in `GenerateDekResponse`.
-    pub async fn get_dek_metadata(&self, key_id: &str) -> Result<(String, u32), VaultError> {
+    pub async fn get_dek_metadata(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+    ) -> Result<(String, u32), VaultError> {
         let reader = self.inner.deks.read().await;
         let entry = reader.get(key_id).ok_or_else(|| VaultError::KeyNotFound {
             key_id: key_id.to_string(),
         })?;
+        // The wrapped DEK is key material, so it is tenant-scoped like get_dek.
+        if entry.tenant_id != tenant_id {
+            warn!(
+                key_id,
+                requesting_tenant = tenant_id,
+                "cross-tenant DEK metadata access denied"
+            );
+            return Err(VaultError::KeyNotFound {
+                key_id: key_id.to_string(),
+            });
+        }
         Ok((entry.wrapped_dek_b64.clone(), entry.version))
+    }
+
+    /// Version of a DEK, without its key material and without a tenant scope.
+    ///
+    /// Backs GetKeyDescriptor, whose request carries no tenant_id and which
+    /// deliberately exposes no key material — it reports health and version
+    /// only. Returning just the version keeps that endpoint unable to reach a
+    /// wrapped key even by accident; it still reveals whether a key id exists,
+    /// which is the price of an unscoped descriptor lookup.
+    pub async fn get_dek_version_unscoped(&self, key_id: &str) -> Result<u32, VaultError> {
+        let reader = self.inner.deks.read().await;
+        reader
+            .get(key_id)
+            .map(|e| e.version)
+            .ok_or_else(|| VaultError::KeyNotFound {
+                key_id: key_id.to_string(),
+            })
     }
 
     /// Rotate the DEK identified by `key_id` for the given tenant.
@@ -825,11 +880,11 @@ mod tests {
             .await
             .unwrap();
 
-        let dek1 = store.get_dek(&key_id).await.unwrap();
-        let dek2 = store.get_dek(&key_id).await.unwrap();
+        let dek1 = store.get_dek(&key_id, tenant).await.unwrap();
+        let dek2 = store.get_dek(&key_id, tenant).await.unwrap();
         assert_eq!(&*dek1, &*dek2, "fetching a DEK must be deterministic");
 
-        let (wrapped, version) = store.get_dek_metadata(&key_id).await.unwrap();
+        let (wrapped, version) = store.get_dek_metadata(&key_id, tenant).await.unwrap();
         assert!(
             !wrapped.is_empty(),
             "wrapped DEK envelope must be populated"
@@ -846,15 +901,49 @@ mod tests {
         let id2 = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
         assert_ne!(id1, id2, "each DEK must have a distinct key_id");
 
-        let dek1 = store.get_dek(&id1).await.unwrap();
-        let dek2 = store.get_dek(&id2).await.unwrap();
+        let dek1 = store.get_dek(&id1, tenant).await.unwrap();
+        let dek2 = store.get_dek(&id2, tenant).await.unwrap();
         assert_ne!(&*dek1, &*dek2, "each DEK must be independent key material");
+    }
+
+    /// The guarantee this store must make: a DEK belongs to one tenant, and no
+    /// other tenant can reach it even knowing its key_id. Before this, the
+    /// caller's tenant_id was accepted and discarded, so any service able to
+    /// reach crypto-service could decrypt any tenant's data.
+    #[tokio::test]
+    async fn dek_is_not_readable_by_another_tenant() {
+        let store = test_store();
+        let key_id = store
+            .generate_and_store_dek("tenant-a", "prod/db/password")
+            .await
+            .unwrap();
+
+        // The owner can read it.
+        assert!(store.get_dek(&key_id, "tenant-a").await.is_ok());
+
+        // Another tenant cannot — and is told KeyNotFound, not PermissionDenied,
+        // so the API cannot be used to enumerate key ids.
+        let denied = store.get_dek(&key_id, "tenant-b").await;
+        assert!(
+            matches!(denied, Err(VaultError::KeyNotFound { .. })),
+            "cross-tenant get_dek must be refused, got {denied:?}"
+        );
+
+        // The wrapped key is material too, so metadata is scoped the same way.
+        let denied_meta = store.get_dek_metadata(&key_id, "tenant-b").await;
+        assert!(
+            matches!(denied_meta, Err(VaultError::KeyNotFound { .. })),
+            "cross-tenant get_dek_metadata must be refused, got {denied_meta:?}"
+        );
+
+        // The unscoped descriptor path still works and yields no key material.
+        assert_eq!(store.get_dek_version_unscoped(&key_id).await.unwrap(), 1);
     }
 
     #[tokio::test]
     async fn get_missing_dek_returns_key_not_found() {
         let store = test_store();
-        let result = store.get_dek("nonexistent-key-id").await;
+        let result = store.get_dek("nonexistent-key-id", "tenant-a").await;
         assert!(matches!(result, Err(VaultError::KeyNotFound { .. })));
     }
 
@@ -864,15 +953,15 @@ mod tests {
         let tenant = "tenant-a";
 
         let key_id = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
-        let before = *store.get_dek(&key_id).await.unwrap();
+        let before = *store.get_dek(&key_id, tenant).await.unwrap();
 
         let new_version = store.rotate_dek(tenant, &key_id).await.unwrap();
         assert_eq!(new_version, 2, "rotation must increment the version");
 
-        let after = *store.get_dek(&key_id).await.unwrap();
+        let after = *store.get_dek(&key_id, tenant).await.unwrap();
         assert_ne!(before, after, "rotation must replace the key material");
 
-        let (_, version) = store.get_dek_metadata(&key_id).await.unwrap();
+        let (_, version) = store.get_dek_metadata(&key_id, tenant).await.unwrap();
         assert_eq!(version, 2);
     }
 
