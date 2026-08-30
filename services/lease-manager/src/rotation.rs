@@ -273,14 +273,14 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
                     .with_label_values(&["success"])
                     .inc();
                 ROTATIONS_TRIGGERED_TOTAL
-                    .with_label_values(&[&secret_type, "success"])
+                    .with_label_values(&[secret_type.as_str(), "success"])
                     .inc();
             } else {
                 WEBHOOKS_DISPATCHED_TOTAL
                     .with_label_values(&["failure"])
                     .inc();
                 ROTATIONS_TRIGGERED_TOTAL
-                    .with_label_values(&[&secret_type, "error"])
+                    .with_label_values(&[secret_type.as_str(), "error"])
                     .inc();
             }
         } else {
@@ -295,7 +295,7 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
                 "no webhook_url configured; skipping automated rotation"
             );
             ROTATIONS_TRIGGERED_TOTAL
-                .with_label_values(&[&secret_type, "error"])
+                .with_label_values(&[secret_type.as_str(), "error"])
                 .inc();
         }
     }
