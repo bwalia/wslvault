@@ -50,7 +50,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: eb7accb12fbe4395ff9abbd3be09e2bc3e61ab36
+    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -122,13 +122,13 @@ gateway:
 identityService:
   replicaCount: 1
   image:
-    tag: a2dc8fe0937a8bd07873694865dce658b7c8690c
+    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
 regionHealth:
   image:
-    tag: 3c045db9f875ad30e979c37dc8c71d65cffda786
+    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
 secretEngine:
   image:
-    tag: kv2-56cb0cf
+    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
 cryptoService:
   replicaCount: 1
 
@@ -146,7 +146,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: "4168bb718f35c99987994c6402f22328e960ce62"
+    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
 
 secrets:
   existingSecret: wslvault-mesh-keys
