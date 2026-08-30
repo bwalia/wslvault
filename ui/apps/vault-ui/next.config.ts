@@ -29,12 +29,13 @@ const nextConfig: NextConfig = {
         destination: `${process.env.LEASE_URL ?? 'http://localhost:18084'}/:path*`,
       },
       {
-        // Regions/cluster/SCIM pages call `/api/gateway/*`. Historically this
-        // hit the OpenResty gateway; with the gateway disabled, point it at the
-        // edge ingress (which routes /v1/* and /scim/*) or the region-health
-        // service. NOTE: some of those pages still use pre-gateway paths
-        // (e.g. /v1/regions vs /v1/sys/regions, /v1/scim vs /scim/v2) and need
-        // path alignment before they fully work — tracked separately.
+        // Regions and cluster pages call `/api/gateway/*`. Historically this hit
+        // the OpenResty gateway; with the gateway disabled GATEWAY_URL points at
+        // region-health, which serves /v1/sys/regions and /v1/sys/cluster/*.
+        // Those pages now use the real paths — they previously requested the
+        // pre-gateway /v1/regions and /v1/cluster/status and 404'd. SCIM moved to
+        // /api/identity/scim/v2/*, being served by identity-service rather than
+        // region-health.
         source: '/api/gateway/:path*',
         destination: `${process.env.GATEWAY_URL ?? 'http://localhost:8088'}/:path*`,
       },

@@ -77,8 +77,10 @@ interface ScimListResponse<T> {
 // API keys
 // ---------------------------------------------------------------------------
 
-const USERS_KEY = '/api/gateway/v1/scim/Users'
-const GROUPS_KEY = '/api/gateway/v1/scim/Groups'
+// SCIM lives on identity-service at /scim/v2/*, not on the gateway proxy
+// (which points at region-health). /api/identity/* is the right rewrite.
+const USERS_KEY = '/api/identity/scim/v2/Users'
+const GROUPS_KEY = '/api/identity/scim/v2/Groups'
 
 // ---------------------------------------------------------------------------
 // Form types

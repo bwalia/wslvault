@@ -29,7 +29,8 @@ interface ClusterStatus {
   commit_index: number | null
 }
 
-const CLUSTER_KEY = '/api/gateway/v1/cluster/status'
+// region-health serves /v1/sys/cluster/status, not /v1/cluster/status.
+const CLUSTER_KEY = '/api/gateway/v1/sys/cluster/status'
 
 export default function ClusterPage() {
   const fetcher = useFetcher()
