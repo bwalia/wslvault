@@ -36,6 +36,15 @@ pub struct CallerContext {
     /// Stable principal identifier (user ID, service account, etc.) for the
     /// authenticated caller.  Forwarded as `X-Principal-Id` to backends.
     pub principal_id: Option<String>,
+    /// The caller's bearer token, forwarded to backends as `X-Vault-Token`.
+    ///
+    /// This is what actually authenticates an agent's request. This server does
+    /// not verify the token itself — it checks only that one was supplied — so
+    /// the backend MUST be the thing that validates it. Forwarding it means
+    /// secret-engine verifies the signature and derives the tenant from the
+    /// token's own claim, rather than trusting the `tenant_id` tool argument
+    /// or an `X-Tenant-Id` header the caller could have chosen freely.
+    pub token: Option<String>,
 }
 
 /// Apply the optional caller-context headers (`X-Tenant-Id`, `X-Policies`,
@@ -49,6 +58,12 @@ fn apply_caller_headers(
     ctx: &CallerContext,
 ) -> RequestBuilder {
     let mut b = builder.header("X-Tenant-Id", tenant_id);
+    // The caller's own credential. secret-engine prefers a verified token over
+    // the headers above, so this is what makes an agent's request properly
+    // authenticated rather than merely asserted.
+    if let Some(ref token) = ctx.token {
+        b = b.header("X-Vault-Token", token);
+    }
     if let Some(ref policies) = ctx.policies {
         b = b.header("X-Policies", policies);
     }
@@ -444,6 +459,12 @@ pub fn caller_context_from_headers(headers: &axum::http::HeaderMap) -> CallerCon
             .and_then(|v| v.to_str().ok())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_owned()),
+        // Set by the auth middleware from `Authorization: Bearer <token>`.
+        token: headers
+            .get("x-vault-token")
+            .and_then(|v| v.to_str().ok())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned()),
     }
 }
 
@@ -810,4 +831,37 @@ async fn handle_revoke_lease(
     } else {
         body
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The caller's bearer token must reach the backend. Without it, an agent's
+    /// request is authorised purely by `X-Tenant-Id` — a value taken from the
+    /// tool arguments, which the caller chooses freely. secret-engine can then
+    /// only trust an assertion instead of verifying a credential.
+    #[test]
+    fn caller_token_is_captured_from_headers() {
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-vault-token", "jwt-abc".parse().unwrap());
+        h.insert("x-policies", "read_secrets".parse().unwrap());
+        let ctx = caller_context_from_headers(&h);
+        assert_eq!(ctx.token.as_deref(), Some("jwt-abc"));
+        assert_eq!(ctx.policies.as_deref(), Some("read_secrets"));
+    }
+
+    #[test]
+    fn absent_token_stays_none_rather_than_empty() {
+        let ctx = caller_context_from_headers(&axum::http::HeaderMap::new());
+        assert_eq!(ctx.token, None, "no token must not become an empty header");
+
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("x-vault-token", "".parse().unwrap());
+        assert_eq!(
+            caller_context_from_headers(&h).token,
+            None,
+            "an empty token must not be forwarded as a credential"
+        );
+    }
 }
