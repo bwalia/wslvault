@@ -82,6 +82,32 @@ use crate::path::normalize_and_validate;
 /// value identity-service issues tokens with, or token auth cannot be verified.
 const JWT_SECRET_ENV: &str = "VAULT_JWT_SECRET";
 
+/// Opt-in for the pre-authenticated gateway header contract (tiers 1 and 2 in
+/// [`resolve_identity`]).
+///
+/// Those headers assert a tenant and its policies with no proof whatsoever.
+/// They are only safe when EVERY path to this service passes through a trusted
+/// proxy that authenticates the caller and overwrites them. That was true when
+/// the OpenResty gateway fronted the service; it is not true with
+/// `gateway.enabled=false`, where Traefik forwards client headers untouched and
+/// this port is reachable from the public edge.
+///
+/// Defaults to DISABLED. Set to "true"/"1"/"yes" only when a header-scrubbing
+/// proxy is genuinely in front of every listener.
+const TRUST_GATEWAY_HEADERS_ENV: &str = "VAULT_TRUST_GATEWAY_HEADERS";
+
+/// Whether the unauthenticated tenant headers may be honoured.
+fn gateway_headers_trusted() -> bool {
+    matches!(
+        std::env::var(TRUST_GATEWAY_HEADERS_ENV)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "true" | "1" | "yes"
+    )
+}
+
 // ─── Vault-shaped errors ─────────────────────────────────────────────────────
 
 /// Vault returns errors as `{"errors": ["..."]}`; clients parse that shape, so
@@ -189,30 +215,39 @@ fn verify_token(token: &str) -> Result<TokenClaims, String> {
 /// convention the gRPC handlers in this workspace use).
 #[allow(clippy::result_large_err)]
 pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
+    // Tiers 1 and 2 are UNAUTHENTICATED: they take the caller's word for which
+    // tenant they are. Only honour them when an operator has explicitly asserted
+    // that a trusted, header-scrubbing proxy fronts every listener.
+    let trust_headers = gateway_headers_trusted();
+
     // 1. Native internal contract.
-    if let Some(tenant) = header_value(headers, "x-tenant-id") {
-        return Ok(Identity {
-            tenant_id: tenant.to_string(),
-            principal_id: header_value(headers, "x-principal-id")
-                .unwrap_or("anonymous")
-                .to_string(),
-            policies: split_csv(header_value(headers, "x-policies")),
-            expires_at: None,
-        });
+    if trust_headers {
+        if let Some(tenant) = header_value(headers, "x-tenant-id") {
+            return Ok(Identity {
+                tenant_id: tenant.to_string(),
+                principal_id: header_value(headers, "x-principal-id")
+                    .unwrap_or("anonymous")
+                    .to_string(),
+                policies: split_csv(header_value(headers, "x-policies")),
+                expires_at: None,
+            });
+        }
     }
 
     // 2. Headers the gateway injects on a token-cache hit. The gateway writes
     //    the `X-Vault-*` spelling while the native handlers read `x-tenant-id`,
     //    so honouring both keeps gateway-authenticated requests working.
-    if let Some(tenant) = header_value(headers, "x-vault-tenant-id") {
-        return Ok(Identity {
-            tenant_id: tenant.to_string(),
-            principal_id: header_value(headers, "x-vault-principal-id")
-                .unwrap_or("anonymous")
-                .to_string(),
-            policies: split_csv(header_value(headers, "x-vault-policies")),
-            expires_at: None,
-        });
+    if trust_headers {
+        if let Some(tenant) = header_value(headers, "x-vault-tenant-id") {
+            return Ok(Identity {
+                tenant_id: tenant.to_string(),
+                principal_id: header_value(headers, "x-vault-principal-id")
+                    .unwrap_or("anonymous")
+                    .to_string(),
+                policies: split_csv(header_value(headers, "x-vault-policies")),
+                expires_at: None,
+            });
+        }
     }
 
     // 3. A raw token — the path Vault clients (and ESO) take.
@@ -653,6 +688,88 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
+
+    /// The header tiers assert a tenant with no proof. Reachable from the public
+    /// edge with `gateway.enabled=false`, they allowed ANY internet caller to
+    /// read ANY tenant's secrets by sending `X-Tenant-Id` — verified live against
+    /// production before the fix (HTTP 200 with plaintext, no credential).
+    ///
+    /// These tests pin the default closed. Serialised, because they mutate a
+    /// process-global env var.
+    /// Serialises every test that toggles VAULT_TRUST_GATEWAY_HEADERS, since it
+    /// is process-global and the harness runs tests in parallel.
+    pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Enable the gateway header contract for the duration of a test.
+    pub(super) struct TrustHeaders(std::sync::MutexGuard<'static, ()>);
+
+    impl TrustHeaders {
+        pub(super) fn on() -> Self {
+            let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "true");
+            Self(g)
+        }
+    }
+
+    impl Drop for TrustHeaders {
+        fn drop(&mut self) {
+            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
+        }
+    }
+
+    mod gateway_header_trust {
+        use super::*;
+
+        fn tenant_headers() -> HeaderMap {
+            let mut h = HeaderMap::new();
+            h.insert("x-tenant-id", "victim-tenant".parse().unwrap());
+            h.insert("x-policies", "root,admin".parse().unwrap());
+            h
+        }
+
+        #[test]
+        fn headers_are_rejected_by_default() {
+            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
+            assert!(
+                resolve_identity(&tenant_headers()).is_err(),
+                "X-Tenant-Id must NOT authenticate when the flag is unset"
+            );
+        }
+
+        #[test]
+        fn vault_spelling_is_rejected_by_default() {
+            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
+            let mut h = HeaderMap::new();
+            h.insert("x-vault-tenant-id", "victim-tenant".parse().unwrap());
+            h.insert("x-vault-policies", "root".parse().unwrap());
+            assert!(
+                resolve_identity(&h).is_err(),
+                "X-Vault-Tenant-ID must NOT authenticate when the flag is unset"
+            );
+        }
+
+        #[test]
+        fn explicitly_disabled_still_rejects() {
+            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "false");
+            let got = resolve_identity(&tenant_headers());
+            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
+            assert!(got.is_err());
+        }
+
+        #[test]
+        fn honoured_only_when_explicitly_enabled() {
+            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "true");
+            let got = resolve_identity(&tenant_headers());
+            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
+            let id = got.expect("flag on: the gateway contract should still work");
+            assert_eq!(id.tenant_id, "victim-tenant");
+            assert_eq!(id.expires_at, None, "header identities carry no expiry");
+        }
+    }
     use super::*;
     use axum::http::{HeaderName, HeaderValue};
 
@@ -698,6 +815,8 @@ mod tests {
 
     #[test]
     fn internal_headers_take_precedence() {
+        // The header contract is opt-in now; this test exercises it deliberately.
+        let _trust = TrustHeaders::on();
         let id = resolve_identity(&headers(&[
             ("x-tenant-id", "acme"),
             ("x-principal-id", "svc"),
@@ -712,6 +831,7 @@ mod tests {
     #[test]
     fn gateway_injected_headers_are_honoured() {
         // The gateway writes the X-Vault-* spelling; it must work too.
+        let _trust = TrustHeaders::on();
         let id = resolve_identity(&headers(&[
             ("x-vault-tenant-id", "acme"),
             ("x-vault-principal-id", "svc"),
