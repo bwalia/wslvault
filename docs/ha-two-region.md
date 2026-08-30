@@ -396,6 +396,8 @@ after three consecutive ones, polling every 10s.
 | Peer polls return `200` with **no** token | the deployed image predates the auth guard — set `publishPeerEndpoint: false` until a newer image ships |
 | Replication silent, no errors | peer roster only updated in one region — `validate-gitops.sh` catches this |
 | Secrets replicate but read back as garbage | `root-key` differs between regions |
+| Replicated secret reads `decryption failed: key not found` | Expected today — the row replicates but its DEK does not. See "Known limits" below. |
+| `key_not_found` for an API key that works elsewhere | API keys are per-region; they do not replicate. Mint one per region. |
 | Services crash-loop on a new region | migrations Job did not complete — `kubectl -n <ns> logs job/wslvault-migrations-<hash>` |
 | Migrations Job fails on checksum | an applied `.sql` was edited in place; add a new numbered file instead |
 | Pods `Pending` on a new region | node taint/selector mismatch, or the node has no CoreDNS (see §5.0) |
@@ -404,6 +406,32 @@ after three consecutive ones, polling every 10s.
 
 Safe — it carries no data. Rotate in every namespace at once; peers 401 for the
 few seconds between the two writes and retry.
+
+## Known limits
+
+Verified end to end on 2026-08-30 by writing `kv/data/ha-test/<stamp>` to
+region A and reading it from region B:
+
+- **The secret row replicates.** It arrives in region B's `shared.secrets`,
+  and 61,906 replication events had been applied at the time of the test.
+- **Its encryption key does not.** Region B's `system.key_descriptors` is
+  empty, so the read fails with
+  `decryption failed: key not found: <dek-id>`.
+
+So replication currently moves ciphertext without the means to decrypt it.
+Region B is a working vault for its own writes, and a faithful ciphertext
+replica of region A, but it cannot serve reads of region A's secrets. Closing
+this needs DEK replication (or a shared KEK-wrapped key store) — it is not a
+configuration mistake.
+
+**API keys are also per-region**, held per identity-service process rather than
+in the replicated store on the images currently deployed. Session tokens *do*
+work across regions, since every region verifies with the shared mesh JWT
+secret.
+
+For authentication mechanics see [`tenant-authentication.md`](tenant-authentication.md);
+for obtaining a key see
+[`operations/obtaining-credentials.md`](operations/obtaining-credentials.md).
 
 ### Rotating the root key
 
