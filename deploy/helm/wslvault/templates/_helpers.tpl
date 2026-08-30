@@ -339,6 +339,18 @@ living in Git.
 {{- end }}
 {{- end }}
 
+{{- define "wslvault.adminTokenSecretName" -}}
+{{- .Values.secrets.existingSecret | default (printf "%s-admin-token" (include "wslvault.fullname" .)) }}
+{{- end }}
+
+{{- define "wslvault.adminTokenSecretKey" -}}
+{{- if .Values.secrets.existingSecret }}
+{{- .Values.secrets.existingSecretKeys.adminToken | default "admin-token" }}
+{{- else }}
+{{- print "admin-token" }}
+{{- end }}
+{{- end }}
+
 {{- define "wslvault.pkiRootKeySecretName" -}}
 {{- .Values.secrets.existingSecret | default (printf "%s-pki-root-key" (include "wslvault.fullname" .)) }}
 {{- end }}

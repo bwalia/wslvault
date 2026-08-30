@@ -133,5 +133,17 @@ cryptoService:
 # replicated to every region's namespace — never from Git. Populate it with
 # region A's EXISTING key material:
 #   ./scripts/wslvault-mesh-keys.sh adopt wslvault
+replicationAgent:
+  # Verified guarded before enabling, against the deployed image via
+  # port-forward: no token -> 401, bogus token -> 401, mesh token -> 200,
+  # /health open for probes.
+  publishPeerEndpoint: true
+  # Pinned to the first image built from main that contains the shared-token
+  # guard in services/replication-agent/src/auth.rs. global.imageTag (0.1.0) was
+  # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
+  # keep the cached pre-auth layer — only a new tag actually pulls it.
+  image:
+    tag: "4168bb718f35c99987994c6402f22328e960ce62"
+
 secrets:
   existingSecret: wslvault-mesh-keys

@@ -80,11 +80,18 @@ configured the route returns `503` rather than serving the outbox openly.
 `/health`, `/ready` and `/metrics` stay unauthenticated for probes and
 Prometheus.
 
-### ⚠ The route is not published until the image enforces the token
+### The route is published only once the image enforces the token
 
 `replicationAgent.publishPeerEndpoint` defaults to **false**, so
 `/v1/replication` is absent from the edge Ingress and peers cannot pull.
 Regions do not replicate in that state — which is the safe failure.
+
+Both regions now run
+`bwalia/wslvault-replication-agent:4168bb718f35c99987994c6402f22328e960ce62`,
+the first image built from main containing `auth.rs`, and the flag is on.
+Pinning the sha matters: `global.imageTag` (0.1.0) was re-pushed with the same
+code, but `imagePullPolicy: IfNotPresent` means nodes keep the cached pre-auth
+layer — only a new tag actually pulls it.
 
 The guard lives in the service binary, so an image built before it ignores
 `REPLICATION_PEER_TOKEN` completely and serves the outbox to anyone who reaches
@@ -311,16 +318,26 @@ Then check the mesh sees itself, from either region:
 curl -s https://vault-b.workstation.co.uk/v1/sys/regions | jq
 ```
 
-And that the peer API is not published yet (see §2):
+And that the peer API is published and guarded:
 
 ```bash
+TOKEN=$(kubectl -n wslvault get secret wslvault-mesh-keys \
+          -o jsonpath='{.data.replication-peer-token}' | base64 -d)
+
 curl -s -o /dev/null -w '%{http_code}\n' \
   'https://vault-b.workstation.co.uk/v1/replication/events?source_region=region-a'
-# 404 — no Ingress route, because publishPeerEndpoint is false
+# 401 — expected
 
-# Once an image enforcing the token is deployed and the flag is on:
-#   without a token -> 401
-#   with the mesh token -> 200
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  'https://vault-b.workstation.co.uk/v1/replication/events?source_region=region-a'
+# 200
+```
+
+Both regions should then report each other active:
+
+```
+ region-a | active | local=true  | lag=0
+ region-b | active | local=false | lag=14
 ```
 
 ---
@@ -375,6 +392,7 @@ after three consecutive ones, polling every 10s.
 | Peer polls return `401` | mesh Secret differs between regions — run `wslvault-mesh-keys.sh verify` |
 | Peer polls return `503` | `replication-peer-token` missing from the Secret; the API is failing closed |
 | Peer polls return `404` | `replicationAgent.publishPeerEndpoint` is still false (the default) |
+| Peers stuck `offline` while replication works | `<endpoint>/health` is not routed. `region-health` polls that exact path (hardcoded in `poller.rs`); the chart's `/healthz` goes to secret-engine and does not answer it. The `/health` route is rendered with `publishPeerEndpoint`. |
 | Peer polls return `200` with **no** token | the deployed image predates the auth guard — set `publishPeerEndpoint: false` until a newer image ships |
 | Replication silent, no errors | peer roster only updated in one region — `validate-gitops.sh` catches this |
 | Secrets replicate but read back as garbage | `root-key` differs between regions |

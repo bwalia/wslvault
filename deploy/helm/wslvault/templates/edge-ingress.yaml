@@ -69,6 +69,25 @@ spec:
                 name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $ctx) }}
                 port:
                   number: {{ $.Values.replicationAgent.httpPort }}
+          {{/*
+          Peer liveness. region-health polls "<endpoint>/health" for every peer
+          in system.regions (services/region-health/src/poller.rs), and that
+          path is hardcoded — the chart's /healthz route reaches secret-engine
+          and does not answer it. Without this the probe 404s, every peer is
+          marked offline after three failures, and the mesh reports itself down
+          while replicating perfectly well.
+
+          Unauthenticated by design: /health sits outside the shared-token guard
+          in the replication-agent so kubelet probes and peers can reach it. It
+          returns a bare 200 and discloses nothing.
+          */}}
+          - path: /health
+            pathType: Exact
+            backend:
+              service:
+                name: {{ include "wslvault.componentFullname" (dict "component" "replication-agent" "context" $ctx) }}
+                port:
+                  number: {{ $.Values.replicationAgent.httpPort }}
           {{- end }}
     {{- end }}
 {{- if $ei.httpRedirect.enabled }}
