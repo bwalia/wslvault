@@ -389,6 +389,41 @@ async fn main() -> Result<(), anyhow::Error> {
     // device-flow router can share the same OIDC validation state.
     let oidc_manager_for_device = oidc_manager.clone();
 
+    // Token revocations live in PostgreSQL so they survive restarts and are
+    // visible to every replica. Without a database they fall back to an
+    // in-process set, which IdentityServiceImpl::new warns loudly about.
+    let revocation_pool = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to connect to PostgreSQL for token revocation: {e}")
+                })?;
+            info!("token revocation: using PostgreSQL backend");
+            Some(wslvault_storage::pool::DbPool::from_pool(pool))
+        }
+        _ => None,
+    };
+
+    // Reap revocations whose tokens have expired on their own; past a token's
+    // own exp the JWT validator rejects it regardless, so the row is dead
+    // weight. This is what keeps the table bounded.
+    if let Some(pool) = revocation_pool.clone() {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                ticker.tick().await;
+                match wslvault_storage::revocation_store::reap_expired(&pool).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(reaped = n, "expired token revocations reaped"),
+                    Err(e) => warn!(error = %e, "revocation reaper failed; will retry"),
+                }
+            }
+        });
+    }
+
     let identity_svc = IdentityServiceImpl::new(
         token_manager,
         principal_store,
@@ -396,6 +431,7 @@ async fn main() -> Result<(), anyhow::Error> {
         mtls_manager,
         aws_iam_manager,
         azure_workload_manager,
+        revocation_pool,
     );
     let grpc_service = IdentityServiceServer::new(identity_svc);
 
