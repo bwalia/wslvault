@@ -12,5 +12,6 @@ pub mod pool;
 pub mod quota_store;
 pub mod revocation_store;
 pub mod schema_store;
+pub mod seal_store;
 pub mod secret_store;
 pub mod tenant_store;

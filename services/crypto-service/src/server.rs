@@ -36,10 +36,11 @@ impl Default for ServerConfig {
 }
 
 /// Build the axum `Router` for HTTP health and metrics traffic.
-pub fn build_http_router() -> Router {
+pub fn build_http_router(sys_state: std::sync::Arc<crate::sys::SysState>) -> Router {
     Router::new()
         .route("/healthz", get(health::liveness))
         .route("/readyz", get(health::readiness))
+        .merge(crate::sys::router(sys_state))
         .layer(middleware::from_fn(metrics_middleware))
 }
 
@@ -52,7 +53,11 @@ pub fn build_http_router() -> Router {
 ///
 /// Both servers honour the same shutdown signal; once the signal fires each
 /// server drains in-flight requests before exiting.
-pub async fn run(kek_store: KekStore, config: ServerConfig) -> Result<(), anyhow::Error> {
+pub async fn run(
+    kek_store: KekStore,
+    sys_state: std::sync::Arc<crate::sys::SysState>,
+    config: ServerConfig,
+) -> Result<(), anyhow::Error> {
     let grpc_service = CryptoServiceImpl::new(kek_store);
 
     // Build the tonic gRPC server.
@@ -63,7 +68,7 @@ pub async fn run(kek_store: KekStore, config: ServerConfig) -> Result<(), anyhow
 
     // Build the axum HTTP server.
     let http_addr = config.http_addr;
-    let http_router = build_http_router();
+    let http_router = build_http_router(sys_state);
     let http_listener = tokio::net::TcpListener::bind(http_addr).await?;
     let http_server =
         axum::serve(http_listener, http_router).with_graceful_shutdown(shutdown_signal());

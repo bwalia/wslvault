@@ -16,6 +16,7 @@ pub mod error;
 pub mod grpc_channel;
 pub mod metrics;
 pub mod middleware;
+pub mod seal;
 pub mod traits;
 pub mod types;
 

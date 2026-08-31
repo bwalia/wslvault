@@ -8,6 +8,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum VaultError {
+    /// The vault is sealed: the root key is not in memory, so no key material
+    /// can be read or written until a threshold of unseal shares is supplied.
+    #[error("vault is sealed")]
+    Sealed,
+
     // Authentication and authorization errors
     #[error("authentication required: {reason}")]
     Unauthenticated { reason: String },
@@ -89,6 +94,7 @@ impl VaultError {
     /// Returns the machine-readable error code for API responses.
     pub fn code(&self) -> &'static str {
         match self {
+            VaultError::Sealed => "sealed",
             VaultError::Unauthenticated { .. } => "unauthenticated",
             VaultError::PermissionDenied { .. } => "permission_denied",
             VaultError::SecretNotFound { .. } => "not_found",
@@ -117,6 +123,9 @@ impl VaultError {
     /// Returns the HTTP status code appropriate for this error.
     pub fn http_status(&self) -> u16 {
         match self {
+            // 503, matching HashiCorp Vault: sealed is a temporary service
+            // condition an operator resolves by unsealing, not a client error.
+            VaultError::Sealed => 503,
             VaultError::Unauthenticated { .. } => 401,
             VaultError::PermissionDenied { .. } => 403,
             VaultError::SecretNotFound { .. }

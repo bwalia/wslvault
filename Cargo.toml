@@ -39,6 +39,9 @@ chacha20poly1305 = "0.10"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 sha2 = "0.10"
+# Shamir Secret Sharing over GF(256), for the seal. Splitting the unseal key is
+# the one place hand-rolling would be indefensible.
+sharks = "0.5"
 # Constant-time byte comparison. ring's verify_slices_are_equal is deprecated
 # ("internal function not intended for external use"); subtle is its replacement.
 subtle = "2.6"

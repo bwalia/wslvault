@@ -36,6 +36,7 @@ mod health;
 mod kek_store;
 mod root_key;
 mod server;
+mod sys;
 
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -87,65 +88,105 @@ async fn run_service() -> Result<(), anyhow::Error> {
         "Configuration loaded"
     );
 
-    // Select the root key provider based on VAULT_ROOT_KEY_PROVIDER (default: "env").
-    // The provider abstracts where the 32-byte root KEK comes from, enabling a
-    // drop-in swap between the env-var path and AWS KMS without changing downstream code.
-    let root_key_provider = select_provider()
-        .map_err(|err| anyhow::anyhow!("Failed to select root key provider: {}", err))?;
-
-    info!(
-        provider = std::env::var("VAULT_ROOT_KEY_PROVIDER")
-            .unwrap_or_else(|_| "env".to_string())
-            .as_str(),
-        "Root key provider selected"
-    );
-
-    // Load the root KEK via the selected provider.  This may involve a network
-    // call (e.g. AWS KMS Decrypt) so it must complete before the service opens
-    // any ports to traffic.
-    let root_kek = root_key_provider
-        .load_root_key()
-        .await
-        .map_err(|err| anyhow::anyhow!("Failed to load root KEK: {}", err))?;
-
-    // Attempt to wire up optional PostgreSQL persistence.
+    // ── Key custody ─────────────────────────────────────────────────────────
     //
-    // `DATABASE_URL` is checked directly from the environment rather than from
-    // VaultConfig because (a) it may be injected by Kubernetes secrets and
-    // (b) it must never appear in config files tracked by version control.
-    let kek_store = match std::env::var("DATABASE_URL") {
-        Ok(database_url) if !database_url.trim().is_empty() => {
-            info!("DATABASE_URL is set — initialising KekStore with database persistence");
+    // Two paths, and the difference between them is the whole point of the seal.
+    //
+    // SEALED (preferred): `system.seal_config` holds the root key encrypted
+    // under an unseal key that exists nowhere — only as Shamir shares held by
+    // separate people. The service starts sealed and refuses every crypto
+    // operation until `POST /v1/sys/unseal` receives a threshold of them.
+    //
+    // LEGACY: `VAULT_ROOT_KEY` (or a KMS provider) hands over the key directly,
+    // and the process boots unsealed. This was the only path that existed, and
+    // it means whoever can read a Kubernetes Secret or a process environment
+    // owns every secret in the vault. Kept so existing deployments survive the
+    // upgrade; warned about loudly, because it is the posture the seal exists
+    // to replace.
+    let seal = wslvault_core::seal::Seal::new();
 
-            // Build a DatabaseConfig from the DATABASE_URL env var, inheriting
-            // pool sizing from VaultConfig so operators can tune via VAULT__* vars.
+    // Database first: the seal material lives there, and whether it exists
+    // decides which path we are on.
+    let db_pool = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.trim().is_empty() => {
             let db_config = DatabaseConfig {
-                url: database_url,
+                url,
                 ..vault_config.database.clone()
             };
+            Some(
+                DbPool::connect(&db_config)
+                    .await
+                    .map_err(|err| anyhow::anyhow!("Failed to connect to database: {}", err))?,
+            )
+        }
+        _ => None,
+    };
 
-            let pool = DbPool::connect(&db_config)
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to connect to database: {}", err))?;
+    let mut sealed_start = false;
+    if let Some(pool) = &db_pool {
+        if let Some(material) = wslvault_storage::seal_store::load(pool)
+            .await
+            .map_err(|err| anyhow::anyhow!("Failed to read seal configuration: {}", err))?
+        {
+            info!(
+                shares = material.shares,
+                threshold = material.threshold,
+                "vault is initialized and SEALED — POST /v1/sys/unseal to open it"
+            );
+            seal.load(material).await;
+            sealed_start = true;
+        }
+    }
 
-            let store = KekStore::with_root_kek(root_kek, pool)
+    if !sealed_start {
+        match select_provider() {
+            Ok(provider) => match provider.load_root_key().await {
+                Ok(root_kek) => {
+                    warn!(
+                        "starting UNSEALED from VAULT_ROOT_KEY. The root key is in this \
+                         process's environment, so anyone who can read it owns every secret \
+                         in the vault. Run POST /v1/sys/init to adopt Shamir-split custody."
+                    );
+                    seal.unseal_with_root_key(root_kek).await;
+                }
+                Err(err) => {
+                    if db_pool.is_some() {
+                        info!(
+                            reason = %err,
+                            "no root key in the environment and the vault is not initialized \
+                             — starting SEALED. POST /v1/sys/init to initialize it."
+                        );
+                    } else {
+                        return Err(anyhow::anyhow!(
+                            "no root key available and no DATABASE_URL to initialize a seal \
+                             against: {err}"
+                        ));
+                    }
+                }
+            },
+            Err(err) => return Err(anyhow::anyhow!("Failed to select root key provider: {err}")),
+        }
+    }
+
+    let kek_store = match db_pool.clone() {
+        Some(pool) => {
+            let store = KekStore::with_seal(seal.clone(), pool)
                 .map_err(|err| anyhow::anyhow!("Failed to initialise KekStore: {}", err))?;
 
-            // Restore previously persisted tenant KEKs and DEKs from the database
-            // into the in-memory caches before the service begins accepting traffic.
-            store
-                .load_from_db()
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to load keys from database: {}", err))?;
+            // Only meaningful while unsealed; a sealed vault has nothing it can
+            // decrypt yet and warm-loads when it is opened instead.
+            if seal.is_unsealed().await {
+                store
+                    .load_from_db()
+                    .await
+                    .map_err(|err| anyhow::anyhow!("Failed to load keys from database: {}", err))?;
+            }
 
             store
         }
-        _ => {
-            // DATABASE_URL is absent or empty — fall back to ephemeral mode.
-            // This branch preserves full backward compatibility.
+        None => {
             warn!("DATABASE_URL is not set — KekStore running in ephemeral mode (keys lost on restart)");
-
-            KekStore::with_root_kek_ephemeral(root_kek)
+            KekStore::with_seal_ephemeral(seal.clone())
         }
     };
 
@@ -163,7 +204,13 @@ async fn run_service() -> Result<(), anyhow::Error> {
         http_addr: ([0, 0, 0, 0], 8080).into(),
     };
 
-    run(kek_store, server_config).await
+    let sys_state = std::sync::Arc::new(sys::SysState {
+        seal: seal.clone(),
+        pool: db_pool.clone(),
+        kek_store: kek_store.clone(),
+    });
+
+    run(kek_store, sys_state, server_config).await
 }
 
 /// Initialise a tracing subscriber that emits structured JSON logs.
