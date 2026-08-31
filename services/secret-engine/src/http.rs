@@ -26,7 +26,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, instrument};
+use tracing::{error, info, instrument, warn};
 
 use crate::audit_client::AuditClient;
 use crate::grpc::crypto_proto;
@@ -309,11 +309,32 @@ pub async fn get_secret(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -523,11 +544,32 @@ pub async fn put_secret(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -746,11 +788,32 @@ pub async fn delete_secret(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -861,11 +924,32 @@ pub async fn destroy_secret(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -973,11 +1057,32 @@ pub async fn get_metadata(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -1090,11 +1195,32 @@ pub async fn list_secrets(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let prefix = match query.prefix {
@@ -1227,11 +1353,32 @@ pub async fn initiate_rotation(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -1390,11 +1537,32 @@ pub async fn confirm_rotation(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -1475,11 +1643,32 @@ pub async fn rollback_secret(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {
@@ -1570,11 +1759,32 @@ pub async fn list_versions(
         tenant_id,
         principal_id,
         policies,
+        superuser,
         ..
     } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
+    // A superuser may name the tenant it is acting on; everyone else operates
+    // on their own. `crossed` is true only when a superuser reached outside
+    // their home tenant, which is audited below rather than passing as routine.
+    let (tenant_id, crossed_tenant) = wslvault_core::auth::act_as_tenant(
+        &wslvault_core::auth::Identity {
+            tenant_id: tenant_id.clone(),
+            principal_id: principal_id.clone(),
+            policies: policies.clone(),
+            expires_at: None,
+            superuser,
+        },
+        &headers,
+    );
+    if crossed_tenant {
+        warn!(
+            principal_id = %principal_id,
+            acting_on = %tenant_id,
+            "SUPERUSER acting on another tenant"
+        );
+    }
     let client_ip = extract_client_ip(&headers);
 
     let normalized_path = match normalize_and_validate(&path) {

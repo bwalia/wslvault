@@ -312,6 +312,29 @@ fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
     .map_err(|e| AuthFailure(format!("invalid token: {e}")))
 }
 
+/// Header a superuser uses to name the tenant it is acting on.
+///
+/// Only honoured for an identity whose *signed* token carries `superuser`.
+/// For everyone else it is ignored entirely, so it is not a way to change
+/// tenants — it is a way for someone already authorised across all of them to
+/// say which one they mean.
+pub const ACT_AS_TENANT_HEADER: &str = "x-vault-act-tenant";
+
+/// Apply the superuser's choice of acting tenant, if they made one.
+///
+/// Returns the tenant actually operated on, and whether it differed from the
+/// superuser's home tenant — callers use that to audit the crossing rather than
+/// letting it pass as an ordinary request.
+pub fn act_as_tenant(identity: &Identity, headers: &HeaderMap) -> (String, bool) {
+    if !identity.superuser {
+        return (identity.tenant_id.clone(), false);
+    }
+    match header_value(headers, ACT_AS_TENANT_HEADER) {
+        Some(t) if t != identity.tenant_id => (t.to_string(), true),
+        _ => (identity.tenant_id.clone(), false),
+    }
+}
+
 /// Resolve the calling identity. See the module docs for the precedence order.
 ///
 /// This is the only sanctioned source of a tenant id, principal id or policy
@@ -587,5 +610,81 @@ mod tests {
             vec!["read-only"],
             "policies must come from the token, not the X-Policies header"
         );
+    }
+
+    // ── Superuser ────────────────────────────────────────────────────────────
+
+    fn identity(superuser: bool) -> Identity {
+        Identity {
+            tenant_id: "home-tenant".into(),
+            principal_id: "p".into(),
+            policies: vec![],
+            expires_at: None,
+            superuser,
+        }
+    }
+
+    /// The header is inert for an ordinary caller. If it were not, it would be
+    /// a one-header tenant switch — exactly the class of bug the authenticated
+    /// identity path exists to close.
+    #[test]
+    fn act_as_tenant_is_ignored_for_a_non_superuser() {
+        let h = headers(&[(ACT_AS_TENANT_HEADER, "victim-tenant")]);
+        let (tenant, crossed) = act_as_tenant(&identity(false), &h);
+        assert_eq!(tenant, "home-tenant");
+        assert!(!crossed);
+    }
+
+    #[test]
+    fn a_superuser_may_name_another_tenant() {
+        let h = headers(&[(ACT_AS_TENANT_HEADER, "other-tenant")]);
+        let (tenant, crossed) = act_as_tenant(&identity(true), &h);
+        assert_eq!(tenant, "other-tenant");
+        assert!(crossed, "crossing tenants must be reported for audit");
+    }
+
+    #[test]
+    fn a_superuser_without_the_header_stays_home() {
+        let (tenant, crossed) = act_as_tenant(&identity(true), &HeaderMap::new());
+        assert_eq!(tenant, "home-tenant");
+        assert!(!crossed);
+    }
+
+    /// Naming your own tenant is not a crossing, and must not be audited as one
+    /// — a log that cries wolf on every superuser request is a log nobody reads.
+    #[test]
+    fn naming_the_home_tenant_is_not_a_crossing() {
+        let h = headers(&[(ACT_AS_TENANT_HEADER, "home-tenant")]);
+        let (tenant, crossed) = act_as_tenant(&identity(true), &h);
+        assert_eq!(tenant, "home-tenant");
+        assert!(!crossed);
+    }
+
+    /// The superuser flag must never be derivable from a request. This pins
+    /// that: the header contract, even when trusted, cannot produce one.
+    #[test]
+    fn the_gateway_contract_cannot_produce_a_superuser() {
+        let _trust = TrustHeaders::on();
+        for h in [
+            headers(&[("x-tenant-id", "t"), ("x-superuser", "true")]),
+            headers(&[("x-vault-tenant-id", "t"), ("x-policies", "root")]),
+        ] {
+            let id = futures_lite_block_on(resolve_identity(&h));
+            if let Ok(id) = id {
+                assert!(
+                    !id.superuser,
+                    "no header combination may confer cross-tenant authority"
+                );
+            }
+        }
+    }
+
+    /// Minimal block_on so the test above does not need a runtime attribute
+    /// while the surrounding module mixes sync and async tests.
+    fn futures_lite_block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime")
+            .block_on(f)
     }
 }

@@ -192,6 +192,10 @@ pub struct ApiKeyRecord {
     /// `None` means the key never expires.
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Cross-tenant access. See [`ApiKeyCreateRequest::is_superuser`].
+    pub is_superuser: bool,
+    /// Whether a TOTP code is required to exchange this key.
+    pub mfa_required: bool,
     /// `None` means the key is active; `Some(_)` means it has been revoked.
     pub revoked_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
@@ -230,6 +234,21 @@ pub struct ApiKeyCreateRequest {
     pub expires_in_seconds: Option<i64>,
     /// Maximum requests per minute; defaults to 60.
     pub rate_limit_per_minute: Option<i32>,
+    /// Grant cross-tenant access.
+    ///
+    /// A superuser is a deliberate hole in the isolation this system otherwise
+    /// enforces, so it is narrow and loud: MFA is forced on (the schema
+    /// enforces that too), tokens are signed by the system key rather than any
+    /// tenant's, and every use is audited with the acting tenant recorded.
+    #[serde(default)]
+    pub is_superuser: bool,
+    /// Require a TOTP code when exchanging this key for a token.
+    ///
+    /// Default false so machine keys — the External Secrets Operator, CI, the
+    /// SDKs — keep working; a service account cannot read an authenticator app.
+    /// Forced true for superuser keys.
+    #[serde(default)]
+    pub mfa_required: bool,
 }
 
 #[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
@@ -242,6 +261,10 @@ pub struct ApiKeyValidationResult {
     #[allow(dead_code)]
     pub path_prefixes: Vec<String>,
     pub rate_limit_per_minute: i32,
+    /// Whether this key grants cross-tenant access.
+    pub is_superuser: bool,
+    /// Whether a TOTP code is required before a token is issued.
+    pub mfa_required: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +422,10 @@ impl ApiKeyManager {
             last_used_at: None,
             revoked_at: None,
             rate_limit_per_minute: req.rate_limit_per_minute.unwrap_or(60),
+            is_superuser: req.is_superuser,
+            // Superuser implies MFA. Enforced here and in the schema, so
+            // neither a caller nor a future code path can skip it by omission.
+            mfa_required: req.mfa_required || req.is_superuser,
         };
 
         (raw_key, record)
@@ -452,6 +479,8 @@ impl ApiKeyManager {
                     path_prefixes: req.path_prefixes.clone(),
                     expires_in_seconds: req.expires_in_seconds,
                     rate_limit_per_minute: req.rate_limit_per_minute,
+                    is_superuser: req.is_superuser,
+                    mfa_required: req.mfa_required,
                 };
                 let (raw_key, record) = Self::mint(&canonical, &name, created_by);
 
@@ -469,6 +498,8 @@ impl ApiKeyManager {
                     last_used_at: None,
                     revoked_at: None,
                     rate_limit_per_minute: record.rate_limit_per_minute,
+                    is_superuser: record.is_superuser,
+                    mfa_required: record.mfa_required,
                 };
 
                 api_key_store::insert(pool, &row)
@@ -591,6 +622,8 @@ impl ApiKeyManager {
                     policies: row.policies,
                     path_prefixes: row.path_prefixes,
                     rate_limit_per_minute: row.rate_limit_per_minute,
+                    is_superuser: row.is_superuser,
+                    mfa_required: row.mfa_required,
                 })
             }
 
@@ -627,6 +660,8 @@ impl ApiKeyManager {
                     policies: record.policies.clone(),
                     path_prefixes: record.path_prefixes.clone(),
                     rate_limit_per_minute: record.rate_limit_per_minute,
+                    is_superuser: record.is_superuser,
+                    mfa_required: record.mfa_required,
                 })
             }
         }
@@ -748,55 +783,66 @@ impl ApiKeyManager {
         tenant_id: &str,
     ) -> Result<ApiKeyCreateResponse, ApiKeyError> {
         // Capture the old record's configuration before revoking it.
-        let (old_name, old_policies, old_path_prefixes, old_rate_limit, old_created_by) =
-            match &self.backend {
-                Backend::Database(pool) => {
-                    let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
-                        .await
-                        .map_err(store_err)?;
+        let (
+            old_name,
+            old_policies,
+            old_path_prefixes,
+            old_rate_limit,
+            old_created_by,
+            old_is_superuser,
+            old_mfa_required,
+        ) = match &self.backend {
+            Backend::Database(pool) => {
+                let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
+                    .await
+                    .map_err(store_err)?;
 
-                    let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
-                        .await
-                        .map_err(store_err)?
-                        .ok_or(ApiKeyError::KeyNotFound)?;
+                let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                    .await
+                    .map_err(store_err)?
+                    .ok_or(ApiKeyError::KeyNotFound)?;
 
-                    (
-                        row.name,
-                        row.policies,
-                        row.path_prefixes,
-                        row.rate_limit_per_minute,
-                        row.created_by,
-                    )
+                (
+                    row.name,
+                    row.policies,
+                    row.path_prefixes,
+                    row.rate_limit_per_minute,
+                    row.created_by,
+                    row.is_superuser,
+                    row.mfa_required,
+                )
+            }
+
+            Backend::Memory {
+                by_hash,
+                id_to_hash,
+            } => {
+                let hash = {
+                    let id_to_hash = id_to_hash.read().await;
+                    id_to_hash
+                        .get(&key_id)
+                        .ok_or(ApiKeyError::KeyNotFound)?
+                        .clone()
+                };
+
+                let by_hash = by_hash.read().await;
+                let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+                if record.tenant_id != tenant_id {
+                    return Err(ApiKeyError::KeyNotFound);
                 }
 
-                Backend::Memory {
-                    by_hash,
-                    id_to_hash,
-                } => {
-                    let hash = {
-                        let id_to_hash = id_to_hash.read().await;
-                        id_to_hash
-                            .get(&key_id)
-                            .ok_or(ApiKeyError::KeyNotFound)?
-                            .clone()
-                    };
-
-                    let by_hash = by_hash.read().await;
-                    let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
-
-                    if record.tenant_id != tenant_id {
-                        return Err(ApiKeyError::KeyNotFound);
-                    }
-
-                    (
-                        record.name.clone(),
-                        record.policies.clone(),
-                        record.path_prefixes.clone(),
-                        record.rate_limit_per_minute,
-                        record.created_by.clone(),
-                    )
-                }
-            };
+                (
+                    record.name.clone(),
+                    record.policies.clone(),
+                    record.path_prefixes.clone(),
+                    record.rate_limit_per_minute,
+                    record.created_by.clone(),
+                    record.is_superuser,
+                    record.mfa_required,
+                )
+            }
+        };
 
         // Revoke the old key first so the name frees up for the replacement.
         self.revoke_key(key_id, tenant_id).await?;
@@ -812,6 +858,11 @@ impl ApiKeyManager {
             // The new key inherits no expiry from the old one; callers that
             // want expiry should set it on the create request directly.
             expires_in_seconds: None,
+            // Rotation replaces a key, it does not re-grade it. Dropping these
+            // would silently demote a superuser key — or worse, quietly turn
+            // MFA off — on what an operator thinks is a routine rotation.
+            is_superuser: old_is_superuser,
+            mfa_required: old_mfa_required,
         };
 
         let response = self.create_key(new_req, &old_created_by).await?;
@@ -843,6 +894,8 @@ fn record_from_row(row: api_key_store::ApiKeyRow) -> ApiKeyRecord {
         policies: row.policies,
         created_by: row.created_by,
         created_at: row.created_at,
+        is_superuser: row.is_superuser,
+        mfa_required: row.mfa_required,
         expires_at: row.expires_at,
         last_used_at: row.last_used_at,
         revoked_at: row.revoked_at,
@@ -1410,7 +1463,7 @@ pub async fn handle_auth_api_key(
         &subject,
         &validation_result.tenant_id,
         validation_result.policies.clone(),
-        false,
+        validation_result.is_superuser,
     )
     .await
     {
@@ -1421,9 +1474,21 @@ pub async fn handle_auth_api_key(
         }
     };
 
+    if validation_result.is_superuser {
+        // A superuser token authorises across every tenant. It is the
+        // highest-value credential in the system, so its issuance is never a
+        // routine log line.
+        warn!(
+            key_id = %validation_result.key_id,
+            home_tenant = %validation_result.tenant_id,
+            "SUPERUSER token issued — this credential grants cross-tenant access"
+        );
+    }
+
     info!(
         key_id = %validation_result.key_id,
         tenant_id = %validation_result.tenant_id,
+        superuser = validation_result.is_superuser,
         "api key exchanged for jwt"
     );
 
@@ -1607,6 +1672,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let response = mgr.create_key(req, "operator").await.unwrap();
 
@@ -1627,6 +1694,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         mgr.create_key(make_req(), "op").await.unwrap();
         let err = mgr.create_key(make_req(), "op").await.unwrap_err();
@@ -1643,6 +1712,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let req2 = ApiKeyCreateRequest {
             name: "deploy-key".into(),
@@ -1651,6 +1722,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         assert!(mgr.create_key(req1, "op").await.is_ok());
         assert!(mgr.create_key(req2, "op").await.is_ok());
@@ -1670,6 +1743,8 @@ mod tests {
             path_prefixes: Some(vec!["secret/data/".into()]),
             expires_in_seconds: None,
             rate_limit_per_minute: Some(120),
+            is_superuser: false,
+            mfa_required: false,
         };
         let create_resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1700,6 +1775,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
         mgr.revoke_key(resp.id, "tenant-r").await.unwrap();
@@ -1719,6 +1796,8 @@ mod tests {
             // Negative TTL: the key is created already-expired.
             expires_in_seconds: Some(-1),
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1747,6 +1826,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1775,6 +1856,8 @@ mod tests {
                 path_prefixes: None,
                 expires_in_seconds: None,
                 rate_limit_per_minute: None,
+                is_superuser: false,
+                mfa_required: false,
             };
             mgr.create_key(req, "op").await.unwrap();
         }
@@ -1785,6 +1868,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp_b = mgr.create_key(req_b, "op").await.unwrap();
 
@@ -1814,6 +1899,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         mgr.create_key(req, "op").await.unwrap();
 
@@ -1839,6 +1926,8 @@ mod tests {
             path_prefixes: Some(vec!["secret/".into()]),
             expires_in_seconds: None,
             rate_limit_per_minute: Some(30),
+            is_superuser: false,
+            mfa_required: false,
         };
         let old_resp = mgr.create_key(req, "op").await.unwrap();
         let old_id = old_resp.id;
@@ -1910,6 +1999,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let create_resp = state.manager.create_key(req, "op").await.unwrap();
 
@@ -2173,6 +2264,8 @@ mod tests {
                     path_prefixes: None,
                     expires_in_seconds: None,
                     rate_limit_per_minute: None,
+                    is_superuser: false,
+                    mfa_required: false,
                 },
                 "op",
             )
