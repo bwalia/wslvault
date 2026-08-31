@@ -193,10 +193,28 @@ pub async fn list_active_keys_with_wrapped_key(
     pool: &DbPool,
     purpose: &KeyPurpose,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    list_loadable_keys_with_wrapped_key(pool, purpose).await
+}
+
+/// Every key version the service must be able to *decrypt* with, not merely
+/// the current one.
+///
+/// `rotating_out` is included deliberately. Loading only `active` rows was one
+/// half of the reason a DEK rotation destroyed data: `rotate_dek` overwrote the
+/// in-memory key and the superseded version — still present in the database,
+/// still needed by every ciphertext written before the rotation — was never
+/// read back. Ordering is version ASC so callers can build a newest-last chain.
+///
+/// `retired` and `destroyed` are excluded: those states are the deliberate
+/// end of a key's life, and an operator who set them meant it.
+pub async fn list_loadable_keys_with_wrapped_key(
+    pool: &DbPool,
+    purpose: &KeyPurpose,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
         "SELECT id, tenant_id, version, wrapped_key
          FROM system.key_descriptors
-         WHERE purpose = $1 AND state = 'active'
+         WHERE purpose = $1 AND state IN ('active', 'rotating_out')
          ORDER BY version ASC",
     )
     .bind(purpose_str(purpose))
