@@ -36,20 +36,53 @@ impl KubernetesConnector {
         namespace: String,
         token: String,
         label_selector: Option<String>,
-    ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .danger_accept_invalid_certs(true) // K8s in-cluster CA handled separately
-            .build()
-            .expect("failed to build reqwest client");
+    ) -> Result<Self, ConnectorError> {
+        Self::with_ca(api_server, namespace, token, label_selector, None)
+    }
 
-        Self {
+    /// Create a connector that trusts `ca_pem` in addition to the system roots.
+    ///
+    /// Certificate verification used to be switched off outright:
+    ///
+    ///     .danger_accept_invalid_certs(true) // K8s in-cluster CA handled separately
+    ///
+    /// It was not handled separately — nothing anywhere loaded the cluster CA —
+    /// so every secret this connector synchronised was exposed to a trivial
+    /// man-in-the-middle, which is a poor trade for a connector whose entire
+    /// job is moving secrets.
+    ///
+    /// In-cluster callers get the CA from the service account mount via
+    /// [`from_in_cluster`]. Out-of-cluster callers may supply one with
+    /// `K8S_CA_CERT_PATH`.
+    pub fn with_ca(
+        api_server: String,
+        namespace: String,
+        token: String,
+        label_selector: Option<String>,
+        ca_pem: Option<Vec<u8>>,
+    ) -> Result<Self, ConnectorError> {
+        let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
+
+        if let Some(pem) = ca_pem {
+            let cert = reqwest::Certificate::from_pem(&pem).map_err(|e| {
+                ConnectorError::Configuration {
+                    reason: format!("Kubernetes CA certificate is not valid PEM: {e}"),
+                }
+            })?;
+            builder = builder.add_root_certificate(cert);
+        }
+
+        let client = builder.build().map_err(|e| ConnectorError::Configuration {
+            reason: format!("failed to build HTTP client: {e}"),
+        })?;
+
+        Ok(Self {
             client,
             api_server,
             namespace,
             token,
             label_selector,
-        }
+        })
     }
 
     /// Create from in-cluster service account environment.
@@ -77,12 +110,27 @@ impl KubernetesConnector {
 
         let label_selector = std::env::var("K8S_LABEL_SELECTOR").ok();
 
-        Ok(Self::new(
+        // The API server's CA is mounted into every pod alongside the token.
+        // This is the "handled separately" the old comment promised and never
+        // delivered.
+        const IN_CLUSTER_CA: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+        let ca_path =
+            std::env::var("K8S_CA_CERT_PATH").unwrap_or_else(|_| IN_CLUSTER_CA.to_string());
+        let ca_pem = std::fs::read(&ca_path).map_err(|e| ConnectorError::Configuration {
+            reason: format!(
+                "could not read the Kubernetes CA at {ca_path}: {e}. \
+                 Set K8S_CA_CERT_PATH when running out-of-cluster; \
+                 refusing to fall back to unverified TLS"
+            ),
+        })?;
+
+        Self::with_ca(
             api_server,
             namespace,
             token.trim().to_string(),
             label_selector,
-        ))
+            Some(ca_pem),
+        )
     }
 
     fn secrets_url(&self) -> String {
