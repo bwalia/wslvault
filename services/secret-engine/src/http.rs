@@ -18,8 +18,9 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode},
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -32,7 +33,7 @@ use crate::grpc::crypto_proto;
 use crate::kv_store::SecretStoreBackend;
 use crate::lease_client::LeaseClient;
 use crate::path::normalize_and_validate;
-use crate::policy_client::{extract_policies, extract_principal_id, PolicyClient};
+use crate::policy_client::PolicyClient;
 
 use wslvault_core::metrics::collector::{SECRETS_MANAGED, SECRET_OPERATIONS_TOTAL};
 use wslvault_core::VaultError;
@@ -89,29 +90,70 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
         .to_string()
 }
 
-/// Extract the required tenant header from an incoming request.
+/// Reject unauthenticated requests **before** any extractor runs.
 ///
-/// Accepts BOTH spellings on purpose. `gateway/lua/auth/token_auth.lua` injects
-/// `X-Vault-Tenant-ID` on a token-cache hit, while this service historically
-/// only read `x-tenant-id` — so a cache hit produced a request the engine then
-/// rejected with `400 missing_header`. Honouring both closes that gap.
-fn extract_tenant_id(headers: &HeaderMap) -> Result<String, Response> {
-    headers
-        .get("x-tenant-id")
-        .or_else(|| headers.get("x-vault-tenant-id"))
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
+/// Handler-level authentication is not sufficient on its own. Axum runs every
+/// extractor in the handler signature first, so a request with a malformed body
+/// was answered `422 Unprocessable Entity` — with the expected schema — without
+/// ever reaching the handler's own auth check. That both leaks the request shape
+/// to an anonymous caller and makes the guarantee depend on each handler
+/// remembering to ask.
+///
+/// As a layer it holds for every route on the router, including any added
+/// later, and it runs before body parsing.
+async fn require_authenticated(request: Request, next: Next) -> Response {
+    if let Err(reason) = wslvault_core::auth::resolve_identity(request.headers()) {
+        // The KV v2 mount speaks Vault's error shape; Vault clients (notably
+        // the External Secrets Operator) parse it. The native mount speaks
+        // this service's own.
+        let path = request.uri().path();
+        return if path.starts_with("/v1/kv/") {
             (
-                StatusCode::BAD_REQUEST,
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "errors": [reason.to_string()] })),
+            )
+                .into_response()
+        } else {
+            (
+                StatusCode::UNAUTHORIZED,
                 Json(ApiError {
-                    code: "missing_header",
-                    message: "X-Tenant-Id header is required".into(),
+                    code: "unauthenticated",
+                    message: reason.to_string(),
                 }),
             )
                 .into_response()
-        })
+        };
+    }
+    next.run(request).await
+}
+
+/// Authenticate the caller and return their verified identity.
+///
+/// This replaces the previous `extract_tenant_id` / `extract_principal_id` /
+/// `extract_policies` trio, which read `X-Tenant-Id`, `X-Principal-Id` and
+/// `X-Policies` straight off the request. Those headers are attacker-controlled:
+/// any caller who could reach this service could name a tenant and a policy set
+/// and be believed, which meant reading or writing any tenant's secrets with no
+/// credential at all. The gateway that was supposed to overwrite them does not
+/// scrub them, is not configured by the Helm chart, and is not deployed in the
+/// live regions.
+///
+/// Identity now comes from [`wslvault_core::auth::resolve_identity`] — the same
+/// verified path the KV v2 mount uses — so a tenant and its policies can only
+/// come from a signed token, or from the gateway contract when an operator has
+/// explicitly opted in via `VAULT_TRUST_GATEWAY_HEADERS`.
+#[allow(clippy::result_large_err)]
+fn authenticate(headers: &HeaderMap) -> Result<wslvault_core::auth::Identity, Response> {
+    wslvault_core::auth::resolve_identity(headers).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError {
+                code: "unauthenticated",
+                message: e.to_string(),
+            }),
+        )
+            .into_response()
+    })
 }
 
 // ─── Request / response bodies ────────────────────────────────────────────────
@@ -257,8 +299,13 @@ pub async fn get_secret(
     Path(path): Path<String>,
     Query(query): Query<VersionQuery>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -273,8 +320,6 @@ pub async fn get_secret(
     info!("http get_secret");
 
     // Authorize the read operation before touching the store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -470,8 +515,13 @@ pub async fn put_secret(
     Path(path): Path<String>,
     Json(body): Json<PutSecretBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -486,8 +536,6 @@ pub async fn put_secret(
     info!("http put_secret");
 
     // Authorize the write operation before touching the crypto-service or store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -692,8 +740,13 @@ pub async fn delete_secret(
     Path(path): Path<String>,
     Json(body): Json<DeleteVersionsBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -708,8 +761,6 @@ pub async fn delete_secret(
     info!("http delete_secret");
 
     // Authorize the delete operation before touching the store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -804,8 +855,13 @@ pub async fn destroy_secret(
     Path(path): Path<String>,
     Json(body): Json<DeleteVersionsBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -820,8 +876,6 @@ pub async fn destroy_secret(
     info!("http destroy_secret");
 
     // Authorize the destroy operation before touching the store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -913,8 +967,13 @@ pub async fn get_metadata(
     headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -929,8 +988,6 @@ pub async fn get_metadata(
     info!("http get_metadata");
 
     // Authorize the metadata read before touching the store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/metadata/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -1027,8 +1084,13 @@ pub async fn list_secrets(
     headers: HeaderMap,
     Query(query): Query<ListQuery>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -1046,8 +1108,6 @@ pub async fn list_secrets(
     info!("http list_secrets");
 
     // Authorize the list operation before touching the store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     if let Err(e) = state
         .policy_client
         .authorize(&tenant_id, &principal_id, &policies, "list", "secret/list")
@@ -1161,8 +1221,13 @@ pub async fn initiate_rotation(
     Path(path): Path<String>,
     Json(body): Json<InitiateRotationBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -1176,8 +1241,6 @@ pub async fn initiate_rotation(
     tracing::Span::current().record("tenant_id", &tenant_id.as_str());
     info!("http initiate_rotation");
 
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -1323,8 +1386,13 @@ pub async fn confirm_rotation(
     Path(path): Path<String>,
     Json(body): Json<ConfirmRotationBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -1334,8 +1402,6 @@ pub async fn confirm_rotation(
         Err(e) => return vault_err_to_response(e),
     };
 
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -1405,8 +1471,13 @@ pub async fn rollback_secret(
     Path(path): Path<String>,
     Json(body): Json<RollbackBody>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -1416,8 +1487,6 @@ pub async fn rollback_secret(
         Err(e) => return vault_err_to_response(e),
     };
 
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     // Rollback requires power_admin policy.
     let resource = format!("secret/data/{}", normalized_path);
     if let Err(e) = state
@@ -1497,8 +1566,13 @@ pub async fn list_versions(
     headers: HeaderMap,
     Path(path): Path<String>,
 ) -> Response {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
+    let wslvault_core::auth::Identity {
+        tenant_id,
+        principal_id,
+        policies,
+        ..
+    } = match authenticate(&headers) {
+        Ok(i) => i,
         Err(r) => return r,
     };
     let client_ip = extract_client_ip(&headers);
@@ -1508,8 +1582,6 @@ pub async fn list_versions(
         Err(e) => return vault_err_to_response(e),
     };
 
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("secret/metadata/{}", normalized_path);
     if let Err(e) = state
         .policy_client
@@ -1621,8 +1693,12 @@ pub fn build_router(
         // so it inherits exactly the same origin protection as the native API.
         .merge(crate::kv2::routes())
         .with_state(app_state)
-        // Only honor tenant-identity headers on requests proven to originate
-        // from the gateway (via the shared X-Gateway-Auth secret).
+        // Authentication first: no request reaches a handler — or even a body
+        // extractor — without a resolvable identity.
+        .layer(axum::middleware::from_fn(require_authenticated))
+        // Defence in depth on top of that. Note this check is DISABLED when
+        // VAULT_GATEWAY_SECRET is unset, which is the case in every
+        // chart-rendered deployment today, so it must never be the only guard.
         .layer(axum::middleware::from_fn_with_state(
             wslvault_core::middleware::GatewayAuth::from_env(),
             wslvault_core::middleware::require_gateway_auth,
@@ -1644,4 +1720,173 @@ fn base64_encode(data: &[u8]) -> String {
 fn base64_decode(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.decode(s)
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+// ENV_LOCK is deliberately held across `.await`: it serialises mutation of the
+// process-wide VAULT_TRUST_GATEWAY_HEADERS var for the whole body of each test,
+// which is exactly the window the awaited request reads it in. An async mutex
+// would not help — these tests must exclude each other, not yield. Same
+// reasoning and same allow as crypto-service/src/root_key.rs.
+#[allow(clippy::await_holding_lock)]
+mod auth_tests {
+    //! Router-level proof that the native `/v1/secret/*` mount cannot be
+    //! reached without a credential.
+    //!
+    //! These exercise the real router — the same `build_router` the binary
+    //! serves — rather than the extractor in isolation, because the defect
+    //! being pinned was precisely that the router had no authenticating layer
+    //! and each handler trusted whatever headers arrived.
+
+    use super::*;
+    use crate::audit_client::AuditClient;
+    use crate::kv_store::KvStore;
+    use crate::lease_client::LeaseClient;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// `VAULT_TRUST_GATEWAY_HEADERS` is process-global; serialise the tests
+    /// that depend on its value.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn test_router() -> Router {
+        build_router(
+            KvStore::new(),
+            "http://127.0.0.1:1".to_string(),
+            AuditClient::new("http://127.0.0.1:1".to_string()),
+            PolicyClient::new("http://127.0.0.1:1".to_string()),
+            LeaseClient::new("http://127.0.0.1:1".to_string()),
+        )
+    }
+
+    async fn status_for(req: Request<Body>) -> StatusCode {
+        test_router()
+            .oneshot(req)
+            .await
+            .expect("router should respond")
+            .status()
+    }
+
+    fn get(uri: &str, headers: &[(&str, &str)]) -> Request<Body> {
+        let mut b = Request::builder().uri(uri).method("GET");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(Body::empty()).unwrap()
+    }
+
+    /// The exploit this whole change exists to close: no credential at all,
+    /// just an asserted tenant and an asserted policy set.
+    #[tokio::test]
+    async fn forged_identity_headers_are_rejected() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+
+        let status = status_for(get(
+            "/v1/secret/data/prod/db",
+            &[("x-tenant-id", "victim-tenant"), ("x-policies", "admin")],
+        ))
+        .await;
+
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "asserting a tenant and a policy set must not authenticate"
+        );
+    }
+
+    /// The `X-Vault-*` spelling is the same assertion in different clothes.
+    #[tokio::test]
+    async fn forged_vault_spelling_headers_are_rejected() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+
+        let status = status_for(get(
+            "/v1/secret/data/prod/db",
+            &[
+                ("x-vault-tenant-id", "victim-tenant"),
+                ("x-vault-policies", "admin"),
+            ],
+        ))
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    /// No headers at all is likewise 401, not 400 "missing header".
+    #[tokio::test]
+    async fn unauthenticated_request_is_rejected() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+
+        assert_eq!(
+            status_for(get("/v1/secret/data/prod/db", &[])).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// Every mutating route is covered too — a write or a destroy must not be
+    /// reachable on forged headers either.
+    #[tokio::test]
+    async fn every_native_route_requires_authentication() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+
+        let forged = [("x-tenant-id", "victim"), ("x-policies", "admin")];
+
+        for (method, uri) in [
+            ("GET", "/v1/secret/data/a/b"),
+            ("POST", "/v1/secret/data/a/b"),
+            ("POST", "/v1/secret/delete/a/b"),
+            ("POST", "/v1/secret/destroy/a/b"),
+            ("GET", "/v1/secret/metadata/a/b"),
+            ("GET", "/v1/secret/list"),
+            ("POST", "/v1/secret/rotate/a/b"),
+            ("POST", "/v1/secret/confirm/a/b"),
+            ("POST", "/v1/secret/rollback/a/b"),
+            ("GET", "/v1/secret/versions/a/b"),
+        ] {
+            let mut b = Request::builder().uri(uri).method(method);
+            for (k, v) in forged {
+                b = b.header(k, v);
+            }
+            // Mutating routes parse a JSON body; send a valid empty object so a
+            // 401 cannot be confused with a 400/415 from body rejection.
+            let req = b
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+
+            assert_eq!(
+                status_for(req).await,
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must reject forged identity headers"
+            );
+        }
+    }
+
+    /// The gateway contract still works when an operator explicitly opts in,
+    /// so this change does not silently break a correctly-fronted deployment.
+    #[tokio::test]
+    async fn gateway_contract_still_works_when_enabled() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("VAULT_TRUST_GATEWAY_HEADERS", "true");
+
+        let status = status_for(get(
+            "/v1/secret/data/prod/db",
+            &[("x-tenant-id", "acme"), ("x-policies", "reader")],
+        ))
+        .await;
+
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+
+        assert_ne!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "with the flag on, the gateway header contract must still authenticate"
+        );
+    }
 }

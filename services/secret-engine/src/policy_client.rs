@@ -144,10 +144,12 @@ impl PolicyClient {
 
 /// Extract the `X-Principal-Id` header value from an HTTP `HeaderMap`.
 ///
-/// Defaults to `"anonymous"` when the header is absent or contains a
-/// non-UTF-8 value, matching the fail-open convention for identity — the
-/// policy-engine is still consulted and will deny the anonymous principal
-/// unless an explicit allow policy exists.
+/// **Not used by the HTTP handlers any more** — they take the principal from
+/// the verified token via `wslvault_core::auth::resolve_identity`, because
+/// reading it from a header meant the caller chose their own identity. Kept
+/// only for the gateway-contract path and marked so it cannot silently come
+/// back into use on a request path.
+#[allow(dead_code)]
 pub fn extract_principal_id(headers: &axum::http::HeaderMap) -> String {
     // Both spellings: the gateway injects `X-Vault-Principal-ID` on a
     // token-cache hit, this service historically read only `x-principal-id`.
@@ -166,6 +168,10 @@ pub fn extract_principal_id(headers: &axum::http::HeaderMap) -> String {
 /// The header value is expected to be a comma-separated list of policy names,
 /// e.g. `"default,readonly-secrets"`.  Whitespace around each name is trimmed.
 /// Returns an empty `Vec` when the header is absent.
+///
+/// **Not used by the HTTP handlers any more** — see [`extract_principal_id`].
+/// A caller naming their own policy set is a privilege-escalation primitive.
+#[allow(dead_code)]
 pub fn extract_policies(headers: &axum::http::HeaderMap) -> Vec<String> {
     // Both spellings; see extract_principal_id.
     headers

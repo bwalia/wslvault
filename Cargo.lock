@@ -6381,6 +6381,7 @@ dependencies = [
  "criterion",
  "hex",
  "hkdf",
+ "jsonwebtoken",
  "once_cell",
  "prometheus",
  "rand 0.8.5",
