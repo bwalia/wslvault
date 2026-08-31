@@ -114,6 +114,82 @@ curl -sX POST localhost:18082/v1/auth/mfa/totp \
      -d "{\"challenge\":\"$CHALLENGE\",\"code\":\"$(cat-from-your-phone)\"}"
 ```
 
+## The UI
+
+The dashboard needs more than identity-service. Build and start the rest, then
+point the UI at them.
+
+```bash
+docker run --rm -v "$PWD":/w -w /w \
+  -v wslvault-cargo-registry:/usr/local/cargo/registry -v wslvault-target:/w/target \
+  rust:1-bookworm bash -c '
+    apt-get update -qq && apt-get install -y -qq protobuf-compiler
+    cargo build -p secret-engine -p policy-engine -p audit-service -p lease-manager'
+
+DB="postgres://wslvault:devpassword@wv-pg:5432/wslvault"
+JWKS="http://wv-identity:8082/v1/identity/.well-known/jwks.json"
+RUN="docker run -d --network wv-demo -v $PWD:/w -w /w -v wslvault-target:/w/target"
+
+$RUN --name wv-policy -e DATABASE_URL=$DB -e VAULT_JWKS_URL=$JWKS \
+     -e VAULT_HEALTH_ADDR=0.0.0.0:8083 rust:1-bookworm ./target/debug/policy-engine
+
+$RUN --name wv-audit -e DATABASE_URL=$DB \
+     -e AUDIT_SIGNING_KEY="dev-audit-signing-key-at-least-32b!!" \
+     rust:1-bookworm ./target/debug/audit-service
+
+$RUN --name wv-lease -e DATABASE_URL=$DB rust:1-bookworm ./target/debug/lease-manager
+
+$RUN --name wv-secret -e DATABASE_URL=$DB -e VAULT_JWKS_URL=$JWKS \
+     -e CRYPTO_SERVICE_ENDPOINT=http://wv-crypto:50051 \
+     -e POLICY_ENGINE_ENDPOINT=http://wv-policy:50053 \
+     -e AUDIT_SERVICE_ENDPOINT=http://wv-audit:50056 \
+     -e LEASE_MANAGER_ENDPOINT=http://wv-lease:50055 \
+     -e VAULT_HTTP_ADDR=0.0.0.0:8081 rust:1-bookworm ./target/debug/secret-engine
+```
+
+`VAULT_JWKS_URL` is what lets a service verify per-tenant tokens. Without it
+they fall back to the shared HS256 secret and reject every EdDSA token.
+
+Then the UI. It runs on 3011 inside the container; publish it wherever is free:
+
+```bash
+cd ui/apps/vault-ui
+docker run -d --name wv-ui --network wv-demo -v "$PWD":/app -w /app \
+  -e IDENTITY_URL=http://wv-identity:8082 \
+  -e SECRET_URL=http://wv-secret:8081 \
+  -e POLICY_URL=http://wv-policy:8083 \
+  -e AUDIT_URL=http://wv-audit:8085 \
+  -p 3012:3011 node:22-alpine npx next dev --turbopack -p 3011 -H 0.0.0.0
+```
+
+Open **http://localhost:3012**, sign in with the API key, and enter a code from
+your authenticator.
+
+### A tenant needs a policy before it can read anything
+
+A fresh tenant's key carries a policy *name*; nothing grants it yet, so the
+Secrets tile shows `permission denied on secret/list`. That is the policy engine
+working, not a fault. Create the document:
+
+```bash
+curl -sX PUT localhost:3012/api/policy/v1/policies/admin \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"admin","rules":[{"paths":["secret/**","secret/*"],
+       "capabilities":["read","write","list","delete"]}]}'
+```
+
+Policies are scoped to the caller's tenant, so an `admin` policy in one tenant
+grants nothing in another.
+
+### Known gaps in a partial stack
+
+| Tile | Needs |
+|---|---|
+| Secrets | secret-engine **and** a policy granting `list` |
+| Transit | transit-engine (not started above) |
+| Regions, Cluster | region-health |
+| Audit log | The UI calls an HTTP path audit-service does not serve — a pre-existing mismatch, see `docs/UI-API-AUDIT.md` |
+
 ## Generating codes without a phone
 
 Useful in CI and for reproducing a failure. This is plain stdlib and shares no
