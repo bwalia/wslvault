@@ -8,9 +8,10 @@ use std::sync::Arc;
 
 use chrono::DateTime;
 use tonic::{Request, Response, Status};
+use tracing::error;
 use uuid::Uuid;
 
-use crate::integrity::sign_event;
+use crate::integrity::{sign_event, AuditSigner};
 use crate::store::{AuditRecord, AuditStoreBackend};
 use wslvault_core::metrics::collector::{AUDIT_EVENTS_BY_ACTION, AUDIT_EVENTS_TOTAL};
 
@@ -23,29 +24,21 @@ pub mod proto {
     tonic::include_proto!("wslvault.audit.v1");
 }
 
-/// The HMAC signing key used to sign audit records.
-///
-/// In production this would be fetched from the secrets manager per tenant.
-/// For this in-process implementation a static env-provided fallback is used.
-const DEFAULT_SIGNING_KEY: &[u8] = b"wslvault-audit-default-hmac-key-256bits!!";
-
 /// Concrete gRPC service handler.
 #[derive(Clone)]
 pub struct AuditServiceImpl {
     store: Arc<dyn AuditStoreBackend>,
-    /// HMAC-SHA256 signing key (shared across all tenants for this implementation).
-    signing_key: Vec<u8>,
+    /// Derives a distinct HMAC key per tenant from one master secret.
+    ///
+    /// This used to be a single `Vec<u8>` shared across every tenant, with a
+    /// hardcoded fallback committed to this repository, so a deployment that
+    /// had not set `AUDIT_SIGNING_KEY` produced records anyone could forge.
+    signer: AuditSigner,
 }
 
 impl AuditServiceImpl {
-    pub fn new(store: Arc<dyn AuditStoreBackend>) -> Self {
-        // Load the signing key from the environment; fall back to the constant
-        // default if not configured so the service starts without crashing.
-        let signing_key = std::env::var("AUDIT_SIGNING_KEY")
-            .map(|k| k.into_bytes())
-            .unwrap_or_else(|_| DEFAULT_SIGNING_KEY.to_vec());
-
-        Self { store, signing_key }
+    pub fn new(store: Arc<dyn AuditStoreBackend>, signer: AuditSigner) -> Self {
+        Self { store, signer }
     }
 }
 
@@ -86,10 +79,16 @@ impl AuditService for AuditServiceImpl {
             client_ip: req.client_ip,
             signature: String::new(),
             timestamp: chrono::Utc::now(),
+            seq: 0,
+            prev_hash: String::new(),
+            verified: None,
         };
 
-        // Sign the record over all integrity-protected fields.
-        record.signature = sign_event(&record, &self.signing_key);
+        // Sign over the integrity-protected fields. The Postgres backend
+        // re-signs inside its transaction once the chain position is known, so
+        // the signature commits to `seq` and `prev_hash` too; this covers the
+        // in-memory backend and gives the record a signature either way.
+        record.signature = sign_event(&record, &self.signer.key_for(&record.tenant_id));
 
         let event_id = record.id.to_string();
 
@@ -101,7 +100,13 @@ impl AuditService for AuditServiceImpl {
             .with_label_values(&[&record.action, &record.outcome, &record.tenant_id])
             .inc();
 
-        self.store.insert_record(record).await;
+        // Fail the emit if the record cannot be stored. Callers decide what an
+        // unrecorded operation means for them; swallowing it here made that
+        // decision for everyone, always, in the least safe direction.
+        self.store.insert_record(record).await.map_err(|e| {
+            error!(error = %e, "audit record could not be persisted");
+            Status::internal(format!("audit record was not persisted: {e}"))
+        })?;
 
         Ok(Response::new(EmitEventResponse { event_id }))
     }
@@ -147,7 +152,38 @@ impl AuditService for AuditServiceImpl {
                 limit,
                 offset,
             )
-            .await;
+            .await
+            .map_err(|e| {
+                error!(tenant_id = %req.tenant_id, error = %e, "audit query failed");
+                Status::internal(format!("audit query failed: {e}"))
+            })?;
+
+        // Check the tenant's chain for structural damage — sequence gaps, or a
+        // record whose prev_hash does not match its predecessor — every time
+        // the log is read. Per-record signature verification catches edits;
+        // this is what catches deletions and reordering.
+        //
+        // The result is logged rather than returned because the proto response
+        // is a HashiCorp-compatible surface with nowhere to put it. An operator
+        // reading the audit log gets a loud signal in the service log.
+        match self.store.chain_breaks(&req.tenant_id).await {
+            Ok(breaks) if !breaks.is_empty() => {
+                for (at_seq, reason) in &breaks {
+                    error!(
+                        tenant_id = %req.tenant_id,
+                        at_seq,
+                        reason = %reason,
+                        "AUDIT CHAIN BROKEN — records have been removed or reordered"
+                    );
+                }
+            }
+            Ok(_) => {}
+            Err(e) => error!(
+                tenant_id = %req.tenant_id,
+                error = %e,
+                "could not verify the audit chain"
+            ),
+        }
 
         let events: Vec<AuditEventInfo> = records
             .into_iter()
