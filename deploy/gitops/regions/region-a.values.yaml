@@ -9,7 +9,11 @@ global:
   region:
     id: region-a
     displayName: Manchester
-    endpoint: https://vault.workstation.co.uk
+    # The region's OWN stable host, not the shared alias: vault.workstation.co.uk
+    # moves to whichever region takes default traffic on failover, so a region
+    # advertising it as its endpoint misidentifies itself the moment the alias
+    # moves. This matches what region B's roster already calls this region.
+    endpoint: https://vault-a.workstation.co.uk
     # The full roster, identical in every region's file. Each region's chart
     # filters its own entry out when building REPLICATION_PEERS.
     peers: &meshPeers
