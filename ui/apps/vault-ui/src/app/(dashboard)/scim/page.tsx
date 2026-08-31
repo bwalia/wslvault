@@ -114,7 +114,7 @@ function primaryEmail(user: ScimUser): string {
 // ---------------------------------------------------------------------------
 
 function UsersTab() {
-  const { token, tenantId } = useAuth()
+  const { token } = useAuth()
   const fetcher = useFetcher()
 
   const { data, isLoading } = useSWR<ScimListResponse<ScimUser>>(USERS_KEY, fetcher)
@@ -188,7 +188,7 @@ function UsersTab() {
     setSaving(true)
     setFormError('')
     try {
-      await mutate(USERS_KEY, 'POST', buildUserPayload(values), token, tenantId)
+      await mutate(USERS_KEY, 'POST', buildUserPayload(values), token)
       await swrMutate(USERS_KEY)
       setCreateOpen(false)
       form.reset()
@@ -209,7 +209,6 @@ function UsersTab() {
         'PUT',
         { id: editTarget.id, ...buildUserPayload(values) },
         token,
-        tenantId,
       )
       await swrMutate(USERS_KEY)
       setEditTarget(null)
@@ -225,7 +224,7 @@ function UsersTab() {
     setDeleting(true)
     setDeleteError('')
     try {
-      await mutate(`${USERS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
+      await mutate(`${USERS_KEY}/${deleteTarget.id}`, 'DELETE', null, token)
       await swrMutate(USERS_KEY)
       setDeleteTarget(null)
     } catch (err) {
@@ -473,7 +472,7 @@ function UserForm({
 // ---------------------------------------------------------------------------
 
 function GroupsTab() {
-  const { token, tenantId } = useAuth()
+  const { token } = useAuth()
   const fetcher = useFetcher()
 
   const { data, isLoading } = useSWR<ScimListResponse<ScimGroup>>(GROUPS_KEY, fetcher)
@@ -525,7 +524,7 @@ function GroupsTab() {
     setSaving(true)
     setFormError('')
     try {
-      await mutate(GROUPS_KEY, 'POST', buildGroupPayload(values), token, tenantId)
+      await mutate(GROUPS_KEY, 'POST', buildGroupPayload(values), token)
       await swrMutate(GROUPS_KEY)
       setCreateOpen(false)
       form.reset()
@@ -546,7 +545,6 @@ function GroupsTab() {
         'PUT',
         { id: editTarget.id, ...buildGroupPayload(values) },
         token,
-        tenantId,
       )
       await swrMutate(GROUPS_KEY)
       setEditTarget(null)
@@ -562,7 +560,7 @@ function GroupsTab() {
     setDeleting(true)
     setDeleteError('')
     try {
-      await mutate(`${GROUPS_KEY}/${deleteTarget.id}`, 'DELETE', null, token, tenantId)
+      await mutate(`${GROUPS_KEY}/${deleteTarget.id}`, 'DELETE', null, token)
       await swrMutate(GROUPS_KEY)
       setDeleteTarget(null)
     } catch (err) {
