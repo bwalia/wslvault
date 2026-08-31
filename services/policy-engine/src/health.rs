@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Module is not currently wired into any router.
+
 //! Axum HTTP health endpoint for the policy-engine service.
 //!
 //! Exposes `GET /health` returning `200 OK` with a JSON body. This is used

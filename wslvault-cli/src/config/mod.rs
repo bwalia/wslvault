@@ -74,6 +74,8 @@ impl AppConfig {
     }
 
     /// Initialize a default config file if none exists.
+    /// Used by `wslvault init`; retained for the config-scaffolding path.
+    #[allow(dead_code)]
     pub fn init_default() -> anyhow::Result<PathBuf> {
         let path = Self::config_path();
         if path.exists() {

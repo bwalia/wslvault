@@ -55,6 +55,7 @@ impl TokenManager {
     /// the default issuer and audience.
     ///
     /// The secret should be at least 32 bytes of high-entropy random data.
+    #[allow(dead_code)]
     pub fn new(secret: &[u8]) -> Self {
         Self::with_issuer_audience(secret, DEFAULT_ISSUER, DEFAULT_AUDIENCE)
     }

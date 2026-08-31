@@ -32,6 +32,7 @@ use wslvault_core::VaultError;
 /// `TransitKeyStoreBackend` trait instead.
 pub type SharedKeyStore = Arc<RwLock<HashMap<(String, String), TransitKey>>>;
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// A single 32-byte key version.  The `ZeroizeOnDrop` derive ensures the raw
 /// bytes are wiped when the struct is dropped, preventing key material from
 /// lingering in heap memory.
@@ -61,6 +62,7 @@ pub enum KeyAlgorithm {
 }
 
 impl KeyAlgorithm {
+    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             KeyAlgorithm::Aes256Gcm => "aes256-gcm",
@@ -68,6 +70,7 @@ impl KeyAlgorithm {
     }
 }
 
+#[allow(dead_code)] // metadata carried for API responses, not read internally
 /// A named transit key with multiple versions.
 #[derive(Debug, Clone)]
 pub struct TransitKey {
@@ -178,6 +181,7 @@ impl TransitKeyStoreBackend for InMemoryTransitKeyStore {
 /// Prefer constructing an `InMemoryTransitKeyStore` or `PgTransitKeyBackend`
 /// through their respective `new()` functions.  This remains public so that
 /// the `pg_store` module can initialise its internal cache.
+#[allow(dead_code)]
 pub fn new_key_store() -> SharedKeyStore {
     Arc::new(RwLock::new(HashMap::new()))
 }

@@ -76,6 +76,7 @@ const API_KEY_JWT_TTL_SECONDS: i64 = 3600;
 // Error type
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Errors that can be returned by [`ApiKeyManager`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiKeyError {
@@ -95,6 +96,7 @@ pub enum ApiKeyError {
     InvalidKeyFormat,
 
     #[error("rate limit exceeded")]
+    #[allow(dead_code)]
     RateLimitExceeded,
 
     /// Wraps internal JWT-issuance failures surfaced from [`TokenManager`].
@@ -230,12 +232,14 @@ pub struct ApiKeyCreateRequest {
     pub rate_limit_per_minute: Option<i32>,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Successful result of validating a raw API key.
 #[derive(Debug)]
 pub struct ApiKeyValidationResult {
     pub key_id: Uuid,
     pub tenant_id: String,
     pub policies: Vec<String>,
+    #[allow(dead_code)]
     pub path_prefixes: Vec<String>,
     pub rate_limit_per_minute: i32,
 }

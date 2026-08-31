@@ -78,6 +78,7 @@ struct CachedJwks {
     fetched_at: chrono::DateTime<Utc>,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// The result of a successful Azure workload identity authentication.
 #[derive(Debug, Clone)]
 pub struct AzureValidationResult {
@@ -86,6 +87,7 @@ pub struct AzureValidationResult {
     /// Azure AD tenant ID (the `tid` claim).
     pub azure_tenant_id: String,
     /// The `sub` claim (subject).
+    #[allow(dead_code)]
     pub subject: String,
     /// Resolved wslvault tenant_id.
     pub tenant_id: String,
@@ -97,6 +99,7 @@ pub struct AzureValidationResult {
     pub subscription_id: Option<String>,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Errors from Azure workload identity authentication.
 #[derive(Debug, thiserror::Error)]
 pub enum AzureWorkloadError {
@@ -122,6 +125,7 @@ pub enum AzureWorkloadError {
     NoMatchingKey { kid: String },
 
     #[error("cannot resolve wslvault tenant for Azure AD tenant '{azure_tid}'")]
+    #[allow(dead_code)]
     UnmappedTenant { azure_tid: String },
 
     #[error("failed to build HTTP client for Azure: {0}")]

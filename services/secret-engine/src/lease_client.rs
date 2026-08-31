@@ -13,6 +13,7 @@ pub mod lease_proto {
 
 use lease_proto::lease_service_client::LeaseServiceClient;
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Thin gRPC client for the lease-manager `LeaseService`.
 ///
 /// The struct stores only the endpoint URL so each call opens a fresh
@@ -22,6 +23,7 @@ use lease_proto::lease_service_client::LeaseServiceClient;
 #[derive(Debug, Clone)]
 pub struct LeaseClient {
     /// Base URL of the lease-manager gRPC server, e.g. `http://lease-manager:50055`.
+    #[allow(dead_code)]
     endpoint: String,
 }
 
@@ -35,6 +37,7 @@ pub struct LeaseInfo {
     /// Duration of the lease in seconds as agreed with the lease-manager.
     pub ttl_seconds: i64,
     /// Whether the lease can be renewed before it expires.
+    #[allow(dead_code)]
     pub renewable: bool,
 }
 
@@ -82,6 +85,7 @@ impl LeaseClient {
     ///
     /// # Arguments
     /// * `lease_id` — The opaque lease identifier returned at creation time.
+    #[allow(dead_code)]
     pub async fn revoke(&self, lease_id: &str) {
         let endpoint = self.endpoint.clone();
         let lease_id = lease_id.to_string();

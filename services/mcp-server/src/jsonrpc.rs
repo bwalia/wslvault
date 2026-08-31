@@ -38,10 +38,14 @@ pub const PARSE_ERROR: i32 = -32700;
 /// structural violation of the JSON-RPC envelope.
 pub const INVALID_REQUEST: i32 = -32600;
 /// JSON-RPC 2.0 error code: the method name is not recognised.
+/// Part of the spec's error-code set; kept for completeness even where the
+/// dispatcher does not currently emit it.
+#[allow(dead_code)]
 pub const METHOD_NOT_FOUND: i32 = -32601;
 /// JSON-RPC 2.0 error code: required parameters are missing or have the wrong type.
 pub const INVALID_PARAMS: i32 = -32602;
 /// JSON-RPC 2.0 error code: unexpected server-side failure.
+#[allow(dead_code)] // Spec-complete error-code set.
 pub const INTERNAL_ERROR: i32 = -32603;
 
 // ---------------------------------------------------------------------------

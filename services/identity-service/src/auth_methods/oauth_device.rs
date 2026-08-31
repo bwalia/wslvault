@@ -544,6 +544,7 @@ impl DeviceFlowManager {
 #[derive(Debug, Deserialize)]
 pub struct DeviceStartRequest {
     /// Optional override for the provider name (defaults to the configured one).
+    #[allow(dead_code)]
     pub provider: Option<String>,
 }
 

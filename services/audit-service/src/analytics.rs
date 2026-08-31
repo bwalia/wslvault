@@ -1,3 +1,5 @@
+#![allow(dead_code)] // Module is not currently wired into any router.
+
 //! Audit analytics: aggregated views of audit data for dashboards.
 //!
 //! Provides pre-computed summaries of audit events for the metrics dashboard,

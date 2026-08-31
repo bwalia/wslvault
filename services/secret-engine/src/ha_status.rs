@@ -15,6 +15,7 @@ use wslvault_core::ha::health::HaStatus;
 
 /// Response body for the HA status endpoint when HA is disabled.
 #[derive(Debug, Serialize)]
+#[allow(dead_code)] // /v1/sys/ha is not currently routed; see M9 in the audit.
 pub struct HaStatusResponse {
     pub ha_enabled: bool,
     pub status: String,
@@ -25,6 +26,7 @@ pub struct HaStatusResponse {
 }
 
 /// Handler for GET /v1/sys/ha-status when HA is disabled (standalone mode).
+#[allow(dead_code)]
 pub async fn ha_status_standalone() -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -43,6 +45,7 @@ pub async fn ha_status_standalone() -> impl IntoResponse {
 ///
 /// This handler is registered when HA mode is configured. It reads the
 /// shared cluster state and builds a comprehensive health report.
+#[allow(dead_code)]
 pub async fn ha_status_enabled(cluster_state: Arc<SharedClusterState>) -> impl IntoResponse {
     let state = cluster_state.read().await;
     let summary = state.cluster_summary();

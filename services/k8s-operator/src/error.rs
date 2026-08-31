@@ -9,6 +9,7 @@
 
 use thiserror::Error;
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Top-level error type returned by the operator's reconcile loop and helpers.
 #[derive(Debug, Error)]
 pub enum OperatorError {
@@ -56,11 +57,14 @@ pub enum OperatorError {
 
     /// The CRD installation check or application failed.
     #[error("CRD installation error: {0}")]
+    /// Constructed by the CRD bootstrap path, which is currently disabled.
+    #[allow(dead_code)]
     CrdInstall(String),
 
     /// A generic, unclassified error. Used as a catch-all when no more
     /// specific variant applies.
     #[error("operator error: {0}")]
+    #[allow(dead_code)]
     Generic(String),
 }
 
