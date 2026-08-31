@@ -288,6 +288,18 @@ pub struct ApiKeyAuthResponse {
 
 /// Returns true when the HTTP status code represents a transient error that
 /// should be retried with backoff.
+/// Whether a transport-level failure is worth another attempt.
+///
+/// Only connect and timeout failures: those happen before the server has
+/// necessarily acted. A failure mid-response could mean the request was
+/// applied, and retrying it would duplicate the side effect.
+fn is_retryable_transport(err: &VaultClientError) -> bool {
+    match err {
+        VaultClientError::Http(e) => e.is_connect() || e.is_timeout(),
+        _ => false,
+    }
+}
+
 fn is_retryable_status(status: u16) -> bool {
     matches!(status, 408 | 429 | 500 | 502 | 503 | 504)
 }
@@ -738,22 +750,30 @@ impl VaultClient {
                     }
                 }
                 // Network-level errors are also retryable.
-                Err(VaultClientError::Http(ref e)) if e.is_connect() || e.is_timeout() => {
-                    let err = f().await;
-                    if attempt + 1 < max_attempts {
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        delay_ms = (delay_ms * 2).min(10_000);
-                        tracing::warn!(
-                            attempt = attempt + 1,
-                            max_attempts,
-                            "network error, retrying"
-                        );
-                        // Continue loop — we already recorded the error above
-                        // but we want to re-run `f` on the next iteration.
-                        let _ = err;
-                    } else {
-                        return err;
+                //
+                // This arm used to open with `let err = f().await;` — a second,
+                // immediate execution of the request — and then discard its
+                // result with `let _ = err` before looping to run it a third
+                // time. For a non-idempotent call that meant duplicate side
+                // effects: a flapping connection could write a secret, revoke a
+                // lease or issue a certificate up to five times against a
+                // three-attempt budget, and a retry that actually SUCCEEDED had
+                // its response thrown away.
+                //
+                // The error from the failed attempt is already in hand; there is
+                // nothing to re-run to obtain it.
+                Err(err @ VaultClientError::Http(_)) if is_retryable_transport(&err) => {
+                    if attempt + 1 == max_attempts {
+                        return Err(err);
                     }
+                    tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                    delay_ms = (delay_ms * 2).min(10_000);
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        max_attempts,
+                        error = %err,
+                        "network error, retrying"
+                    );
                 }
                 Err(other) => return Err(other),
             }
