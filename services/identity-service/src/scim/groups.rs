@@ -14,7 +14,7 @@ use axum::{
     Json,
 };
 use chrono::Utc;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use super::{
@@ -93,45 +93,96 @@ fn parse_display_name_filter(filter: &str) -> Option<String> {
 ///
 /// No-ops silently if the user principal does not exist or the policy is
 /// already present, so group-member sync is idempotent.
+/// Tenant SCIM-provisioned principals are created under (see `create_user`).
+const SCIM_TENANT: &str = "scim";
+
 fn add_policy_to_principal(state: &ScimState, user_id: &str, policy_name: &str) {
-    // Read the existing principal record and append the policy if absent.
-    // We use list_principals to locate the record across all tenants because
-    // SCIM users are stored under the "scim" tenant by create_user.
-    match state.principals.list_principals("scim") {
-        Ok(records) => {
-            if let Some(record) = records.into_iter().find(|r| r.id == user_id) {
-                if !record.policies.contains(&policy_name.to_string()) {
-                    info!(
-                        user_id = %user_id,
-                        policy = %policy_name,
-                        "SCIM: policy would be added to principal (pending store API)"
-                    );
-                }
-            }
-        }
+    // SCIM users are stored under the "scim" tenant by create_user, so the
+    // record is located by scanning that tenant.
+    let records = match state.principals.list_principals(SCIM_TENANT) {
+        Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "could not list principals during policy sync");
+            return;
         }
+    };
+
+    let Some(record) = records.into_iter().find(|r| r.id == user_id) else {
+        warn!(
+            user_id = %user_id,
+            "SCIM: group member has no matching principal; not granting"
+        );
+        return;
+    };
+
+    if record.policies.iter().any(|p| p == policy_name) {
+        return; // Already granted — group sync is idempotent.
+    }
+
+    let mut merged = record.policies.clone();
+    merged.push(policy_name.to_string());
+
+    match state
+        .principals
+        .update_policies(SCIM_TENANT, user_id, merged)
+    {
+        Ok(()) => info!(
+            user_id = %user_id,
+            policy = %policy_name,
+            "SCIM: policy granted to principal"
+        ),
+        Err(e) => error!(
+            user_id = %user_id,
+            policy = %policy_name,
+            error = %e,
+            "SCIM: FAILED to grant policy — the IdP believes access was granted"
+        ),
     }
 }
 
 /// Removes a policy from a user's `PrincipalRecord`.
 fn remove_policy_from_principal(state: &ScimState, user_id: &str, policy_name: &str) {
-    match state.principals.list_principals("scim") {
-        Ok(records) => {
-            if let Some(record) = records.into_iter().find(|r| r.id == user_id) {
-                if record.policies.contains(&policy_name.to_string()) {
-                    info!(
-                        user_id = %user_id,
-                        policy = %policy_name,
-                        "SCIM: policy would be removed from principal (pending store API)"
-                    );
-                }
-            }
-        }
+    let records = match state.principals.list_principals(SCIM_TENANT) {
+        Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "could not list principals during policy removal");
+            return;
         }
+    };
+
+    let Some(record) = records.into_iter().find(|r| r.id == user_id) else {
+        // Nothing to revoke from. Not an error: the user may already be gone.
+        return;
+    };
+
+    if !record.policies.iter().any(|p| p == policy_name) {
+        return; // Already revoked.
+    }
+
+    let remaining: Vec<String> = record
+        .policies
+        .iter()
+        .filter(|p| p.as_str() != policy_name)
+        .cloned()
+        .collect();
+
+    match state
+        .principals
+        .update_policies(SCIM_TENANT, user_id, remaining)
+    {
+        Ok(()) => info!(
+            user_id = %user_id,
+            policy = %policy_name,
+            "SCIM: policy revoked from principal"
+        ),
+        // Deprovisioning is the direction that matters: the IdP has been told
+        // the user lost access. Log at ERROR so it cannot pass unnoticed.
+        Err(e) => error!(
+            user_id = %user_id,
+            policy = %policy_name,
+            error = %e,
+            "SCIM: FAILED to revoke policy — the user MAY STILL HAVE ACCESS"
+        ),
     }
 }
 
@@ -445,5 +496,103 @@ mod tests {
     fn parse_display_name_filter_empty_returns_none() {
         let result = parse_display_name_filter("");
         assert_eq!(result, None);
+    }
+
+    // ── Group → policy sync actually mutates ─────────────────────────────────
+    //
+    // These pin the defect where `add_policy_to_principal` and
+    // `remove_policy_from_principal` located the record, logged
+    // "(pending store API)" and changed nothing — so an IdP adding or removing
+    // a user from a group was told it succeeded while access never moved.
+
+    use crate::store::{PrincipalRecord, PrincipalStore};
+    use wslvault_core::types::principal::AuthMethod;
+
+    fn state_with_user(policies: &[&str]) -> (ScimState, String) {
+        let principals = PrincipalStore::new();
+        let id = "user-1".to_string();
+        principals
+            .create_principal(PrincipalRecord {
+                id: id.clone(),
+                tenant_id: SCIM_TENANT.to_string(),
+                display_name: "Ada".into(),
+                auth_method: AuthMethod::Oidc {
+                    provider: "test-idp".into(),
+                    subject: "ada".into(),
+                },
+                policies: policies.iter().map(|s| s.to_string()).collect(),
+                created_at: chrono::Utc::now(),
+            })
+            .expect("seed principal");
+        (ScimState::new(principals), id)
+    }
+
+    fn policies_of(state: &ScimState, id: &str) -> Vec<String> {
+        state
+            .principals
+            .list_principals(SCIM_TENANT)
+            .expect("list")
+            .into_iter()
+            .find(|r| r.id == id)
+            .expect("principal exists")
+            .policies
+    }
+
+    #[test]
+    fn adding_a_group_member_grants_the_policy() {
+        let (state, id) = state_with_user(&["default"]);
+        add_policy_to_principal(&state, &id, "engineering");
+        let got = policies_of(&state, &id);
+        assert!(
+            got.contains(&"engineering".to_string()),
+            "group membership must actually grant the policy, got {got:?}"
+        );
+        assert!(
+            got.contains(&"default".to_string()),
+            "existing policies kept"
+        );
+    }
+
+    #[test]
+    fn removing_a_group_member_revokes_the_policy() {
+        let (state, id) = state_with_user(&["default", "engineering"]);
+        remove_policy_from_principal(&state, &id, "engineering");
+        let got = policies_of(&state, &id);
+        assert!(
+            !got.contains(&"engineering".to_string()),
+            "deprovisioning must actually revoke, got {got:?}"
+        );
+        assert!(
+            got.contains(&"default".to_string()),
+            "other policies untouched"
+        );
+    }
+
+    #[test]
+    fn group_sync_is_idempotent() {
+        let (state, id) = state_with_user(&["engineering"]);
+        add_policy_to_principal(&state, &id, "engineering");
+        assert_eq!(
+            policies_of(&state, &id),
+            vec!["engineering"],
+            "no duplicate"
+        );
+
+        remove_policy_from_principal(&state, &id, "engineering");
+        remove_policy_from_principal(&state, &id, "engineering");
+        assert!(policies_of(&state, &id).is_empty());
+    }
+
+    #[test]
+    fn a_member_with_no_principal_is_not_silently_ignored_as_success() {
+        let (state, _) = state_with_user(&[]);
+        // Must not panic, and must not invent a record.
+        add_policy_to_principal(&state, "nobody", "engineering");
+        assert!(state
+            .principals
+            .list_principals(SCIM_TENANT)
+            .unwrap()
+            .iter()
+            .all(|r| r.id != "nobody"));
     }
 }
