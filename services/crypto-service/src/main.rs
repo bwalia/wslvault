@@ -155,15 +155,6 @@ async fn run_service() -> Result<(), anyhow::Error> {
         metrics_addr,
     ));
 
-    // Start HA heartbeat if enabled.
-    if vault_config.ha.enabled {
-        let cluster_state = wslvault_core::ha::cluster::new_cluster_state(vault_config.ha.clone());
-        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(
-            cluster_state,
-        ));
-        info!("HA mode enabled, heartbeat loop started");
-    }
-
     // Bind gRPC on port 50051 and HTTP on port 8080.
     // These ports are intentionally independent of VaultConfig.listen_addr
     // so that the HTTP config address does not conflict with the gRPC listener.

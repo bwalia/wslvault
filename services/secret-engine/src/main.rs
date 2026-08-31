@@ -26,7 +26,6 @@
 
 mod audit_client;
 mod grpc;
-mod ha_status;
 mod health;
 mod http;
 mod kv2;
@@ -155,16 +154,7 @@ async fn main() -> anyhow::Result<()> {
         metrics_addr,
     ));
 
-    // ── 9. Start HA heartbeat if enabled ─────────────────────
-    if config.ha.enabled {
-        let cluster_state = wslvault_core::ha::cluster::new_cluster_state(config.ha.clone());
-        tokio::spawn(wslvault_core::ha::cluster::run_heartbeat_loop(
-            cluster_state,
-        ));
-        info!("HA mode enabled, heartbeat loop started");
-    }
-
-    // ── 10. Start servers ────────────────────────────────────
+    // ── 9. Start servers ─────────────────────────────────────
     server::run(
         grpc_addr,
         http_addr,
