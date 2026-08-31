@@ -7,6 +7,33 @@ and identity-service (tokens, MFA) — plus PostgreSQL.
 Ports are deliberately non-default (`55432`, `18080`, `18082`) so this does not
 collide with anything else already running.
 
+## 0. Secrets
+
+Every service needs key material, and none of it has a default — the Helm chart
+refuses to render without it, precisely so a placeholder cannot reach
+production. Generate a local set:
+
+```bash
+./scripts/gen-local-secrets.sh          # writes .env.local, mode 600
+set -a; . ./.env.local; set +a          # load it into your shell
+```
+
+`.env.local` is covered by `.gitignore` (`.env.*`) and the script refuses to
+overwrite an existing file: regenerating `VAULT_ROOT_KEY` would orphan every
+tenant KEK already encrypted under the old one, which makes the data in your
+local database permanently unreadable.
+
+| Variable | Protects |
+|---|---|
+| `VAULT_ROOT_KEY` | Every tenant KEK, and so transit keys, PKI CA keys, token signing keys and TOTP secrets |
+| `PKI_ROOT_KEY` | CA private keys at rest |
+| `VAULT_JWT_SECRET` | Legacy HS256 tokens (new ones use per-tenant Ed25519) |
+| `VAULT_ADMIN_TOKEN` | Break-glass: creates the first tenant and key |
+| `VAULT_OPERATOR_TOKEN` | Sealing the vault |
+| `AUDIT_SIGNING_KEY` | The audit hash chain; per-tenant keys derive from it |
+| `REPLICATION_PEER_TOKEN` | The peer replication API |
+| `VAULT_GATEWAY_SECRET` | Proves a request came through the gateway |
+
 ## 1. Database
 
 ```bash
