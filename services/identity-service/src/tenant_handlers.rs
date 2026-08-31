@@ -538,11 +538,27 @@ pub async fn delete_tenant(
 /// ```no_run
 /// let app = health::router().merge(tenant_handlers::router(store));
 /// ```
-pub fn router(store: TenantStoreState) -> Router {
+/// Tenant CRUD, behind the administrator gate.
+///
+/// These routes had no guard at all. `GET /v1/tenants` returned every tenant in
+/// the deployment — id, slug, display name, tier and `root_key_id` — to anyone
+/// who could reach the port, and `POST` created one, and `DELETE` removed one.
+/// The vault-ui pod proxies `/api/identity/*`, so all three were reachable from
+/// wherever the UI is published.
+///
+/// Managing tenants is a platform operation, not a tenant one: listing them is
+/// inherently cross-tenant, and creating one is how the platform grows. So they
+/// require an administrator — the `VAULT_ADMIN_TOKEN` bootstrap credential, a
+/// token carrying the administrator policy, or a superuser token.
+pub fn router(store: TenantStoreState, admin_auth: crate::api_keys::AdminAuth) -> Router {
     Router::new()
         .route("/v1/tenants", post(create_tenant).get(list_tenants))
         .route("/v1/tenants/:id", get(get_tenant).delete(delete_tenant))
         .with_state(store)
+        .layer(axum::middleware::from_fn_with_state(
+            admin_auth,
+            crate::api_keys::require_admin,
+        ))
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +573,16 @@ mod tests {
         http::{Request, StatusCode},
     };
     use tower::ServiceExt; // for `oneshot`
+
+    /// Admin gate with a known bootstrap token, so the tests exercise the
+    /// guard rather than bypassing it.
+    fn test_admin() -> crate::api_keys::AdminAuth {
+        crate::api_keys::AdminAuth::new(
+            crate::token::TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!"),
+            Some(b"test-admin-token".to_vec()),
+            "admin",
+        )
+    }
 
     fn memory_store() -> TenantStoreState {
         TenantStoreState {
@@ -643,7 +669,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_create_tenant_returns_201() {
-        let app = router(memory_store());
+        let app = router(memory_store(), test_admin());
         let body = serde_json::json!({
             "slug": "test-tenant",
             "display_name": "Test Tenant",
@@ -654,6 +680,7 @@ mod tests {
             .method("POST")
             .uri("/v1/tenants")
             .header("content-type", "application/json")
+            .header("X-Admin-Token", "test-admin-token")
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -662,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn http_create_tenant_invalid_slug_returns_422() {
-        let app = router(memory_store());
+        let app = router(memory_store(), test_admin());
         let body = serde_json::json!({
             "slug": "INVALID SLUG",
             "display_name": "Bad",
@@ -672,6 +699,7 @@ mod tests {
             .method("POST")
             .uri("/v1/tenants")
             .header("content-type", "application/json")
+            .header("X-Admin-Token", "test-admin-token")
             .body(Body::from(serde_json::to_string(&body).unwrap()))
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -680,11 +708,12 @@ mod tests {
 
     #[tokio::test]
     async fn http_get_nonexistent_tenant_returns_404() {
-        let app = router(memory_store());
+        let app = router(memory_store(), test_admin());
         let fake_id = Uuid::now_v7();
         let req = Request::builder()
             .method("GET")
             .uri(format!("/v1/tenants/{fake_id}"))
+            .header("X-Admin-Token", "test-admin-token")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -698,13 +727,59 @@ mod tests {
         let tenant_id = tenant.id.clone();
         store.create(tenant).await.unwrap();
 
-        let app = router(store);
+        let app = router(store, test_admin());
         let req = Request::builder()
             .method("DELETE")
             .uri(format!("/v1/tenants/{tenant_id}"))
+            .header("X-Admin-Token", "test-admin-token")
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// The routes had no guard at all: `GET /v1/tenants` returned every tenant
+    /// in the deployment — including each one's `root_key_id` — to anyone who
+    /// could reach the port, and POST/DELETE were equally open. The vault-ui
+    /// pod proxies `/api/identity/*`, so all of it was reachable from wherever
+    /// the UI is published.
+    #[tokio::test]
+    async fn tenant_routes_require_an_administrator() {
+        for (method, uri) in [
+            ("GET", "/v1/tenants"),
+            ("POST", "/v1/tenants"),
+            ("GET", "/v1/tenants/00000000-0000-0000-0000-000000000000"),
+            ("DELETE", "/v1/tenants/00000000-0000-0000-0000-000000000000"),
+        ] {
+            let app = router(memory_store(), test_admin());
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "{method} {uri} must not be reachable without an administrator credential"
+            );
+        }
+    }
+
+    /// A wrong bootstrap token is no better than none.
+    #[tokio::test]
+    async fn a_wrong_admin_token_is_rejected() {
+        let app = router(memory_store(), test_admin());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/tenants")
+            .header("X-Admin-Token", "not-the-right-token")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

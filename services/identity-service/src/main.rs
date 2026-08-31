@@ -701,7 +701,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // probes and the Swagger docs are intentionally left open.
     // Fold optional auth-method routers into the protected route set.
     // Each is `Option<Router>` — absent when the feature is not configured.
-    let mut protected_routes: Router = tenant_handlers::router(tenant_store)
+    let mut protected_routes: Router = tenant_handlers::router(tenant_store, admin_auth.clone())
         .merge(api_keys::router(api_key_state, admin_auth))
         .merge(quota_handlers::router(quota_state))
         .merge(scim::router().with_state(scim_state));

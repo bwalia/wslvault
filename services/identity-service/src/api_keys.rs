@@ -941,7 +941,18 @@ pub const ADMIN_TOKEN_ENV: &str = "VAULT_ADMIN_TOKEN";
 pub const ADMIN_POLICY_ENV: &str = "VAULT_ADMIN_POLICY";
 
 /// Policy required of a JWT caller when `VAULT_ADMIN_POLICY` is unset.
-const DEFAULT_ADMIN_POLICY: &str = "admin";
+///
+/// Namespaced deliberately. This used to be `"admin"` — which is the single
+/// most likely name a tenant gives its own administrator policy, and there is
+/// nothing tenant-scoped about the check: carrying the policy grants
+/// PLATFORM administration, including listing and deleting every tenant in the
+/// deployment.
+///
+/// So any tenant that created a policy called `admin` for its own users was
+/// silently handing them authority over every other tenant. A tenant
+/// administrator and a platform administrator are different things, and the
+/// default name now says which one it means.
+const DEFAULT_ADMIN_POLICY: &str = "wslvault:platform-admin";
 
 /// Header carrying the bootstrap administrator token.
 pub const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
@@ -1079,6 +1090,17 @@ impl AdminAuth {
             },
             None => self.token_manager.validate_token(bearer).ok()?,
         };
+
+        // A superuser is an administrator by definition: the claim already
+        // grants cross-tenant access, so requiring a separate policy on top
+        // would only mean a superuser could not administer the platform it has
+        // authority over.
+        if claims.superuser {
+            return Some(AdminIdentity {
+                principal_id: claims.sub,
+                tenant_id: Some(claims.tenant_id),
+            });
+        }
 
         if !claims
             .policies
@@ -2806,5 +2828,57 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         // KeyNotFound maps to 404, which is intentionally opaque to attackers.
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A tenant administrator is not a platform administrator.
+    ///
+    /// The default required policy used to be `"admin"` — the single most
+    /// likely name a tenant gives its own admin policy — and carrying it grants
+    /// authority over every tenant in the deployment. Any tenant that created
+    /// an `admin` policy for its own users was silently handing them the estate.
+    #[tokio::test]
+    async fn a_tenants_own_admin_policy_is_not_platform_administration() {
+        let tm = TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!");
+        let auth = AdminAuth::new(tm.clone(), None, DEFAULT_ADMIN_POLICY);
+
+        // A perfectly ordinary tenant user whose policy happens to be "admin".
+        let (token, _) = tm
+            .issue_token("user-1", "some-tenant", vec!["admin".into()], 3600)
+            .expect("issue");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+
+        assert!(
+            auth.authenticate(&headers).await.is_none(),
+            "a tenant-scoped 'admin' policy must not confer platform administration"
+        );
+    }
+
+    /// The namespaced policy does confer it.
+    #[tokio::test]
+    async fn the_platform_admin_policy_is_accepted() {
+        let tm = TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!");
+        let auth = AdminAuth::new(tm.clone(), None, DEFAULT_ADMIN_POLICY);
+
+        let (token, _) = tm
+            .issue_token(
+                "ops-1",
+                "some-tenant",
+                vec![DEFAULT_ADMIN_POLICY.to_string()],
+                3600,
+            )
+            .expect("issue");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+
+        assert!(auth.authenticate(&headers).await.is_some());
     }
 }
