@@ -67,7 +67,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
   host: vault-ui-b.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -147,7 +147,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 
 secrets:
   existingSecret: wslvault-mesh-keys
@@ -178,13 +178,13 @@ cryptoService:
 identityService:
   replicaCount: 1
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 regionHealth:
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 secretEngine:
   # Branch build from PR #12 (fix/lookup-self-token-type) — what region A has
   # run in production for five weeks. Move BOTH regions to a main-built tag
   # once that PR merges and CI publishes one.
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
