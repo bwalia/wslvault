@@ -42,11 +42,9 @@ impl KubernetesConnector {
 
     /// Create a connector that trusts `ca_pem` in addition to the system roots.
     ///
-    /// Certificate verification used to be switched off outright:
-    ///
-    ///     .danger_accept_invalid_certs(true) // K8s in-cluster CA handled separately
-    ///
-    /// It was not handled separately — nothing anywhere loaded the cluster CA —
+    /// Certificate verification used to be switched off outright, with
+    /// `danger_accept_invalid_certs(true)` and a comment saying the in-cluster
+    /// CA was "handled separately". It was not handled separately — nothing anywhere loaded the cluster CA —
     /// so every secret this connector synchronised was exposed to a trivial
     /// man-in-the-middle, which is a poor trade for a connector whose entire
     /// job is moving secrets.
