@@ -165,6 +165,7 @@ copies under `deploy/helm/wslvault/files/migrations/` must stay in sync.
 | [Architecture](docs/architecture.md) | How the services fit together |
 | [Security model](docs/security-model.md) | Trust boundaries, NetworkPolicy, the gateway |
 | [Status](docs/STATUS.md) | Honest assessment of what is built and what is not |
+| [Onboarding a tenant](docs/operations/onboarding-a-tenant.md) | Roles, bootstrap, MFA enrolment, signing in |
 | [Local testing](docs/operations/local-testing.md) | Stand the stack up and walk the login flow |
 | [Deployment](docs/operations/deployment.md) | Running it for real |
 | [Vault KV v2 compatibility](docs/operations/vault-kv2-compatibility.md) | What the compatible mount supports |
