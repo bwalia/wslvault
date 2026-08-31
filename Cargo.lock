@@ -2452,6 +2452,7 @@ dependencies = [
  "prost",
  "rand 0.8.5",
  "reqwest",
+ "ring",
  "rustls",
  "serde",
  "serde_json",
@@ -2471,6 +2472,7 @@ dependencies = [
  "wslvault-core",
  "wslvault-storage",
  "x509-parser 0.16.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -6412,6 +6414,7 @@ dependencies = [
  "once_cell",
  "prometheus",
  "rand 0.8.5",
+ "reqwest",
  "ring",
  "serde",
  "serde_json",

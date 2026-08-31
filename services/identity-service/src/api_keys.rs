@@ -38,7 +38,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::IntoResponse,
-    routing::{delete, post},
+    routing::{delete, get, post},
     Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -865,6 +865,9 @@ impl Default for ApiKeyManager {
 pub struct ApiKeyState {
     pub manager: ApiKeyManager,
     pub token_manager: TokenManager,
+    /// Per-tenant Ed25519 signing keys. `None` falls back to the shared HS256
+    /// secret, which is the legacy posture — see `signing_keys`.
+    pub signing_keys: Option<crate::signing_keys::SigningKeys>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,6 +1317,61 @@ pub async fn handle_rotate_api_key(
     }
 }
 
+/// Mint a token signed with the tenant's own key, falling back to the shared
+/// HS256 secret only where per-tenant keys are not configured.
+///
+/// The fallback exists so an upgrade does not require the crypto-service to be
+/// reachable before anyone can log in. It warns, because a shared symmetric
+/// secret means any service that can verify a token can also forge one.
+pub(crate) async fn issue_for_tenant(
+    state: &ApiKeyState,
+    subject: &str,
+    tenant_id: &str,
+    policies: Vec<String>,
+    superuser: bool,
+) -> Result<(String, chrono::DateTime<chrono::Utc>), String> {
+    let Some(signing_keys) = state.signing_keys.as_ref() else {
+        if superuser {
+            // A superuser token authorises across every tenant. Minting one
+            // under a secret every service already holds would mean any of them
+            // could forge cross-tenant authority.
+            return Err(
+                "per-tenant signing keys are required to issue a superuser token".to_string(),
+            );
+        }
+        warn!(
+            "issuing a legacy HS256 token: per-tenant signing keys are not configured, \
+             so any service holding VAULT_JWT_SECRET can forge this token"
+        );
+        return state
+            .token_manager
+            .issue_token(subject, tenant_id, policies, API_KEY_JWT_TTL_SECONDS)
+            .map_err(|e| e.to_string());
+    };
+
+    // Superuser tokens are signed by the system key rather than any tenant's,
+    // so no tenant key can mint cross-tenant authority.
+    let key_tenant = if superuser {
+        None
+    } else {
+        Some(Uuid::parse_str(tenant_id).map_err(|e| format!("tenant_id is not a UUID: {e}"))?)
+    };
+
+    let signer = signing_keys.signer_for(key_tenant.as_ref()).await?;
+    state
+        .token_manager
+        .issue_token_with_key(
+            subject,
+            tenant_id,
+            policies,
+            API_KEY_JWT_TTL_SECONDS,
+            &signer.encoding,
+            crate::signing_keys::SigningKeys::header(&signer.kid),
+            superuser,
+        )
+        .map_err(|e| e.to_string())
+}
+
 /// `POST /v1/auth/api-key` — exchange a raw API key for a short-lived JWT.
 ///
 /// Accepts `{ "api_key": "wslv_..." }` and returns a JWT token that downstream
@@ -1347,15 +1405,18 @@ pub async fn handle_auth_api_key(
     // Issue a short-lived JWT using the key's UUID as the subject so that
     // downstream services can correlate the token back to the originating key.
     let subject = validation_result.key_id.to_string();
-    let (token, expires_at) = match state.token_manager.issue_token(
+    let (token, expires_at) = match issue_for_tenant(
+        &state,
         &subject,
         &validation_result.tenant_id,
         validation_result.policies.clone(),
-        API_KEY_JWT_TTL_SECONDS,
-    ) {
+        false,
+    )
+    .await
+    {
         Ok(pair) => pair,
         Err(err) => {
-            let api_err = ApiKeyError::TokenIssuance(err.to_string());
+            let api_err = ApiKeyError::TokenIssuance(err);
             return api_err.into_response();
         }
     };
@@ -1381,6 +1442,30 @@ pub async fn handle_auth_api_key(
 // ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
+
+/// `GET /v1/identity/.well-known/jwks.json` — public keys for token verification.
+///
+/// Serves every key a live token might carry, including ones rotating out, so a
+/// rotation does not invalidate tokens already in flight.
+pub async fn handle_jwks(State(state): State<ApiKeyState>) -> impl IntoResponse {
+    let Some(signing_keys) = state.signing_keys.as_ref() else {
+        // Empty rather than an error: a deployment still on the legacy shared
+        // secret has no per-tenant public keys, and that is a valid state.
+        return (StatusCode::OK, Json(serde_json::json!({ "keys": [] }))).into_response();
+    };
+
+    match signing_keys.jwks().await {
+        Ok(jwks) => (StatusCode::OK, Json(jwks)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "could not build the JWKS document");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "signing keys are unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
 
 /// Builds an [`axum::Router`] containing all API-key routes.
 ///
@@ -1410,6 +1495,9 @@ pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
 
     let exchange = Router::new()
         .route("/v1/auth/api-key", post(handle_auth_api_key))
+        // Public on purpose: it serves public keys. Verifiers need it without
+        // holding a credential, and a public key confers no ability to sign.
+        .route("/v1/identity/.well-known/jwks.json", get(handle_jwks))
         .with_state(state);
 
     management.merge(exchange)
@@ -1434,6 +1522,7 @@ mod tests {
 
     fn make_state() -> ApiKeyState {
         ApiKeyState {
+            signing_keys: None,
             manager: ApiKeyManager::new(),
             token_manager: make_token_manager(),
         }

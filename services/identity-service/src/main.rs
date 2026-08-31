@@ -17,6 +17,7 @@ mod api_keys;
 mod auth_methods;
 mod aws_iam;
 mod azure_workload;
+mod crypto_client;
 mod grpc;
 mod health;
 mod mtls;
@@ -24,6 +25,7 @@ mod oidc;
 mod openapi;
 mod quota_handlers;
 mod scim;
+mod signing_keys;
 mod store;
 mod tenant_handlers;
 mod token;
@@ -392,6 +394,8 @@ async fn main() -> Result<(), anyhow::Error> {
     // Token revocations live in PostgreSQL so they survive restarts and are
     // visible to every replica. Without a database they fall back to an
     // in-process set, which IdentityServiceImpl::new warns loudly about.
+    // One pool, two consumers: token revocation and per-tenant signing keys.
+    // Cloned before either takes ownership.
     let revocation_pool = match std::env::var("DATABASE_URL") {
         Ok(url) if !url.is_empty() => {
             let pool = sqlx::postgres::PgPoolOptions::new()
@@ -423,6 +427,11 @@ async fn main() -> Result<(), anyhow::Error> {
             }
         });
     }
+
+    // Per-tenant Ed25519 signing keys need a database to keep them in and a
+    // crypto-service to wrap them with. Without both, token issuance falls back
+    // to the shared HS256 secret and warns on every token.
+    let signing_key_pool = revocation_pool.clone();
 
     let identity_svc = IdentityServiceImpl::new(
         token_manager,
@@ -475,9 +484,28 @@ async fn main() -> Result<(), anyhow::Error> {
     // otherwise expose key creation to anyone who can reach the port.
     let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone());
 
+    let signing_keys = match (&signing_key_pool, std::env::var("CRYPTO_SERVICE_ENDPOINT")) {
+        (Some(pool), Ok(endpoint)) if !endpoint.trim().is_empty() => {
+            info!(endpoint = %endpoint, "per-tenant token signing keys enabled");
+            Some(signing_keys::SigningKeys::new(
+                pool.clone(),
+                crypto_client::CryptoClient::new(endpoint.trim()),
+            ))
+        }
+        _ => {
+            warn!(
+                "per-tenant signing keys are DISABLED (needs DATABASE_URL and \
+                 CRYPTO_SERVICE_ENDPOINT). Tokens will be HS256 under the shared \
+                 VAULT_JWT_SECRET, which every service that verifies them also holds."
+            );
+            None
+        }
+    };
+
     let api_key_state = api_keys::ApiKeyState {
         manager: api_key_manager,
         token_manager: token_manager_for_api_keys,
+        signing_keys: signing_keys.clone(),
     };
 
     // Construct the SCIM shared state.  When DATABASE_URL is set, use

@@ -14,4 +14,5 @@ pub mod revocation_store;
 pub mod schema_store;
 pub mod seal_store;
 pub mod secret_store;
+pub mod signing_key_store;
 pub mod tenant_store;

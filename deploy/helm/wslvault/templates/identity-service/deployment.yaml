@@ -73,6 +73,12 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
+            # Wraps each tenant's Ed25519 signing key, so private key material
+            # sits under the root KEK and therefore under the seal.
+            - name: CRYPTO_SERVICE_ENDPOINT
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $) }}:50051"
+            # Legacy shared secret. Only used for tokens issued before
+            # per-tenant signing keys existed; remove once those have expired.
             - name: VAULT_JWT_SECRET
               valueFrom:
                 secretKeyRef:

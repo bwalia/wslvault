@@ -28,6 +28,7 @@ axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 tonic = { workspace = true }
 sharks = { workspace = true }
+reqwest = { workspace = true }
 config = { workspace = true }
 tokio = { workspace = true }
 prometheus = { workspace = true }

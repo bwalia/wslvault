@@ -161,8 +161,9 @@ fn dto_to_doc(dto: PolicyDocumentDto) -> Result<PolicyDocument, String> {
 /// The `Err` variant is an already-rendered response, so handlers return it
 /// verbatim.
 #[allow(clippy::result_large_err)]
-fn caller_tenant(headers: &HeaderMap) -> Result<String, axum::response::Response> {
+async fn caller_tenant(headers: &HeaderMap) -> Result<String, axum::response::Response> {
     wslvault_core::auth::resolve_identity(headers)
+        .await
         .map(|id| id.tenant_id)
         .map_err(|e| {
             (
@@ -186,7 +187,7 @@ async fn health_handler() -> impl IntoResponse {
 
 /// GET /v1/policies
 async fn list_policies(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -201,7 +202,7 @@ async fn create_policy(
     headers: HeaderMap,
     Json(body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -229,7 +230,7 @@ async fn get_policy(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -250,7 +251,7 @@ async fn upsert_policy(
     Path(name): Path<String>,
     Json(mut body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -279,7 +280,7 @@ async fn delete_policy(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -306,7 +307,7 @@ async fn authorize(
     headers: HeaderMap,
     Json(body): Json<AuthorizeRequest>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers) {
+    let tid = match caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };

@@ -97,8 +97,9 @@ fn vault_error(status: StatusCode, message: impl Into<String>) -> Response {
 /// The `Err` variant is an already-rendered `Response` so callers can return it
 /// verbatim; `axum::Response` is inherently large, hence the allow.
 #[allow(clippy::result_large_err)]
-pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
+pub async fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
     wslvault_core::auth::resolve_identity(headers)
+        .await
         .map_err(|e| vault_error(StatusCode::FORBIDDEN, e.to_string()))
 }
 
@@ -283,7 +284,7 @@ async fn read(
     Path(path): Path<String>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -403,7 +404,7 @@ async fn write(
     Path(path): Path<String>,
     Json(body): Json<Kv2WriteRequest>,
 ) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -522,7 +523,7 @@ async fn write(
 /// `GET /v1/auth/token/lookup-self` — Vault clients probe this to validate a
 /// token before use. Returns the tenant and policies the token carries.
 async fn lookup_self(headers: HeaderMap) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };

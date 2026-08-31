@@ -36,6 +36,7 @@
 //! let any caller that can reach this service assert an arbitrary tenant.
 
 use axum::http::HeaderMap;
+use base64::Engine as _;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
@@ -62,6 +63,13 @@ pub struct Identity {
     /// Unix expiry when the caller authenticated with a token. `None` for the
     /// gateway header paths, which carry no token lifetime of their own.
     pub expires_at: Option<i64>,
+    /// Cross-tenant authority, from a signed claim only.
+    ///
+    /// This can never come from the gateway header contract: those headers are
+    /// caller-asserted, and an asserted superuser flag would hand anyone every
+    /// tenant. It is set from a verified token's `superuser` claim or not at
+    /// all.
+    pub superuser: bool,
 }
 
 /// Why authentication failed. Rendered by the caller in whichever error shape
@@ -83,6 +91,9 @@ struct TokenClaims {
     tenant_id: String,
     #[serde(default)]
     policies: Vec<String>,
+    /// Cross-tenant authority. Absent on every legacy token, hence the default.
+    #[serde(default)]
+    superuser: bool,
     /// Unix expiry. Surfaced by lookup-self as `expire_time`/`ttl`, which
     /// Vault clients require — ESO rejects a store with "no expiration time
     /// found in response" when it is missing.
@@ -133,7 +144,151 @@ pub fn extract_token(headers: &HeaderMap) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Verify a wslvault JWT (HS256, shared `VAULT_JWT_SECRET`) and return its claims.
+/// Public keys fetched from the identity-service, cached by `kid`.
+///
+/// Verifiers must not hit the identity-service on every request — that would
+/// put it on the hot path of every secret read and make it a single point of
+/// failure for the whole system. Keys are immutable for a given `kid`, so a
+/// hit is cacheable forever; only a miss costs a fetch.
+///
+/// A miss re-fetches at most once every [`JWKS_MIN_REFETCH`], so an
+/// unrecognised `kid` — which is what a forged token looks like — cannot be
+/// used to hammer the identity-service.
+struct JwksCache {
+    keys: tokio::sync::RwLock<std::collections::HashMap<String, Vec<u8>>>,
+    last_fetch: tokio::sync::Mutex<Option<std::time::Instant>>,
+}
+
+/// Floor on how often an unknown `kid` may trigger a JWKS fetch.
+const JWKS_MIN_REFETCH: std::time::Duration = std::time::Duration::from_secs(10);
+
+static JWKS: once_cell::sync::Lazy<JwksCache> = once_cell::sync::Lazy::new(|| JwksCache {
+    keys: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+    last_fetch: tokio::sync::Mutex::new(None),
+});
+
+fn jwks_cache() -> &'static JwksCache {
+    &JWKS
+}
+
+#[derive(serde::Deserialize)]
+struct JwksDoc {
+    keys: Vec<JwkEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct JwkEntry {
+    kid: String,
+    /// base64url-unpadded Ed25519 public key.
+    x: String,
+}
+
+impl JwksCache {
+    async fn public_key_for(&self, kid: &str) -> Result<Vec<u8>, AuthFailure> {
+        if let Some(k) = self.keys.read().await.get(kid) {
+            return Ok(k.clone());
+        }
+
+        self.refresh().await?;
+
+        self.keys
+            .read()
+            .await
+            .get(kid)
+            .cloned()
+            .ok_or_else(|| AuthFailure(format!("token signed by an unknown key {kid:?}")))
+    }
+
+    async fn refresh(&self) -> Result<(), AuthFailure> {
+        let url = std::env::var(JWKS_URL_ENV).map_err(|_| {
+            AuthFailure(format!(
+                "{JWKS_URL_ENV} is not configured; per-tenant token verification is unavailable"
+            ))
+        })?;
+
+        // Rate-limit: an unknown kid is what a forged token looks like, and it
+        // must not become a way to generate load on the identity-service.
+        {
+            let mut last = self.last_fetch.lock().await;
+            if let Some(t) = *last {
+                if t.elapsed() < JWKS_MIN_REFETCH {
+                    return Ok(());
+                }
+            }
+            *last = Some(std::time::Instant::now());
+        }
+
+        let doc: JwksDoc = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .map_err(|e| AuthFailure(format!("could not build the JWKS client: {e}")))?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| AuthFailure(format!("could not reach the JWKS endpoint: {e}")))?
+            .json()
+            .await
+            .map_err(|e| AuthFailure(format!("malformed JWKS document: {e}")))?;
+
+        let mut keys = self.keys.write().await;
+        for entry in doc.keys {
+            match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&entry.x) {
+                Ok(raw) if raw.len() == 32 => {
+                    keys.insert(entry.kid, raw);
+                }
+                _ => {
+                    tracing::warn!(kid = %entry.kid, "skipping malformed JWKS entry");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Where to fetch tenant public keys from, e.g.
+/// `http://identity-service:8082/v1/identity/.well-known/jwks.json`.
+pub const JWKS_URL_ENV: &str = "VAULT_JWKS_URL";
+
+/// Verify a wslvault JWT and return its claims.
+///
+/// Tries the token's own signature scheme:
+///
+/// * **EdDSA** — the token carries a `kid`, so it was signed with a tenant's
+///   own Ed25519 key. Verified against the public key from JWKS. This is the
+///   path that gives each tenant a real cryptographic boundary, and it is
+///   verify-only: holding a public key confers no ability to mint.
+///
+/// * **HS256** — a legacy token under the shared `VAULT_JWT_SECRET`. Accepted
+///   so tokens issued before the upgrade keep working until they expire, and
+///   only when that secret is configured.
+///
+/// Fails closed in both cases: an unverifiable token is rejected, never
+/// believed.
+async fn verify_token_async(token: &str) -> Result<TokenClaims, AuthFailure> {
+    let header = jsonwebtoken::decode_header(token)
+        .map_err(|e| AuthFailure(format!("malformed token header: {e}")))?;
+
+    match header.alg {
+        Algorithm::EdDSA => {
+            let kid = header
+                .kid
+                .ok_or_else(|| AuthFailure("EdDSA token carries no kid".to_string()))?;
+            let public_key = jwks_cache().public_key_for(&kid).await?;
+
+            let mut validation = Validation::new(Algorithm::EdDSA);
+            validation.validate_aud = false;
+            decode::<TokenClaims>(token, &DecodingKey::from_ed_der(&public_key), &validation)
+                .map(|d| d.claims)
+                .map_err(|e| AuthFailure(format!("invalid token: {e}")))
+        }
+        Algorithm::HS256 => verify_token(token),
+        other => Err(AuthFailure(format!(
+            "unsupported token algorithm {other:?}"
+        ))),
+    }
+}
+
+/// Verify a legacy wslvault JWT (HS256, shared `VAULT_JWT_SECRET`).
 fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
     let secret = std::env::var(JWT_SECRET_ENV).map_err(|_| {
         AuthFailure(format!(
@@ -161,7 +316,7 @@ fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
 ///
 /// This is the only sanctioned source of a tenant id, principal id or policy
 /// set inside this service.
-pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailure> {
+pub async fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailure> {
     // Tiers 1 and 2 are UNAUTHENTICATED: they take the caller's word for which
     // tenant they are. Only honour them when an operator has explicitly asserted
     // that a trusted, header-scrubbing proxy fronts every listener.
@@ -177,6 +332,8 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailure> {
                     .to_string(),
                 policies: split_csv(header_value(headers, "x-policies")),
                 expires_at: None,
+                // Never from a header. See `Identity::superuser`.
+                superuser: false,
             });
         }
     }
@@ -193,17 +350,19 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailure> {
                     .to_string(),
                 policies: split_csv(header_value(headers, "x-vault-policies")),
                 expires_at: None,
+                superuser: false,
             });
         }
     }
 
     // 3. A raw token — the path Vault clients (and ESO) take.
     if let Some(token) = extract_token(headers) {
-        return verify_token(&token).map(|claims| Identity {
+        return verify_token_async(&token).await.map(|claims| Identity {
             tenant_id: claims.tenant_id,
             principal_id: claims.sub,
             policies: claims.policies,
             expires_at: Some(claims.exp),
+            superuser: claims.superuser,
         });
     }
 
@@ -214,6 +373,12 @@ pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailure> {
 }
 
 #[cfg(test)]
+// ENV_LOCK is deliberately held across `.await`: it serialises mutation of the
+// process-wide auth env vars for the whole body of each test, which is exactly
+// the window the awaited resolver reads them in. An async mutex would not help
+// — these tests must exclude each other, not yield. Same allow and reasoning as
+// crypto-service/src/root_key.rs.
+#[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
     use axum::http::{HeaderName, HeaderValue};
@@ -260,18 +425,18 @@ mod tests {
 
     // ── The gateway header contract is opt-in ────────────────────────────────
 
-    #[test]
-    fn headers_are_rejected_by_default() {
+    #[tokio::test]
+    async fn headers_are_rejected_by_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
         assert!(
-            resolve_identity(&tenant_headers()).is_err(),
+            resolve_identity(&tenant_headers()).await.is_err(),
             "X-Tenant-Id must NOT authenticate when the flag is unset"
         );
     }
 
-    #[test]
-    fn vault_spelling_is_rejected_by_default() {
+    #[tokio::test]
+    async fn vault_spelling_is_rejected_by_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
         let h = headers(&[
@@ -279,50 +444,53 @@ mod tests {
             ("x-vault-policies", "root"),
         ]);
         assert!(
-            resolve_identity(&h).is_err(),
+            resolve_identity(&h).await.is_err(),
             "X-Vault-Tenant-ID must NOT authenticate when the flag is unset"
         );
     }
 
-    #[test]
-    fn explicitly_disabled_still_rejects() {
+    #[tokio::test]
+    async fn explicitly_disabled_still_rejects() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "false");
-        let got = resolve_identity(&tenant_headers());
+        let got = resolve_identity(&tenant_headers()).await;
         std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
         assert!(got.is_err());
     }
 
-    #[test]
-    fn honoured_only_when_explicitly_enabled() {
+    #[tokio::test]
+    async fn honoured_only_when_explicitly_enabled() {
         let _trust = TrustHeaders::on();
         let id = resolve_identity(&tenant_headers())
+            .await
             .expect("flag on: the gateway contract should still work");
         assert_eq!(id.tenant_id, "victim-tenant");
         assert_eq!(id.expires_at, None, "header identities carry no expiry");
     }
 
-    #[test]
-    fn internal_headers_take_precedence() {
+    #[tokio::test]
+    async fn internal_headers_take_precedence() {
         let _trust = TrustHeaders::on();
         let id = resolve_identity(&headers(&[
             ("x-tenant-id", "acme"),
             ("x-principal-id", "svc"),
             ("x-policies", "read-db, write-db"),
         ]))
+        .await
         .expect("should resolve");
         assert_eq!(id.tenant_id, "acme");
         assert_eq!(id.principal_id, "svc");
         assert_eq!(id.policies, vec!["read-db", "write-db"]);
     }
 
-    #[test]
-    fn gateway_injected_headers_are_honoured() {
+    #[tokio::test]
+    async fn gateway_injected_headers_are_honoured() {
         let _trust = TrustHeaders::on();
         let id = resolve_identity(&headers(&[
             ("x-vault-tenant-id", "acme"),
             ("x-vault-principal-id", "svc"),
         ]))
+        .await
         .expect("should resolve");
         assert_eq!(id.tenant_id, "acme");
         assert_eq!(id.principal_id, "svc");
@@ -330,9 +498,9 @@ mod tests {
 
     // ── Token path ───────────────────────────────────────────────────────────
 
-    #[test]
-    fn missing_auth_is_rejected() {
-        assert!(resolve_identity(&HeaderMap::new()).is_err());
+    #[tokio::test]
+    async fn missing_auth_is_rejected() {
+        assert!(resolve_identity(&HeaderMap::new()).await.is_err());
     }
 
     #[test]
@@ -360,8 +528,8 @@ mod tests {
     /// asserting another tenant's id and an elevated policy set must not be
     /// able to authenticate on the DEFAULT configuration, which is what the
     /// native `/v1/secret/*` handlers used to permit unconditionally.
-    #[test]
-    fn forged_tenant_and_policy_headers_do_not_authenticate_by_default() {
+    #[tokio::test]
+    async fn forged_tenant_and_policy_headers_do_not_authenticate_by_default() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
         for h in [
@@ -373,7 +541,7 @@ mod tests {
             headers(&[("x-principal-id", "root"), ("x-policies", "admin")]),
         ] {
             assert!(
-                resolve_identity(&h).is_err(),
+                resolve_identity(&h).await.is_err(),
                 "forged identity headers must never authenticate by default"
             );
         }
@@ -382,8 +550,8 @@ mod tests {
     /// A caller holding a genuine low-privilege token must not be able to
     /// escalate by *also* sending an `X-Policies` header: the policy set comes
     /// from the signed claims, never from the request.
-    #[test]
-    fn policies_come_from_the_token_not_the_headers() {
+    #[tokio::test]
+    async fn policies_come_from_the_token_not_the_headers() {
         use jsonwebtoken::{encode, EncodingKey, Header};
 
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -408,6 +576,7 @@ mod tests {
             ("x-policies", "admin,root"),
             ("x-tenant-id", "victim"),
         ]))
+        .await
         .expect("valid token should authenticate");
 
         std::env::remove_var(JWT_SECRET_ENV);

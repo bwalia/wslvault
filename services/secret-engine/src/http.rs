@@ -106,7 +106,7 @@ fn extract_client_ip(headers: &HeaderMap) -> String {
 /// As a layer it holds for every route on the router, including any added
 /// later, and it runs before body parsing.
 async fn require_authenticated(request: Request, next: Next) -> Response {
-    if let Err(reason) = wslvault_core::auth::resolve_identity(request.headers()) {
+    if let Err(reason) = wslvault_core::auth::resolve_identity(request.headers()).await {
         // The KV v2 mount speaks Vault's error shape; Vault clients (notably
         // the External Secrets Operator) parse it. The native mount speaks
         // this service's own.
@@ -147,17 +147,19 @@ async fn require_authenticated(request: Request, next: Next) -> Response {
 /// come from a signed token, or from the gateway contract when an operator has
 /// explicitly opted in via `VAULT_TRUST_GATEWAY_HEADERS`.
 #[allow(clippy::result_large_err)]
-fn authenticate(headers: &HeaderMap) -> Result<wslvault_core::auth::Identity, Response> {
-    wslvault_core::auth::resolve_identity(headers).map_err(|e| {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(ApiError {
-                code: "unauthenticated",
-                message: e.to_string(),
-            }),
-        )
-            .into_response()
-    })
+async fn authenticate(headers: &HeaderMap) -> Result<wslvault_core::auth::Identity, Response> {
+    wslvault_core::auth::resolve_identity(headers)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError {
+                    code: "unauthenticated",
+                    message: e.to_string(),
+                }),
+            )
+                .into_response()
+        })
 }
 
 // ─── Request / response bodies ────────────────────────────────────────────────
@@ -308,7 +310,7 @@ pub async fn get_secret(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -522,7 +524,7 @@ pub async fn put_secret(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -745,7 +747,7 @@ pub async fn delete_secret(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -860,7 +862,7 @@ pub async fn destroy_secret(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -972,7 +974,7 @@ pub async fn get_metadata(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -1089,7 +1091,7 @@ pub async fn list_secrets(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -1226,7 +1228,7 @@ pub async fn initiate_rotation(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -1389,7 +1391,7 @@ pub async fn confirm_rotation(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -1474,7 +1476,7 @@ pub async fn rollback_secret(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -1569,7 +1571,7 @@ pub async fn list_versions(
         principal_id,
         policies,
         ..
-    } = match authenticate(&headers) {
+    } = match authenticate(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
