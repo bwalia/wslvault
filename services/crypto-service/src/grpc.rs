@@ -117,13 +117,15 @@ impl CryptoService for CryptoServiceImpl {
             return Err(Status::invalid_argument("plaintext must not be empty"));
         }
 
-        // Generate a new DEK for this encryption operation.
-        // Using a per-encrypt DEK with a unique context derived from the operation
-        // provides forward secrecy: compromise of one DEK only exposes one ciphertext.
-        let context = format!("encrypt:{tenant_id}:{}", uuid::Uuid::now_v7());
+        // Use the tenant's current DEK, rolling it once it has served enough
+        // operations. This used to mint a brand-new DEK per call, on the stated
+        // grounds of forward secrecy — which it did not provide, because every
+        // one of those DEKs is wrapped under the same tenant KEK. What it did
+        // provide was a key table and an in-memory map that grew with every
+        // write ever made.
         let key_id = self
             .kek_store
-            .generate_and_store_dek(tenant_id, &context)
+            .current_dek_for_encrypt(tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 

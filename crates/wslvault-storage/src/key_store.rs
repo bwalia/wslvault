@@ -203,6 +203,75 @@ pub struct PersistedKeyEntry {
     pub key_name: Option<String>,
 }
 
+/// Fetch one key's wrapped material by id.
+///
+/// Supports lazy loading: the crypto-service warm-loads a bounded set at boot
+/// and reaches for anything else on demand, rather than pulling every key ever
+/// created into memory before it can serve a request.
+pub async fn get_key_with_wrapped_key(
+    pool: &DbPool,
+    key_id: &Uuid,
+) -> Result<Option<PersistedKeyEntry>, VaultError> {
+    let row = sqlx::query(
+        "SELECT id, tenant_id, version, wrapped_key, key_name
+         FROM system.key_descriptors
+         WHERE id = $1 AND state IN ('active', 'rotating_out')
+         ORDER BY version DESC
+         LIMIT 1",
+    )
+    .bind(key_id)
+    .fetch_optional(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(row.map(|row| PersistedKeyEntry {
+        key_name: row.get::<Option<String>, _>("key_name"),
+        key_id: row.get::<Uuid, _>("id").to_string(),
+        tenant_id: row
+            .get::<Option<Uuid>, _>("tenant_id")
+            .map(|u| u.to_string()),
+        version: row.get::<i32, _>("version") as u32,
+        wrapped_key: row.get("wrapped_key"),
+    }))
+}
+
+/// Every stored version of one key id, oldest first.
+///
+/// The decrypt path needs the whole chain: a ciphertext written before a
+/// rotation is still valid and still has to be readable.
+pub async fn get_key_versions_with_wrapped_key(
+    pool: &DbPool,
+    key_id: &Uuid,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    let rows = sqlx::query(
+        "SELECT id, tenant_id, version, wrapped_key, key_name
+         FROM system.key_descriptors
+         WHERE id = $1 AND state IN ('active', 'rotating_out')
+         ORDER BY version ASC",
+    )
+    .bind(key_id)
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| PersistedKeyEntry {
+            key_name: row.get::<Option<String>, _>("key_name"),
+            key_id: row.get::<Uuid, _>("id").to_string(),
+            tenant_id: row
+                .get::<Option<Uuid>, _>("tenant_id")
+                .map(|u| u.to_string()),
+            version: row.get::<i32, _>("version") as u32,
+            wrapped_key: row.get("wrapped_key"),
+        })
+        .collect())
+}
+
 /// Load all active keys of the given purpose from the database, returning
 /// each entry together with its wrapped key material.
 ///
@@ -230,13 +299,33 @@ pub async fn list_loadable_keys_with_wrapped_key(
     pool: &DbPool,
     purpose: &KeyPurpose,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    list_recent_loadable_keys(pool, purpose, i64::MAX).await
+}
+
+/// The most recently created `limit` keys of a purpose, oldest-version-first
+/// within each key.
+///
+/// Warm-load used to be unbounded: every crypto-service pod read EVERY key ever
+/// created and AES-decrypted each one before it could answer a health check, so
+/// startup time and resident memory grew with total write history. With lazy
+/// hydration available for anything older, boot only needs what is actually hot.
+pub async fn list_recent_loadable_keys(
+    pool: &DbPool,
+    purpose: &KeyPurpose,
+    limit: i64,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key, key_name
-         FROM system.key_descriptors
-         WHERE purpose = $1 AND state IN ('active', 'rotating_out')
+        "SELECT id, tenant_id, version, wrapped_key, key_name FROM (
+             SELECT id, tenant_id, version, wrapped_key, key_name, created_at
+             FROM system.key_descriptors
+             WHERE purpose = $1 AND state IN ('active', 'rotating_out')
+             ORDER BY created_at DESC
+             LIMIT $2
+         ) recent
          ORDER BY version ASC",
     )
     .bind(purpose_str(purpose))
+    .bind(limit)
     .fetch_all(pool.inner())
     .await
     .map_err(|e| VaultError::Database {
