@@ -141,10 +141,25 @@ pub async fn insert_key_descriptor(
     wrapped_key: &str,
     parent_key_id: Option<&Uuid>,
 ) -> Result<(), VaultError> {
+    insert_named_key_descriptor(pool, desc, wrapped_key, parent_key_id, None).await
+}
+
+/// Insert a descriptor for a key addressed by NAME rather than by id.
+///
+/// Transit keys are looked up as `/v1/transit/keys/:name`, so the name has to
+/// be persisted or the key cannot be found again after a restart. DEKs and
+/// KEKs pass `None` and keep being addressed by id.
+pub async fn insert_named_key_descriptor(
+    pool: &DbPool,
+    desc: &KeyDescriptor,
+    wrapped_key: &str,
+    parent_key_id: Option<&Uuid>,
+    key_name: Option<&str>,
+) -> Result<(), VaultError> {
     sqlx::query(
         "INSERT INTO system.key_descriptors
-         (id, version, algorithm, purpose, state, tenant_id, wrapped_key, parent_key_id, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         (id, version, algorithm, purpose, state, tenant_id, wrapped_key, parent_key_id, expires_at, key_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(desc.id.0)
     .bind(desc.version as i32)
@@ -159,6 +174,7 @@ pub async fn insert_key_descriptor(
     .bind(wrapped_key)
     .bind(parent_key_id)
     .bind(desc.expires_at)
+    .bind(key_name)
     .execute(pool.inner())
     .await
     .map_err(|e| VaultError::Database {
@@ -182,6 +198,9 @@ pub struct PersistedKeyEntry {
     pub version: u32,
     /// The wrapped (encrypted) key material stored as a base64 envelope.
     pub wrapped_key: String,
+    /// Caller-facing name, for keys addressed by name (transit). `None` for
+    /// DEKs and KEKs.
+    pub key_name: Option<String>,
 }
 
 /// Load all active keys of the given purpose from the database, returning
@@ -212,7 +231,7 @@ pub async fn list_loadable_keys_with_wrapped_key(
     purpose: &KeyPurpose,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key
+        "SELECT id, tenant_id, version, wrapped_key, key_name
          FROM system.key_descriptors
          WHERE purpose = $1 AND state IN ('active', 'rotating_out')
          ORDER BY version ASC",
@@ -227,6 +246,7 @@ pub async fn list_loadable_keys_with_wrapped_key(
     let entries = rows
         .into_iter()
         .map(|row| PersistedKeyEntry {
+            key_name: row.get::<Option<String>, _>("key_name"),
             key_id: row.get::<Uuid, _>("id").to_string(),
             tenant_id: row
                 .get::<Option<Uuid>, _>("tenant_id")

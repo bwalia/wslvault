@@ -62,6 +62,15 @@ spec:
             # *_ENDPOINT names (services/transit-engine/src/main.rs) and needs the
             # http:// scheme; the prior *_ADDR names were ignored. (Crypto is
             # performed in-process, so no crypto endpoint is required here.)
+            # Wraps transit key material before it reaches PostgreSQL. Shared
+            # with crypto-service on purpose — a fourth independent root secret
+            # would make key custody harder, not safer.
+            - name: VAULT_ROOT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.rootKeySecretName" . }}
+                  key: {{ include "wslvault.rootKeySecretKey" . }}
+                  optional: false
             - name: POLICY_ENGINE_ENDPOINT
               value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
