@@ -9,12 +9,20 @@ local DEFAULT_RATE = 100      -- requests per window
 local DEFAULT_WINDOW = 60     -- window size in seconds
 local BURST_MULTIPLIER = 1.5  -- allow burst up to 150% of rate
 
--- Get rate limit key: tenant_id if authenticated, client IP otherwise
+-- Get the rate limit key.
+--
+-- This used to bucket on the X-Vault-Tenant-ID *request* header, which the
+-- client supplies. Sending a fresh random value on every request produced a
+-- fresh bucket every time, so the limit was bypassed by one header — and the
+-- limiter was, if anything, worse than nothing, because it looked enforced.
+--
+-- The gateway does not verify tokens (backends do), so it has no authenticated
+-- tenant to bucket on. The remote address is the only identity it can actually
+-- attest to, so that is what is used.
+--
+-- ponytail: per-IP only. Once the gateway validates tokens itself, bucket on
+-- the verified tenant claim and keep per-IP as the unauthenticated fallback.
 local function get_rate_key()
-    local tenant_id = ngx.req.get_headers()["X-Vault-Tenant-ID"]
-    if tenant_id and tenant_id ~= "" then
-        return "tenant:" .. tenant_id
-    end
     return "ip:" .. ngx.var.remote_addr
 end
 
@@ -25,23 +33,24 @@ local function check_rate_limit(key, rate, window)
     local window_key = key .. ":" .. math.floor(now / window)
     local prev_key = key .. ":" .. (math.floor(now / window) - 1)
 
-    -- Get counts for current and previous windows
-    local current = limit:get(window_key) or 0
+    -- Increment FIRST, then decide. Reading and then incrementing is not
+    -- atomic across workers, so concurrent requests all saw the same
+    -- pre-increment count and sailed past the limit together. incr() with an
+    -- init value is atomic in the shared dict, so the count is always the true
+    -- one for this request.
+    local current = limit:incr(window_key, 1, 0, window * 2) or 1
     local previous = limit:get(prev_key) or 0
 
-    -- Calculate weighted count using sliding window
+    -- Weighted sliding window across the current and previous buckets.
     local elapsed = now % window
     local weight = 1 - (elapsed / window)
     local estimated = previous * weight + current
 
-    if estimated >= rate * BURST_MULTIPLIER then
+    if estimated > rate * BURST_MULTIPLIER then
         return false, estimated, rate
     end
 
-    -- Increment current window
-    local new_count = limit:incr(window_key, 1, 0, window * 2)
-
-    return true, estimated + 1, rate
+    return true, estimated, rate
 end
 
 -- Execute rate limit check
