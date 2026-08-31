@@ -249,6 +249,48 @@ async fn encrypt(
     Ok((resp.ciphertext_b64, resp.dek_id))
 }
 
+// ─── Audit ───────────────────────────────────────────────────────────────────
+
+/// Emit an audit event for a KV v2 operation.
+///
+/// This mount previously emitted NONE. `http.rs` referenced `audit_client` 36
+/// times; `kv2.rs` referenced it zero times — so every read, write, delete and
+/// destroy through `/v1/kv/data/*` left no record at all. That is the mount the
+/// External Secrets Operator, the `vault` CLI and the Terraform provider all
+/// use, i.e. very plausibly the highest-volume path in a real deployment.
+///
+/// The action strings deliberately match the native handlers (`secret.read`,
+/// `secret.write`) so a query for "who read this path" returns both mounts.
+#[allow(clippy::too_many_arguments)]
+async fn audit(
+    state: &AppState,
+    identity: &Identity,
+    action: &str,
+    path: &str,
+    outcome: &str,
+    detail: &str,
+    headers: &HeaderMap,
+) {
+    let client_ip = headers
+        .get("x-client-ip")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    state
+        .audit_client
+        .emit(
+            &identity.tenant_id,
+            &identity.principal_id,
+            action,
+            path,
+            outcome,
+            detail,
+            r#"{"mount":"kv2"}"#,
+            client_ip,
+        )
+        .await;
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 /// `GET /v1/kv/data/*path` — KV v2 read.
@@ -286,6 +328,66 @@ async fn read(
         )
         .await
     {
+        audit(
+            &state,
+            &identity,
+            "secret.read",
+            &normalized,
+            "failure",
+            &e.to_string(),
+            &headers,
+        )
+        .await;
+        return vault_error(StatusCode::FORBIDDEN, e.to_string());
+    }
+
+    let entry = match state
+        .store
+        .get(&identity.tenant_id, &normalized, query.version)
+        .await
+    {
+        Ok(v) => v,
+        // Vault answers 404 for a missing secret; ESO relies on that.
+        Err(e) => {
+            audit(
+                &state,
+                &identity,
+                "secret.read",
+                &normalized,
+                "failure",
+                &e.to_string(),
+                &headers,
+            )
+            .await;
+            let status =
+                StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return vault_error(status, e.to_string());
+        }
+    };
+
+    let plaintext = match decrypt(
+        &state,
+        &identity.tenant_id,
+        &normalized,
+        &entry.dek_id,
+        &entry.ciphertext,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+
+    audit(
+        &state,
+        &identity,
+        "secret.read",
+        &normalized,
+        "success",
+        "",
+        &headers,
+    )
+    .await;
 
     let custom_metadata = if entry.custom_metadata.is_empty() {
         None
@@ -348,6 +450,77 @@ async fn write(
         )
         .await
     {
+        audit(
+            &state,
+            &identity,
+            "secret.write",
+            &normalized,
+            "failure",
+            &e.to_string(),
+            &headers,
+        )
+        .await;
+        return vault_error(StatusCode::FORBIDDEN, e.to_string());
+    }
+
+    // The map IS the secret: serialise it to JSON and store that as the blob.
+    let plaintext = match serde_json::to_vec(&body.data) {
+        Ok(v) => v,
+        Err(e) => {
+            return vault_error(
+                StatusCode::BAD_REQUEST,
+                format!("could not serialise data: {e}"),
+            )
+        }
+    };
+
+    let (ciphertext, dek_id) =
+        match encrypt(&state, &identity.tenant_id, &normalized, plaintext).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+
+    let (_secret_id, version) = match state
+        .store
+        .put(
+            &identity.tenant_id,
+            &normalized,
+            ciphertext,
+            dek_id,
+            body.options.cas,
+            HashMap::new(),
+            None,
+        )
+        .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            audit(
+                &state,
+                &identity,
+                "secret.write",
+                &normalized,
+                "failure",
+                &e.to_string(),
+                &headers,
+            )
+            .await;
+            let status =
+                StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return vault_error(status, e.to_string());
+        }
+    };
+
+    audit(
+        &state,
+        &identity,
+        "secret.write",
+        &normalized,
+        "success",
+        "",
+        &headers,
+    )
+    .await;
 
     (
         StatusCode::OK,
