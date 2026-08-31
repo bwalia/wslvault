@@ -57,6 +57,58 @@ Until unsealed, every operation that touches key material returns `503 sealed`.
 the seal. It warns on every start, because it means the root key lives in a
 process environment — which is what the seal exists to replace.
 
+## Signing in
+
+Each tenant's tokens are signed with **its own Ed25519 key**. identity-service
+holds the private halves; every other service fetches public keys from JWKS and
+can only verify — so a compromised verifier cannot forge a token, and a leaked
+tenant key signs for that tenant alone.
+
+```bash
+# Machine keys (ESO, CI, the SDKs) — one step, as before.
+curl -sX POST localhost:8080/v1/auth/api-key -d '{"api_key":"wslv_…"}'
+
+# Keys marked mfa_required get a challenge instead of a token.
+# → {"mfa_required":true,"challenge":"…","expires_in_seconds":120}
+curl -sX POST localhost:8080/v1/auth/mfa/totp \
+     -d '{"challenge":"…","code":"123456"}'
+```
+
+Enrol an authenticator:
+
+```bash
+curl -sX POST localhost:8080/v1/auth/mfa/totp/enroll  -d '{"api_key":"wslv_…"}'
+# → {secret, otpauth_uri, recovery_codes}   ← shown once
+curl -sX POST localhost:8080/v1/auth/mfa/totp/confirm -d '{"api_key":"wslv_…","code":"123456"}'
+```
+
+Enrolment is two-phase: until confirmed it neither satisfies a login nor blocks
+one, so closing the browser on the QR screen is harmless. Recovery codes are
+single-use and stored only as hashes — keep them somewhere you can reach
+*without* this vault.
+
+### Superuser
+
+A superuser key grants access across every tenant, for platform administration.
+It is deliberately narrow:
+
+```bash
+# Created by an admin; MFA is forced on and the schema enforces it.
+curl -sX POST localhost:8080/v1/api-keys \
+     -H "X-Vault-Token: $ADMIN_TOKEN" \
+     -d '{"name":"platform-admin","tenant_id":"…","is_superuser":true}'
+
+# Name the tenant being operated on. Ignored for everyone else.
+curl -H "Authorization: Bearer $TOKEN" \
+     -H "X-Vault-Act-Tenant: <other-tenant>" \
+     localhost:8080/v1/secret/data/prod/db
+```
+
+The flag lives in a signed claim, is stamped by identity-service alone, and is
+never derivable from a request header. Superuser tokens are signed by the
+system key rather than any tenant's, so no tenant key can mint cross-tenant
+authority. Every crossing is logged at WARN.
+
 ## Using it
 
 ```bash

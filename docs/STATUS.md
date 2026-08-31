@@ -24,6 +24,9 @@
 > | A new DEK per encrypt — memory and boot grew with every write | Rolling per-tenant DEK, lazy hydration, bounded warm-load |
 > | Gateway forwarded client identity headers and could not start | Headers stripped at server level; config actually valid |
 > | **No seal. Root key in a plaintext env var.** | **Shamir-split custody, `sys/init` / `unseal` / `seal-status`** |
+> | One shared HS256 secret signed every tenant's tokens | Per-tenant Ed25519 keypairs + JWKS; only identity-service can mint |
+> | No cross-tenant administration was possible at all | Superuser, granted in a signed claim, MFA-forced, audited on every crossing |
+> | Authentication was one factor: possession of an API key | Authenticator-app TOTP with recovery codes; machine keys exempt |
 >
 > **Still open**, and deliberately so — these are the honest remainder:
 >
@@ -31,9 +34,11 @@
 >   proves isolation under a least-privilege role; 019 ships disabled because
 >   enabling it needs the storage layer to set `app.current_tenant_id` per
 >   transaction first. Doing it in the wrong order is an outage.
-> * **Tokens are still symmetric HS256.** Every service that validates a token
->   can therefore mint one. Moving to asymmetric or opaque tokens touches every
->   service and was not bundled with the isolation work.
+> * ~~Tokens are still symmetric HS256~~ — **FIXED.** Per-tenant Ed25519
+>   keypairs, private halves wrapped under the root KEK (so a sealed vault
+>   cannot mint tokens), public keys served via JWKS. Verifiers can only verify.
+>   HS256 remains accepted for tokens issued before the change, until they
+>   expire.
 > * Everything in sections 5 and 6 marked ❌ is still absent.
 
 ---
