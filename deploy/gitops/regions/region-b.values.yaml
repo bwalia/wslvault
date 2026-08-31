@@ -67,8 +67,14 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
-  host: vault-ui-b.workstation.co.uk
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+  # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
+  # the old name on the login page). The old host stays as an alias so existing
+  # bookmarks and links keep working; both CNAME to pop0 and share the
+  # wslvault-region-b-cloud003 PoP rule.
+  host: vault-ha.workstation.co.uk
+  extraHosts:
+    - vault-ui-b.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
   wslproxyIngress:
@@ -147,7 +153,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 
 secrets:
   existingSecret: wslvault-mesh-keys
@@ -178,13 +184,13 @@ cryptoService:
 identityService:
   replicaCount: 1
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 regionHealth:
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 secretEngine:
   # Branch build from PR #12 (fix/lookup-self-token-type) — what region A has
   # run in production for five weeks. Move BOTH regions to a main-built tag
   # once that PR merges and CI publishes one.
   image:
-    tag: c1ebc9aff63d7a7bf63d785f3499cdaac14930a3
+    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6

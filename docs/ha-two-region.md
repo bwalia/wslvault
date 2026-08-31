@@ -16,7 +16,7 @@ One region is one complete, self-contained wslvault release:
 | Node | `cloud001` (Manchester) | `cloud003` (London) |
 | API host | `vault.workstation.co.uk` | `vault-b.workstation.co.uk` |
 | Peer host | `vault-a.workstation.co.uk` | `vault-b.workstation.co.uk` |
-| UI host | `vault-ui.workstation.co.uk` | `vault-ui-b.workstation.co.uk` |
+| UI host | `vault-ui.workstation.co.uk` | `vault-ha.workstation.co.uk` (alias: `vault-ui-b.workstation.co.uk`) |
 | PostgreSQL | own StatefulSet, `local-path` | own StatefulSet, `local-path` |
 | Values | `deploy/gitops/regions/region-a.values.yaml` | `…/region-b.values.yaml` |
 
@@ -267,7 +267,8 @@ origin.
 | `vault.workstation.co.uk` | PoP → region A origin (the shared alias) |
 | `vault-a.workstation.co.uk` | `72.62.211.28` (cloud001) |
 | `vault-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
-| `vault-ui-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
+| `vault-ha.workstation.co.uk` | `77.68.126.63` (cloud003) |
+| `vault-ui-b.workstation.co.uk` | `77.68.126.63` (cloud003, legacy UI alias) |
 
 The `-a`/`-b` hosts must resolve **before** the regions can peer: the
 replication URLs in the roster use them.
