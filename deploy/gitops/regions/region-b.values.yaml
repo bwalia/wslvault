@@ -68,7 +68,13 @@ ui:
   enabled: true
   image:
     tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
-  host: vault-ui-b.workstation.co.uk
+  # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
+  # the old name on the login page). The old host stays as an alias so existing
+  # bookmarks and links keep working; both CNAME to pop0 and share the
+  # wslvault-region-b-cloud003 PoP rule.
+  host: vault-ha.workstation.co.uk
+  extraHosts:
+    - vault-ui-b.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
   wslproxyIngress:

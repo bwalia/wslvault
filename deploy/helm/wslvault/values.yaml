@@ -161,6 +161,9 @@ ui:
     tag: ""
   port: 3011
   host: vault-ui.workstation.co.uk
+  # -- Additional hostnames the UI Ingress answers, e.g. to keep an old name
+  # working across a rename. Each needs the same DNS + PoP routing as `host`.
+  extraHosts: []
   # -- traefik-edge is the host-network Traefik daemonset on the edge nodes
   # (:443 on the pinned node). With the stack pinned to cloud001 the LAN
   # Traefik LB can no longer reach these pods, so the edge node serves the
