@@ -1,0 +1,101 @@
+-- WSLVault: turn Row-Level Security from advisory into enforced.
+-- Migration: 019_rls_enforce.sql   ** NOT APPLIED — see the .disabled suffix **
+--
+-- ## Two prerequisites, not one
+--
+-- PostgreSQL lets a session past RLS for three different reasons, and this
+-- deployment currently hits all three:
+--
+--   1. **The table owner is exempt.** `FORCE ROW LEVEL SECURITY` fixes that,
+--      and this file applies it.
+--
+--   2. **Superusers and BYPASSRLS roles are exempt, and FORCE does NOT change
+--      that.** Every service connects as `POSTGRES_USER` (`wslvault`), which
+--      the postgres image creates as a superuser:
+--
+--          SELECT rolname, rolsuper, rolbypassrls FROM pg_roles
+--          WHERE rolname = 'wslvault';
+--          --  wslvault | t | t
+--
+--      So applying FORCE alone changes nothing at all. Verified empirically:
+--      with FORCE on and the policies from 018 in place, a superuser session
+--      still saw every tenant's rows. This is the trap — enforcement *looks*
+--      enabled and is not.
+--
+--   3. **The session variable must be set.** The 018 policies fail closed on
+--      an unset `app.current_tenant_id`, so a correctly-restricted role that
+--      does not set it sees zero rows.
+--
+-- ## The order to do this in
+--
+-- Step 1 — teach the storage layer to scope every transaction:
+--
+--     SET LOCAL app.current_tenant_id = '<uuid>';
+--
+--   and make the genuinely cross-tenant jobs opt out just as explicitly:
+--
+--     SET LOCAL app.bypass_rls = 'true';
+--
+--   The jobs that need the bypass, as of this writing:
+--     * crypto-service     — warm-loads every tenant's KEKs and DEKs at boot
+--     * lease-manager      — the expiry sweep is global by design
+--     * replication-agent  — applies peer events across tenants
+--     * region-health      — polls global region state
+--
+-- Step 2 — point every service's DATABASE_URL at `wslvault_app` (created
+--   below), NOT at the superuser. Migrations keep running as the owner.
+--
+-- Step 3 — rename this file to `019_rls_enforce.sql` and apply it.
+--
+-- ## Verifying it actually took
+--
+-- Run this AS wslvault_app, never as the owner — as the owner it "passes"
+-- while proving nothing:
+--
+--     SELECT count(*) FROM shared.secrets;                  -- expect 0
+--     SET app.current_tenant_id = '<tenant-a-uuid>';
+--     SELECT count(*) FROM shared.secrets;                  -- only tenant A's
+--     SELECT count(*) FROM shared.secrets WHERE id = '<a-row-owned-by-B>';
+--                                                           -- expect 0
+
+-- =============================================================================
+-- 1. A least-privilege role that RLS actually applies to
+-- =============================================================================
+-- No SUPERUSER, no BYPASSRLS, no CREATEDB, no CREATEROLE. That is the entire
+-- point: the role must be one PostgreSQL is willing to constrain.
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wslvault_app') THEN
+        -- The password is set separately by the operator:
+        --   ALTER ROLE wslvault_app WITH PASSWORD '<from your secret store>';
+        CREATE ROLE wslvault_app LOGIN;
+    END IF;
+END $$;
+
+GRANT USAGE ON SCHEMA shared, system TO wslvault_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA shared, system TO wslvault_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA shared, system TO wslvault_app;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA shared, system TO wslvault_app;
+
+-- Tables and functions added by later migrations must be reachable too.
+ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO wslvault_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
+    GRANT USAGE, SELECT ON SEQUENCES TO wslvault_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
+    GRANT EXECUTE ON FUNCTIONS TO wslvault_app;
+
+-- =============================================================================
+-- 2. Remove the owner exemption
+-- =============================================================================
+
+ALTER TABLE shared.secrets          FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.secret_versions  FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.leases           FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.policies         FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.audit_events     FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.principals       FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.api_keys         FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.scim_users       FORCE ROW LEVEL SECURITY;
+ALTER TABLE shared.scim_groups      FORCE ROW LEVEL SECURITY;
