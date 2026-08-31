@@ -483,7 +483,6 @@ async fn main() -> Result<(), anyhow::Error> {
     // rather than relying solely on the gateway-origin check: a deployment that
     // routes around the gateway, or leaves VAULT_GATEWAY_SECRET unset, would
     // otherwise expose key creation to anyone who can reach the port.
-    let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone());
 
     let crypto_for_identity = std::env::var("CRYPTO_SERVICE_ENDPOINT")
         .ok()
@@ -517,6 +516,13 @@ async fn main() -> Result<(), anyhow::Error> {
              CRYPTO_SERVICE_ENDPOINT); keys marked mfa_required will be refused"
         );
     }
+
+    // Built after `signing_keys` so the admin gate can verify per-tenant EdDSA
+    // tokens. Without them it falls back to HS256 only, which rejects every
+    // token issued under per-tenant keys — every Bearer-authorised admin
+    // operation would break silently.
+    let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone())
+        .with_signing_keys(signing_keys.clone());
 
     let api_key_state = api_keys::ApiKeyState {
         manager: api_key_manager,

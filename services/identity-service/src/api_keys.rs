@@ -981,8 +981,10 @@ pub struct AdminAuth {
     bootstrap_token: Option<Arc<Vec<u8>>>,
     /// Policy a JWT must carry to be treated as an administrator.
     required_policy: Arc<String>,
-    /// Verifies presented JWTs. Shares the deployment's signing secret.
+    /// Verifies legacy HS256 JWTs under the shared secret.
     token_manager: TokenManager,
+    /// Verifies per-tenant EdDSA JWTs. `None` leaves only the legacy path.
+    signing_keys: Option<crate::signing_keys::SigningKeys>,
 }
 
 impl AdminAuth {
@@ -990,6 +992,15 @@ impl AdminAuth {
     ///
     /// Logs at startup which credentials are live so an operator can tell,
     /// from the logs alone, whether bootstrap is possible.
+    /// Attach per-tenant signing keys so EdDSA tokens can be verified.
+    ///
+    /// Without them the gate falls back to HS256 only, which rejects every
+    /// token issued under per-tenant keys.
+    pub fn with_signing_keys(mut self, keys: Option<crate::signing_keys::SigningKeys>) -> Self {
+        self.signing_keys = keys;
+        self
+    }
+
     pub fn from_env(token_manager: TokenManager) -> Self {
         let bootstrap_token = std::env::var(ADMIN_TOKEN_ENV)
             .ok()
@@ -1012,6 +1023,7 @@ impl AdminAuth {
             bootstrap_token,
             required_policy: Arc::new(required_policy),
             token_manager,
+            signing_keys: None,
         }
     }
 
@@ -1026,13 +1038,14 @@ impl AdminAuth {
             bootstrap_token: bootstrap_token.map(Arc::new),
             required_policy: Arc::new(required_policy.into()),
             token_manager,
+            signing_keys: None,
         }
     }
 
     /// Authenticates one request, returning the caller's identity.
     ///
     /// Returns `None` when no acceptable credential is present.
-    fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
+    async fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
         // 1. Bootstrap token, compared in constant time.
         if let Some(expected) = &self.bootstrap_token {
             if let Some(provided) = headers.get(ADMIN_TOKEN_HEADER).map(|v| v.as_bytes()) {
@@ -1053,7 +1066,19 @@ impl AdminAuth {
             .map(str::trim)
             .filter(|t| !t.is_empty())?;
 
-        let claims = self.token_manager.validate_token(bearer).ok()?;
+        // Try the per-tenant EdDSA path first, then the legacy shared HS256.
+        //
+        // This used to be HS256 only, which broke every Bearer-authorised admin
+        // operation the moment issuance moved to per-tenant keys: the token was
+        // valid, the policy was right, and it could not be decoded. Found by
+        // logging into the UI and watching API-key management fail.
+        let claims = match &self.signing_keys {
+            Some(keys) => match keys.verify(bearer).await {
+                Ok(c) => c,
+                Err(_) => self.token_manager.validate_token(bearer).ok()?,
+            },
+            None => self.token_manager.validate_token(bearer).ok()?,
+        };
 
         if !claims
             .policies
@@ -1084,7 +1109,7 @@ pub async fn require_admin(
     mut request: Request,
     next: Next,
 ) -> axum::response::Response {
-    match auth.authenticate(request.headers()) {
+    match auth.authenticate(request.headers()).await {
         Some(identity) => {
             request.extensions_mut().insert(identity);
             next.run(request).await

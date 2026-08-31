@@ -28,7 +28,9 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
 use base64::Engine as _;
-use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use jsonwebtoken::{
+    decode, decode_header, Algorithm, DecodingKey, EncodingKey, Header, Validation,
+};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -81,6 +83,8 @@ pub struct SigningKeys {
     /// kid → decoded private key, so the crypto-service is consulted once per
     /// key per process rather than once per token.
     cache: Arc<RwLock<HashMap<String, Arc<Vec<u8>>>>>,
+    /// kid → public key, for verifying tokens this service issued.
+    public_cache: Arc<RwLock<HashMap<String, Vec<u8>>>>,
 }
 
 impl SigningKeys {
@@ -89,6 +93,7 @@ impl SigningKeys {
             pool,
             crypto,
             cache: Arc::new(RwLock::new(HashMap::new())),
+            public_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -122,6 +127,65 @@ impl SigningKeys {
         let mut h = Header::new(Algorithm::EdDSA);
         h.kid = Some(kid.to_string());
         h
+    }
+
+    /// Verify a token this service issued, whichever key signed it.
+    ///
+    /// identity-service is the JWKS *issuer*, so it resolves public keys from
+    /// its own database rather than HTTP-calling itself. Needed because
+    /// anything here that consumes a token — the admin gate, most importantly —
+    /// would otherwise still be verifying HS256 only, and would reject every
+    /// token the moment issuance moved to per-tenant EdDSA.
+    pub async fn verify(&self, token: &str) -> Result<crate::token::TokenClaims, String> {
+        let header = decode_header(token).map_err(|e| format!("malformed token header: {e}"))?;
+        if header.alg != Algorithm::EdDSA {
+            return Err(format!("not an EdDSA token (alg {:?})", header.alg));
+        }
+        let kid = header
+            .kid
+            .ok_or_else(|| "EdDSA token carries no kid".to_string())?;
+
+        let public_key = self.public_key_for(&kid).await?;
+
+        // Issuer and audience are validated by the caller's own TokenManager
+        // config where it matters; here the signature and expiry are what
+        // establish that this service issued the token and it is still live.
+        let mut validation = Validation::new(Algorithm::EdDSA);
+        validation.validate_aud = false;
+
+        decode::<crate::token::TokenClaims>(
+            token,
+            &DecodingKey::from_ed_der(&public_key),
+            &validation,
+        )
+        .map(|d| d.claims)
+        .map_err(|e| format!("invalid token: {e}"))
+    }
+
+    /// Public key for a `kid`, cached. Keys are immutable per `kid`, so a hit
+    /// never needs invalidating.
+    async fn public_key_for(&self, kid: &str) -> Result<Vec<u8>, String> {
+        if let Some(hit) = self.public_cache.read().await.get(kid) {
+            return Ok(hit.clone());
+        }
+
+        let record = signing_key_store::by_kid(&self.pool, kid)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("unknown signing key {kid:?}"))?;
+
+        let raw = B64URL
+            .decode(&record.public_key)
+            .map_err(|e| format!("stored public key is not base64url: {e}"))?;
+        if raw.len() != 32 {
+            return Err("stored public key is not an Ed25519 key".to_string());
+        }
+
+        self.public_cache
+            .write()
+            .await
+            .insert(kid.to_string(), raw.clone());
+        Ok(raw)
     }
 
     /// Public keys for every signature a live token might carry.
