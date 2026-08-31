@@ -34,6 +34,20 @@ local database permanently unreadable.
 | `REPLICATION_PEER_TOKEN` | The peer replication API |
 | `VAULT_GATEWAY_SECRET` | Proves a request came through the gateway |
 
+### These are not login credentials
+
+Nothing in `.env.local` signs you in. They are *deployment* secrets — what the
+services need to start. You sign in with an **API key**, which is issued by
+`POST /v1/api-keys` and always starts `wslv_`.
+
+`VAULT_ADMIN_TOKEN` is the easiest to confuse: it is a bootstrap credential sent
+as the `X-Admin-Token` **header** to create the first tenant and key. Pasting it
+into the login form gives:
+
+```
+api key format is invalid; expected 'wslv_<base64url>'
+```
+
 ## 1. Database
 
 ```bash
@@ -140,6 +154,19 @@ curl -sX POST localhost:18082/v1/auth/mfa/totp \
      -H 'Content-Type: application/json' \
      -d "{\"challenge\":\"$CHALLENGE\",\"code\":\"$(cat-from-your-phone)\"}"
 ```
+
+## Seeding
+
+Once the stack is up, this creates a tenant, a human key with an authenticator
+enrolled, a machine key, a policy and a few secrets — then prints a working
+login:
+
+```bash
+./scripts/seed-local.sh
+```
+
+It writes `.local-login` (mode 600, git-ignored) with the API key, the TOTP
+secret, and a one-liner that prints the current 6-digit code.
 
 ## The UI
 

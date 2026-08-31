@@ -40,3 +40,6 @@ __pycache__/
 
 # session scratchpad (contains secrets, temp prompts)
 scratchpad/
+
+# local seed output (contains a live API key)
+.local-login

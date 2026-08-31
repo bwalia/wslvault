@@ -92,7 +92,16 @@ pub enum ApiKeyError {
     #[error("an api key with name '{0}' already exists for this tenant")]
     DuplicateName(String),
 
-    #[error("api key format is invalid; expected '{RAW_KEY_PREFIX}<base64url>'")]
+    /// The message names what a valid key looks like *and* the most common
+    /// thing supplied instead. Deployment secrets — `VAULT_ADMIN_TOKEN` above
+    /// all — are the same shape as an API key to the eye and sit next to each
+    /// other in a local `.env`, so "invalid format" alone leaves someone
+    /// re-checking a value that was never the right kind of credential.
+    #[error(
+        "api key format is invalid; expected '{RAW_KEY_PREFIX}<base64url>'. \
+         This must be an API key from POST /v1/api-keys — not VAULT_ADMIN_TOKEN \
+         or another deployment secret"
+    )]
     InvalidKeyFormat,
 
     #[error("rate limit exceeded")]
