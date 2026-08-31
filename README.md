@@ -74,6 +74,11 @@ curl -sX POST localhost:8080/v1/auth/mfa/totp \
      -d '{"challenge":"…","code":"123456"}'
 ```
 
+Any RFC 6238 authenticator works — Google Authenticator, Microsoft
+Authenticator, 1Password, Bitwarden, Authy, FreeOTP. There is nothing to choose:
+enrolment returns a standard `otpauth://` URI (SHA-1, 6 digits, 30s), which is
+what every one of them expects.
+
 Enrol an authenticator:
 
 ```bash
@@ -160,6 +165,7 @@ copies under `deploy/helm/wslvault/files/migrations/` must stay in sync.
 | [Architecture](docs/architecture.md) | How the services fit together |
 | [Security model](docs/security-model.md) | Trust boundaries, NetworkPolicy, the gateway |
 | [Status](docs/STATUS.md) | Honest assessment of what is built and what is not |
+| [Local testing](docs/operations/local-testing.md) | Stand the stack up and walk the login flow |
 | [Deployment](docs/operations/deployment.md) | Running it for real |
 | [Vault KV v2 compatibility](docs/operations/vault-kv2-compatibility.md) | What the compatible mount supports |
 | [Tenant authentication](docs/tenant-authentication.md) | How tenants authenticate |
