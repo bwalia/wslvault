@@ -113,8 +113,11 @@ jobs:
     # still pinned to linux/amd64 because the Dockerfiles choose their Rust musl
     # target from `uname -m`.
     runs-on: [self-hosted, wslvault]
-    # Decoupled from test/check so image builds+pushes aren't gated on the non-blocking lint/audit jobs.
-    needs: []
+    # Gated on check + test. These were decoupled (`needs: []`) back when lint
+    # and audit were `continue-on-error`, so gating on them meant gating on
+    # nothing. They block now — and with them decoupled, code that failed its
+    # tests was still built and pushed to the registry on every merge to main.
+    needs: [check, test]
     env:
       # Kubeconfig for k3s1, used by the buildx kubernetes driver below so the
       # actual compile runs on an amd64 node instead of under emulation here.
