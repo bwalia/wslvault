@@ -11,6 +11,7 @@
 //! the correct key version.
 
 use ring::hmac;
+use zeroize::Zeroizing;
 
 use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
 use wslvault_core::VaultError;
@@ -56,11 +57,32 @@ pub fn decrypt(key: &TransitKey, versioned_ciphertext: &str) -> Result<Vec<u8>, 
     Ok(plaintext.to_vec())
 }
 
-/// Compute an HMAC-SHA256 signature over `data` using `key` bytes.
+/// Derive the MAC subkey for a transit key.
+///
+/// `sign_data` and `verify_data` used the key's raw material directly — the
+/// same 32 bytes that AES-256-GCM encrypts with. Using one key for two
+/// primitives is a hygiene failure: it removes the domain separation that
+/// keeps a weakness or a misuse in one construction from bearing on the other.
+///
+/// HKDF-SHA256 with a distinct context gives each primitive its own key, from
+/// the same stored material and with no schema change. `wslvault-core` already
+/// ships the KDF.
+///
+/// Note this changes the signatures a given key produces. `/sign` and `/verify`
+/// are HMAC — a shared-secret MAC, not a digital signature — so a signature is
+/// only ever verifiable by a holder of the key, and there are no third-party
+/// verifiers to break. Anything persisted from before must be re-signed.
+fn mac_subkey(key_material: &[u8]) -> Zeroizing<[u8; 32]> {
+    wslvault_core::crypto::kdf::derive_key(key_material, None, b"wslvault:transit:mac:v1")
+        .expect("HKDF-SHA256 cannot fail for a 32-byte output")
+}
+
+/// Compute an HMAC-SHA256 signature over `data`.
 ///
 /// Returns a hex-encoded signature string.
 pub fn sign_data(key: &[u8], data: &[u8]) -> String {
-    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, key);
+    let mac_key = mac_subkey(key);
+    let signing_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key.as_ref());
     let tag = hmac::sign(&signing_key, data);
     hex::encode(tag.as_ref())
 }
@@ -73,7 +95,8 @@ pub fn verify_data(key: &[u8], data: &[u8], signature: &str) -> bool {
     let Ok(sig_bytes) = hex::decode(signature) else {
         return false;
     };
-    let verification_key = hmac::Key::new(hmac::HMAC_SHA256, key);
+    let mac_key = mac_subkey(key);
+    let verification_key = hmac::Key::new(hmac::HMAC_SHA256, mac_key.as_ref());
     hmac::verify(&verification_key, data, &sig_bytes).is_ok()
 }
 
@@ -173,5 +196,25 @@ mod tests {
 
         let pt = decrypt(&key, &new_ct).unwrap();
         assert_eq!(pt, plaintext);
+    }
+
+    /// The MAC key must not be the encryption key. Sharing one key between
+    /// AES-GCM and HMAC removes the domain separation between them.
+    #[test]
+    fn mac_key_is_separated_from_the_encryption_key() {
+        let material = [0x42u8; 32];
+        assert_ne!(
+            *mac_subkey(&material),
+            material,
+            "the MAC subkey must be derived, not the raw encryption key"
+        );
+    }
+
+    #[test]
+    fn mac_subkey_is_deterministic_and_key_specific() {
+        let a = [0x01u8; 32];
+        let b = [0x02u8; 32];
+        assert_eq!(*mac_subkey(&a), *mac_subkey(&a));
+        assert_ne!(*mac_subkey(&a), *mac_subkey(&b));
     }
 }
