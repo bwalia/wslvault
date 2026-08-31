@@ -1474,25 +1474,6 @@ pub async fn handle_auth_api_key(
         }
     };
 
-    // Issue a short-lived JWT using the key's UUID as the subject so that
-    // downstream services can correlate the token back to the originating key.
-    let subject = validation_result.key_id.to_string();
-    let (token, expires_at) = match issue_for_tenant(
-        &state,
-        &subject,
-        &validation_result.tenant_id,
-        validation_result.policies.clone(),
-        validation_result.is_superuser,
-    )
-    .await
-    {
-        Ok(pair) => pair,
-        Err(err) => {
-            let api_err = ApiKeyError::TokenIssuance(err);
-            return api_err.into_response();
-        }
-    };
-
     // A key marked `mfa_required` gets a challenge, not a token. The check is
     // per key so machine clients — ESO, CI, the SDKs — keep the one-step
     // exchange; a service account cannot read an authenticator app.
@@ -1542,6 +1523,25 @@ pub async fn handle_auth_api_key(
             }
         }
     }
+
+    // Issue a short-lived JWT using the key's UUID as the subject so that
+    // downstream services can correlate the token back to the originating key.
+    let subject = validation_result.key_id.to_string();
+    let (token, expires_at) = match issue_for_tenant(
+        &state,
+        &subject,
+        &validation_result.tenant_id,
+        validation_result.policies.clone(),
+        validation_result.is_superuser,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(err) => {
+            let api_err = ApiKeyError::TokenIssuance(err);
+            return api_err.into_response();
+        }
+    };
 
     if validation_result.is_superuser {
         // A superuser token authorises across every tenant. It is the
