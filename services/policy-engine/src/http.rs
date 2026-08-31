@@ -15,7 +15,17 @@
 //! | DELETE   | /v1/policies/:name         | Delete a policy                     |
 //! | POST     | /v1/policies/authorize     | Evaluate a single authorization     |
 //!
-//! All policy routes require an `X-Tenant-Id` header.
+//! # Authentication
+//!
+//! Every policy route resolves the caller through
+//! [`wslvault_core::auth::resolve_identity`] and operates on **that** caller's
+//! tenant. The tenant is never taken from a request header.
+//!
+//! It used to be: `tenant_id()` read `X-Tenant-Id` straight off the request and
+//! the routes were guarded only by `require_gateway_auth`, which is disabled
+//! whenever `VAULT_GATEWAY_SECRET` is unset — as it is in every chart-rendered
+//! deployment. Anyone who could reach this port could therefore read, rewrite
+//! or delete any tenant's policies without a credential.
 
 use std::sync::Arc;
 
@@ -61,6 +71,12 @@ pub struct PolicyDocumentDto {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AuthorizeRequest {
     pub principal_id: String,
+    /// Policy names held by the caller, exactly as the gRPC `Authorize` RPC
+    /// takes them. Required: without it this endpoint has no way to know what
+    /// the principal is entitled to, and its previous behaviour was to assume
+    /// everything in the tenant.
+    #[serde(default)]
+    pub policies: Vec<String>,
     pub action: String,
     pub resource: String,
 }
@@ -72,6 +88,7 @@ pub struct AuthorizeResponse {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(dead_code)] // Handlers emit inline JSON; kept as the documented error shape.
 pub struct ErrorResponse {
     pub message: String,
 }
@@ -139,11 +156,21 @@ fn dto_to_doc(dto: PolicyDocumentDto) -> Result<PolicyDocument, String> {
     })
 }
 
-fn tenant_id(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+/// Authenticate the caller and return the tenant they may operate on.
+///
+/// The `Err` variant is an already-rendered response, so handlers return it
+/// verbatim.
+#[allow(clippy::result_large_err)]
+fn caller_tenant(headers: &HeaderMap) -> Result<String, axum::response::Response> {
+    wslvault_core::auth::resolve_identity(headers)
+        .map(|id| id.tenant_id)
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "message": e.to_string() })),
+            )
+                .into_response()
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -159,12 +186,9 @@ async fn health_handler() -> impl IntoResponse {
 
 /// GET /v1/policies
 async fn list_policies(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     let docs = state.store.get_all_for_tenant(&tid).await;
     let dtos: Vec<_> = docs.into_iter().map(doc_to_dto).collect();
@@ -177,12 +201,9 @@ async fn create_policy(
     headers: HeaderMap,
     Json(body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     let doc = match dto_to_doc(body) {
         Ok(d) => d,
@@ -197,7 +218,7 @@ async fn create_policy(
     state.store.put_policy(&tid, doc.clone()).await;
     {
         let mut guard = state.compiled.write().await;
-        guard.upsert(doc.name.clone(), doc.rules.clone());
+        guard.upsert(tid.clone(), doc.name.clone(), doc.rules.clone());
     }
     (StatusCode::CREATED, Json(doc_to_dto(doc))).into_response()
 }
@@ -208,12 +229,9 @@ async fn get_policy(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     match state.store.get_policy(&tid, &name).await {
         Some(doc) => (StatusCode::OK, Json(doc_to_dto(doc))).into_response(),
@@ -232,12 +250,9 @@ async fn upsert_policy(
     Path(name): Path<String>,
     Json(mut body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     body.name = name; // path name wins
     let doc = match dto_to_doc(body) {
@@ -253,7 +268,7 @@ async fn upsert_policy(
     state.store.put_policy(&tid, doc.clone()).await;
     {
         let mut guard = state.compiled.write().await;
-        guard.upsert(doc.name.clone(), doc.rules.clone());
+        guard.upsert(tid.clone(), doc.name.clone(), doc.rules.clone());
     }
     (StatusCode::OK, Json(doc_to_dto(doc))).into_response()
 }
@@ -264,15 +279,19 @@ async fn delete_policy(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     match state.store.delete_policy(&tid, &name).await {
-        Some(_) => StatusCode::NO_CONTENT.into_response(),
+        Some(_) => {
+            // Drop it from the live snapshot too. Without this the deleted
+            // policy keeps granting access until the next background
+            // recompilation tick.
+            let mut guard = state.compiled.write().await;
+            guard.remove(&tid, &name);
+            StatusCode::NO_CONTENT.into_response()
+        }
         None => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "message": "policy not found" })),
@@ -287,23 +306,23 @@ async fn authorize(
     headers: HeaderMap,
     Json(body): Json<AuthorizeRequest>,
 ) -> impl IntoResponse {
-    let Some(tid) = tenant_id(&headers) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "message": "X-Tenant-Id header is required" })),
-        )
-            .into_response();
+    let tid = match caller_tenant(&headers) {
+        Ok(t) => t,
+        Err(r) => return r,
     };
 
     let compiled = state.compiled.read().await;
     let action = body.action.clone();
     let resource = body.resource.clone();
 
-    // Collect policy names for this principal by loading all tenant policies
-    let docs = state.store.get_all_for_tenant(&tid).await;
-    let policy_names: Vec<String> = docs.iter().map(|d| d.name.clone()).collect();
-
-    let decision = crate::evaluator::evaluate(&compiled, &policy_names, &action, &resource);
+    // Evaluate the caller's OWN policies, scoped to their tenant.
+    //
+    // This previously loaded every policy in the tenant and evaluated the
+    // caller against the union of all of them, ignoring `principal_id`
+    // entirely: if any policy anywhere in the tenant granted an action, every
+    // principal in that tenant had it. The gRPC path never had this bug, and
+    // this endpoint now takes the same input it does.
+    let decision = crate::evaluator::evaluate(&compiled, &tid, &body.policies, &action, &resource);
     let (allowed, reason) = match decision {
         crate::model::PolicyDecision::Allow => (true, "allowed".to_string()),
         crate::model::PolicyDecision::Deny { reason } => (false, reason),
