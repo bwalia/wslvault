@@ -26,6 +26,7 @@ hex = { workspace = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 jsonwebtoken = { workspace = true }
+tonic = { workspace = true }
 config = { workspace = true }
 tokio = { workspace = true }
 prometheus = { workspace = true }

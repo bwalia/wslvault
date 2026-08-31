@@ -13,6 +13,7 @@ pub mod auth;
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod grpc_channel;
 pub mod ha;
 pub mod metrics;
 pub mod middleware;

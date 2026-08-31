@@ -54,7 +54,11 @@ use wslvault_core::VaultError;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<dyn SecretStoreBackend>,
-    pub crypto_endpoint: String,
+    /// Lazily-connected channel to the crypto-service.
+    ///
+    /// Was a URL that every handler dialled afresh, so each encrypt or decrypt
+    /// paid for a TCP plus HTTP/2 handshake before doing any work.
+    pub crypto_channel: tonic::transport::Channel,
     pub audit_client: AuditClient,
     pub policy_client: PolicyClient,
     pub lease_client: LeaseClient,
@@ -369,11 +373,9 @@ pub async fn get_secret(
     // Decrypt the stored ciphertext via the crypto-service.
     let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
 
-    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    {
+    let mut crypto_client = match Ok::<_, tonic::transport::Error>(
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone()),
+    ) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "crypto-service connect failed");
@@ -586,11 +588,9 @@ pub async fn put_secret(
 
     let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
 
-    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    {
+    let mut crypto_client = match Ok::<_, tonic::transport::Error>(
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone()),
+    ) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "crypto-service connect failed");
@@ -1278,11 +1278,9 @@ pub async fn initiate_rotation(
     };
 
     let aad = format!("{}:{}", tenant_id, normalized_path).into_bytes();
-    let mut crypto_client = match crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    {
+    let mut crypto_client = match Ok::<_, tonic::transport::Error>(
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone()),
+    ) {
         Ok(c) => c,
         Err(e) => {
             error!(error = %e, "crypto-service connect failed");
@@ -1671,7 +1669,8 @@ pub fn build_router(
 
     let app_state = AppState {
         store,
-        crypto_endpoint,
+        crypto_channel: wslvault_core::grpc_channel::lazy_channel(&crypto_endpoint)
+            .unwrap_or_else(|e| panic!("crypto-service endpoint is unusable: {e}")),
         audit_client,
         policy_client,
         lease_client,

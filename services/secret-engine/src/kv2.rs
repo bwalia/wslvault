@@ -181,17 +181,8 @@ async fn decrypt(
     ciphertext: &str,
 ) -> Result<Vec<u8>, Response> {
     let aad = format!("{}:{}", tenant_id, path).into_bytes();
-    let mut client = crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    .map_err(|e| {
-        error!(error = %e, "crypto-service connect failed");
-        vault_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("crypto-service unavailable: {e}"),
-        )
-    })?;
+    let mut client =
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone());
 
     // The crypto-service expects "<dek_id>:<ciphertext_b64>".
     let combined = format!("{}:{}", dek_id, ciphertext);
@@ -219,17 +210,8 @@ async fn encrypt(
     plaintext: Vec<u8>,
 ) -> Result<(String, String), Response> {
     let aad = format!("{}:{}", tenant_id, path).into_bytes();
-    let mut client = crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    .map_err(|e| {
-        error!(error = %e, "crypto-service connect failed");
-        vault_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("crypto-service unavailable: {e}"),
-        )
-    })?;
+    let mut client =
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone());
 
     let resp = client
         .encrypt(crypto_proto::EncryptRequest {

@@ -24,21 +24,30 @@ use policy_proto::policy_service_client::PolicyServiceClient;
 
 /// Thin gRPC client for the policy-engine `Authorize` RPC.
 ///
-/// The struct stores only the endpoint URL so that each call can open a fresh
-/// connection.  In a production deployment this should be replaced by a
-/// connection pool (e.g. via `tonic::transport::Channel::balance_list`), but a
-/// per-call connect is sufficient for the initial implementation and avoids
-/// lifetime and clone complexity.
+/// Holds a lazily-connected `Channel` rather than an endpoint string. Every
+/// authorize call used to open a fresh connection inside the request handler,
+/// so a single secret read paid for a TCP plus HTTP/2 handshake before doing
+/// any work. The channel multiplexes and reconnects on its own.
 #[derive(Debug, Clone)]
 pub struct PolicyClient {
-    /// Base URL of the policy-engine gRPC server, e.g. `http://policy-engine:50053`.
     endpoint: String,
+    channel: tonic::transport::Channel,
 }
 
 impl PolicyClient {
     /// Create a new `PolicyClient` pointing at the given gRPC endpoint.
+    ///
+    /// Does not connect: the channel is lazy, so a policy-engine that has not
+    /// started yet does not prevent this service from starting.
+    ///
+    /// # Panics
+    /// If `endpoint` is not a valid URI. That is a configuration error the
+    /// process cannot proceed past, and it surfaces at startup rather than on
+    /// the first request.
     pub fn new(endpoint: String) -> Self {
-        Self { endpoint }
+        let channel = wslvault_core::grpc_channel::lazy_channel(&endpoint)
+            .unwrap_or_else(|e| panic!("policy-engine endpoint is unusable: {e}"));
+        Self { endpoint, channel }
     }
 
     /// Check whether `principal_id` is permitted to perform `action` on `resource`.
@@ -68,18 +77,7 @@ impl PolicyClient {
         action: &str,
         resource: &str,
     ) -> Result<(), VaultError> {
-        let mut client = PolicyServiceClient::connect(self.endpoint.clone())
-            .await
-            .map_err(|connect_err| {
-                warn!(
-                    error = %connect_err,
-                    endpoint = %self.endpoint,
-                    "policy-engine unavailable, denying request (fail-closed)"
-                );
-                VaultError::ServiceUnavailable {
-                    service: "policy-engine".into(),
-                }
-            })?;
+        let mut client = PolicyServiceClient::new(self.channel.clone());
 
         let response = client
             .authorize(policy_proto::AuthorizeRequest {
@@ -93,6 +91,7 @@ impl PolicyClient {
             .map_err(|rpc_err| {
                 warn!(
                     error = %rpc_err,
+                    endpoint = %self.endpoint,
                     principal_id = %principal_id,
                     action = %action,
                     resource = %resource,

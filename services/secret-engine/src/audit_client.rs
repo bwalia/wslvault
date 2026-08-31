@@ -18,14 +18,21 @@ use audit_proto::audit_service_client::AuditServiceClient;
 /// Audit failures are logged but never block the main operation.
 #[derive(Debug, Clone)]
 pub struct AuditClient {
-    /// gRPC endpoint URL for the audit-service, e.g. `http://audit-service:50056`.
-    endpoint: String,
+    channel: tonic::transport::Channel,
 }
 
 impl AuditClient {
     /// Create a new `AuditClient` targeting the given endpoint URL.
+    ///
+    /// The channel is lazy and shared; emission used to dial the audit-service
+    /// afresh for every event.
+    ///
+    /// # Panics
+    /// If `endpoint` is not a valid URI — a startup-time configuration error.
     pub fn new(endpoint: String) -> Self {
-        Self { endpoint }
+        let channel = wslvault_core::grpc_channel::lazy_channel(&endpoint)
+            .unwrap_or_else(|e| panic!("audit-service endpoint is unusable: {e}"));
+        Self { channel }
     }
 
     /// Emit an audit event asynchronously.
@@ -45,7 +52,7 @@ impl AuditClient {
         details_json: &str,
         client_ip: &str,
     ) {
-        let endpoint = self.endpoint.clone();
+        let channel = self.channel.clone();
         let req = audit_proto::EmitEventRequest {
             tenant_id: tenant_id.to_string(),
             principal_id: principal_id.to_string(),
@@ -59,15 +66,9 @@ impl AuditClient {
 
         // Spawn a background task so audit emission never blocks the response.
         tokio::spawn(async move {
-            match AuditServiceClient::connect(endpoint).await {
-                Ok(mut client) => {
-                    if let Err(e) = client.emit_event(tonic::Request::new(req)).await {
-                        warn!(error = %e, "failed to emit audit event to audit-service");
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to connect to audit-service for audit event");
-                }
+            let mut client = AuditServiceClient::new(channel);
+            if let Err(e) = client.emit_event(tonic::Request::new(req)).await {
+                warn!(error = %e, "failed to emit audit event to audit-service");
             }
         });
     }
