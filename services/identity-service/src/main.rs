@@ -20,6 +20,7 @@ mod azure_workload;
 mod crypto_client;
 mod grpc;
 mod health;
+mod mfa;
 mod mtls;
 mod oidc;
 mod openapi;
@@ -484,6 +485,11 @@ async fn main() -> Result<(), anyhow::Error> {
     // otherwise expose key creation to anyone who can reach the port.
     let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone());
 
+    let crypto_for_identity = std::env::var("CRYPTO_SERVICE_ENDPOINT")
+        .ok()
+        .filter(|e| !e.trim().is_empty())
+        .map(|e| crypto_client::CryptoClient::new(e.trim()));
+
     let signing_keys = match (&signing_key_pool, std::env::var("CRYPTO_SERVICE_ENDPOINT")) {
         (Some(pool), Ok(endpoint)) if !endpoint.trim().is_empty() => {
             info!(endpoint = %endpoint, "per-tenant token signing keys enabled");
@@ -502,10 +508,23 @@ async fn main() -> Result<(), anyhow::Error> {
         }
     };
 
+    // The second factor needs a database for enrolments and the crypto-service
+    // to wrap secrets with. Without both it is unavailable, and a key marked
+    // mfa_required fails closed rather than quietly logging in without it.
+    if signing_key_pool.is_none() || crypto_for_identity.is_none() {
+        warn!(
+            "authenticator (TOTP) MFA is DISABLED (needs DATABASE_URL and \
+             CRYPTO_SERVICE_ENDPOINT); keys marked mfa_required will be refused"
+        );
+    }
+
     let api_key_state = api_keys::ApiKeyState {
         manager: api_key_manager,
         token_manager: token_manager_for_api_keys,
         signing_keys: signing_keys.clone(),
+        mfa_pool: signing_key_pool.clone(),
+        crypto: crypto_for_identity,
+        challenges: mfa::ChallengeStore::new(),
     };
 
     // Construct the SCIM shared state.  When DATABASE_URL is set, use

@@ -7,6 +7,7 @@ pub mod api_key_store;
 pub mod audit_store;
 pub mod key_store;
 pub mod lease_store;
+pub mod mfa_store;
 pub mod policy_store;
 pub mod pool;
 pub mod quota_store;

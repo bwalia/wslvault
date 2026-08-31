@@ -46,7 +46,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use wslvault_storage::{api_key_store, pool::DbPool};
@@ -921,6 +921,13 @@ pub struct ApiKeyState {
     /// Per-tenant Ed25519 signing keys. `None` falls back to the shared HS256
     /// secret, which is the legacy posture — see `signing_keys`.
     pub signing_keys: Option<crate::signing_keys::SigningKeys>,
+    /// Database pool for MFA enrolments. `None` disables the second factor.
+    pub mfa_pool: Option<wslvault_storage::pool::DbPool>,
+    /// Wraps TOTP secrets, so they sit under the root KEK like every other
+    /// piece of key material here.
+    pub crypto: Option<crate::crypto_client::CryptoClient>,
+    /// Logins that have passed the key check and are waiting on a code.
+    pub challenges: crate::mfa::ChallengeStore,
 }
 
 // ---------------------------------------------------------------------------
@@ -1370,6 +1377,18 @@ pub async fn handle_rotate_api_key(
     }
 }
 
+/// Whether this key has a confirmed authenticator enrolled.
+async fn mfa_enrolment_active(state: &ApiKeyState, api_key_id: Uuid) -> Result<bool, String> {
+    let Some(pool) = state.mfa_pool.as_ref() else {
+        return Ok(false);
+    };
+    Ok(wslvault_storage::mfa_store::find(pool, api_key_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|e| e.is_active())
+        .unwrap_or(false))
+}
+
 /// Mint a token signed with the tenant's own key, falling back to the shared
 /// HS256 secret only where per-tenant keys are not configured.
 ///
@@ -1474,6 +1493,56 @@ pub async fn handle_auth_api_key(
         }
     };
 
+    // A key marked `mfa_required` gets a challenge, not a token. The check is
+    // per key so machine clients — ESO, CI, the SDKs — keep the one-step
+    // exchange; a service account cannot read an authenticator app.
+    if validation_result.mfa_required {
+        match mfa_enrolment_active(&state, validation_result.key_id).await {
+            Ok(true) => {
+                let challenge = state
+                    .challenges
+                    .issue(crate::mfa::PendingChallenge {
+                        api_key_id: validation_result.key_id,
+                        tenant_id: validation_result.tenant_id.clone(),
+                        policies: validation_result.policies.clone(),
+                        superuser: validation_result.is_superuser,
+                        expires_at: crate::mfa::challenge_expiry(),
+                    })
+                    .await;
+                info!(
+                    key_id = %validation_result.key_id,
+                    "api key accepted; awaiting authenticator code"
+                );
+                return crate::mfa::challenge_response(challenge);
+            }
+            Ok(false) => {
+                // The key demands a second factor and none is enrolled. Fail
+                // closed: issuing a token here would silently make the
+                // requirement optional, which is the same as not having it.
+                warn!(
+                    key_id = %validation_result.key_id,
+                    "key requires MFA but has no confirmed authenticator; refusing"
+                );
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "message": "this key requires an authenticator; \
+                                    enrol one via /v1/auth/mfa/totp/enroll"
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(error = %e, "could not check MFA enrolment");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "message": "could not verify the second factor" })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     if validation_result.is_superuser {
         // A superuser token authorises across every tenant. It is the
         // highest-value credential in the system, so its issuance is never a
@@ -1532,6 +1601,392 @@ pub async fn handle_jwks(State(state): State<ApiKeyState>) -> impl IntoResponse 
     }
 }
 
+/// `POST /v1/auth/mfa/totp` — complete a login with an authenticator code.
+///
+/// Accepts either a six-digit TOTP code or a single-use recovery code, so a
+/// lost phone is a nuisance rather than a lockout.
+pub async fn handle_mfa_verify(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<crate::mfa::VerifyRequest>,
+) -> impl IntoResponse {
+    // Taking the challenge removes it, so it cannot be replayed even inside its
+    // TTL. A failed code therefore costs a fresh login rather than allowing
+    // unlimited guesses against one challenge — which is the rate limit.
+    let Some(pending) = state.challenges.take(&req.challenge).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "challenge is unknown or expired" })),
+        )
+            .into_response();
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(pool, pending.api_key_id).await {
+        Ok(Some(e)) if e.is_active() => e,
+        Ok(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "message": "no confirmed authenticator for this key" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not verify the second factor" })),
+            )
+                .into_response();
+        }
+    };
+
+    let accepted = match verify_second_factor(pool, crypto, &enrolment, &pending, &req.code).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!(error = %e, "second factor verification failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not verify the second factor" })),
+            )
+                .into_response();
+        }
+    };
+
+    if !accepted {
+        warn!(
+            key_id = %pending.api_key_id,
+            tenant_id = %pending.tenant_id,
+            "authenticator code rejected"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "invalid or already-used code" })),
+        )
+            .into_response();
+    }
+
+    let (token, expires_at) = match issue_for_tenant(
+        &state,
+        &pending.api_key_id.to_string(),
+        &pending.tenant_id,
+        pending.policies.clone(),
+        pending.superuser,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(err) => return ApiKeyError::TokenIssuance(err).into_response(),
+    };
+
+    if pending.superuser {
+        warn!(
+            key_id = %pending.api_key_id,
+            "SUPERUSER token issued after MFA — grants cross-tenant access"
+        );
+    }
+    info!(key_id = %pending.api_key_id, "MFA accepted; token issued");
+
+    (
+        StatusCode::OK,
+        Json(ApiKeyAuthResponse {
+            token,
+            expires_at,
+            tenant_id: pending.tenant_id.clone(),
+            policies: pending.policies.clone(),
+        }),
+    )
+        .into_response()
+}
+
+/// Check a TOTP code, falling back to a recovery code.
+///
+/// TOTP first: a recovery code is the expensive path and burns a code, so it
+/// should only be reached when the normal factor genuinely was not supplied.
+async fn verify_second_factor(
+    pool: &wslvault_storage::pool::DbPool,
+    crypto: &crate::crypto_client::CryptoClient,
+    enrolment: &wslvault_storage::mfa_store::TotpEnrolment,
+    pending: &crate::mfa::PendingChallenge,
+    code: &str,
+) -> Result<bool, String> {
+    let secret_bytes = crypto
+        .unwrap(
+            enrolment.tenant_id.to_string(),
+            &enrolment.wrapped_secret,
+            totp_aad(pending.api_key_id),
+        )
+        .await?;
+    let secret = String::from_utf8(secret_bytes)
+        .map_err(|_| "stored TOTP secret is not valid UTF-8".to_string())?;
+
+    let now = chrono::Utc::now().timestamp();
+    if let Some(step) = crate::mfa::verify_code(&secret, code, now) {
+        // Replay defence lives in the UPDATE, not here: two requests presenting
+        // the same code would otherwise both pass this check before either
+        // wrote. See `try_consume_step`.
+        return wslvault_storage::mfa_store::try_consume_step(pool, pending.api_key_id, step)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
+    let hash = crate::mfa::hash_recovery_code(code);
+    wslvault_storage::mfa_store::consume_recovery_code(pool, pending.api_key_id, &hash)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// AAD binding a wrapped TOTP secret to the key it protects.
+fn totp_aad(api_key_id: Uuid) -> Vec<u8> {
+    format!("wslvault:mfa:totp:{api_key_id}").into_bytes()
+}
+
+/// Request body for enrolment and confirmation.
+#[derive(Debug, Deserialize)]
+pub struct MfaEnrollRequest {
+    /// The API key being enrolled. Proving possession of it is what authorises
+    /// enrolment — the same credential the second factor will protect.
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MfaConfirmRequest {
+    pub api_key: String,
+    /// A code generated from the secret just issued, proving the authenticator
+    /// was set up correctly before it becomes required.
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MfaEnrollResponse {
+    /// Base32 secret, for manual entry.
+    pub secret: String,
+    /// `otpauth://` URI to render as a QR code.
+    pub otpauth_uri: String,
+    /// Single-use fallbacks. Shown once; only hashes are stored.
+    pub recovery_codes: Vec<String>,
+    pub warning: String,
+}
+
+/// `POST /v1/auth/mfa/totp/enroll` — begin enrolment for an API key.
+///
+/// Authorised by presenting the key itself. Enrolment does not take effect
+/// until confirmed, so a half-finished attempt cannot lock anyone out.
+pub async fn handle_mfa_enroll(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<MfaEnrollRequest>,
+) -> impl IntoResponse {
+    let validated = match state.manager.validate_key(&req.api_key).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let tenant_uuid = match Uuid::parse_str(&validated.tenant_id) {
+        Ok(u) => u,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "message": format!("tenant is not a UUID: {e}") })),
+            )
+                .into_response()
+        }
+    };
+
+    let secret = match crate::mfa::generate_secret() {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "TOTP secret generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "could not generate a secret" })),
+            )
+                .into_response();
+        }
+    };
+
+    // Wrapped before storage, so the second factor sits under the root KEK like
+    // every other piece of key material and a database dump does not yield it.
+    let wrapped = match crypto
+        .wrap(
+            validated.tenant_id.clone(),
+            secret.as_bytes(),
+            totp_aad(validated.key_id),
+        )
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => {
+            error!(error = %e, "could not wrap the TOTP secret");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": format!("could not store the secret: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) =
+        wslvault_storage::mfa_store::upsert_pending(pool, validated.key_id, tenant_uuid, &wrapped)
+            .await
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "message": e.to_string() })),
+        )
+            .into_response();
+    }
+
+    let codes = match crate::mfa::generate_recovery_codes(8) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "recovery code generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "could not generate recovery codes" })),
+            )
+                .into_response();
+        }
+    };
+    let hashes: Vec<String> = codes.iter().map(|(_, h)| h.clone()).collect();
+    if let Err(e) = wslvault_storage::mfa_store::replace_recovery_codes(
+        pool,
+        validated.key_id,
+        tenant_uuid,
+        &hashes,
+    )
+    .await
+    {
+        error!(error = %e, "could not store recovery codes");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not store recovery codes" })),
+        )
+            .into_response();
+    }
+
+    info!(key_id = %validated.key_id, "TOTP enrolment started; awaiting confirmation");
+
+    (
+        StatusCode::OK,
+        Json(MfaEnrollResponse {
+            otpauth_uri: crate::mfa::otpauth_uri(
+                &secret,
+                &validated.key_id.to_string(),
+                "WSLVault",
+            ),
+            secret,
+            recovery_codes: codes.into_iter().map(|(c, _)| c).collect(),
+            warning: "Scan the QR code, then confirm with a generated code. Recovery codes are \
+                      shown once and stored only as hashes: keep them somewhere you can reach \
+                      without this vault."
+                .to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /v1/auth/mfa/totp/confirm` — prove the authenticator works.
+///
+/// Until this succeeds the enrolment is inert: it neither satisfies a login
+/// challenge nor blocks one.
+pub async fn handle_mfa_confirm(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<MfaConfirmRequest>,
+) -> impl IntoResponse {
+    let validated = match state.manager.validate_key(&req.api_key).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(pool, validated.key_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "no enrolment in progress" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment" })),
+            )
+                .into_response();
+        }
+    };
+
+    let secret = match crypto
+        .unwrap(
+            enrolment.tenant_id.to_string(),
+            &enrolment.wrapped_secret,
+            totp_aad(validated.key_id),
+        )
+        .await
+        .map(String::from_utf8)
+    {
+        Ok(Ok(s)) => s,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment secret" })),
+            )
+                .into_response()
+        }
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let Some(step) = crate::mfa::verify_code(&secret, &req.code, now) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "that code does not match the enrolment" })),
+        )
+            .into_response();
+    };
+
+    if let Err(e) = wslvault_storage::mfa_store::confirm(pool, validated.key_id, step).await {
+        error!(error = %e, "could not confirm the enrolment");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not confirm the enrolment" })),
+        )
+            .into_response();
+    }
+
+    info!(key_id = %validated.key_id, "TOTP enrolment confirmed");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "confirmed": true,
+            "message": "authenticator confirmed; it is now required for this key"
+        })),
+    )
+        .into_response()
+}
+
 /// Builds an [`axum::Router`] containing all API-key routes.
 ///
 /// The four management routes sit behind [`require_admin`]; `/v1/auth/api-key`
@@ -1563,6 +2018,12 @@ pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
         // Public on purpose: it serves public keys. Verifiers need it without
         // holding a credential, and a public key confers no ability to sign.
         .route("/v1/identity/.well-known/jwks.json", get(handle_jwks))
+        // Second-factor routes. Not token-authenticated on purpose: possession
+        // of the API key authorises them, and the whole point is that a token
+        // has not been issued yet.
+        .route("/v1/auth/mfa/totp", post(handle_mfa_verify))
+        .route("/v1/auth/mfa/totp/enroll", post(handle_mfa_enroll))
+        .route("/v1/auth/mfa/totp/confirm", post(handle_mfa_confirm))
         .with_state(state);
 
     management.merge(exchange)
@@ -1588,6 +2049,9 @@ mod tests {
     fn make_state() -> ApiKeyState {
         ApiKeyState {
             signing_keys: None,
+            mfa_pool: None,
+            crypto: None,
+            challenges: crate::mfa::ChallengeStore::new(),
             manager: ApiKeyManager::new(),
             token_manager: make_token_manager(),
         }
