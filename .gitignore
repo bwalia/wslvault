@@ -28,6 +28,15 @@ Thumbs.db
 # Node (UI)
 node_modules/
 dist/
+.next/
+
+# Python (SDK) — a 39 MB virtualenv and 2,455 compiled caches were tracked here
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
 
 # session scratchpad (contains secrets, temp prompts)
 scratchpad/
