@@ -144,6 +144,46 @@ pub async fn insert_key_descriptor(
     insert_named_key_descriptor(pool, desc, wrapped_key, parent_key_id, None).await
 }
 
+/// Emit a `dek_upsert` replication event carrying a data-encryption key wrapped
+/// under the SHARED ROOT key (not the per-region tenant KEK, which never leaves
+/// its region). A peer region's replication-agent inserts the row verbatim, and
+/// its crypto-service unwraps it via the root-key fallback in the reload path.
+///
+/// Without this, a secret written in one region replicated its ciphertext and
+/// `dek_id` to peers but not the key material, so peers failed to decrypt it
+/// with "key not found". Best-effort at the call site: a failed emit must not
+/// fail the encrypt that triggered the DEK's creation.
+pub async fn emit_dek_upsert_event(
+    pool: &DbPool,
+    source_region: &str,
+    tenant_id: &str,
+    key_id: &str,
+    version: i32,
+    dek_wrapped_root: &str,
+) -> Result<(), VaultError> {
+    let payload = serde_json::json!({
+        "tenant_id": tenant_id,
+        "key_id": key_id,
+        "version": version,
+        "algorithm": "aes-256-gcm",
+        "dek_wrapped_root": dek_wrapped_root,
+    });
+
+    sqlx::query(
+        "INSERT INTO system.replication_events (event_type, source_region, payload)
+         VALUES ('dek_upsert', $1, $2)",
+    )
+    .bind(source_region)
+    .bind(payload)
+    .execute(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(())
+}
+
 /// Insert a descriptor for a key addressed by NAME rather than by id.
 ///
 /// Transit keys are looked up as `/v1/transit/keys/:name`, so the name has to

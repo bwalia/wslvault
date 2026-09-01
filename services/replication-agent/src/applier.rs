@@ -19,6 +19,7 @@ pub async fn apply_event(
     local_region: &str,
 ) -> anyhow::Result<()> {
     match event.event_type.as_str() {
+        "dek_upsert" => apply_dek_upsert(pool, event).await,
         "secret_upsert" => apply_secret_upsert(pool, event, conflict_strategy, local_region).await,
         "secret_delete" => apply_secret_delete(pool, event).await,
         "secret_destroy" => apply_secret_destroy(pool, event).await,
@@ -42,6 +43,46 @@ pub async fn apply_event(
             Ok(())
         }
     }
+}
+
+/// Apply a `dek_upsert` event: install a peer region's data-encryption key so
+/// secrets replicated from that region can be decrypted locally.
+///
+/// The DEK arrives wrapped under the SHARED ROOT key (the per-region tenant KEK
+/// never leaves its region), so the row is stored verbatim; the local
+/// crypto-service unwraps it through its root-key fallback on first use. The
+/// insert is idempotent — a DEK already present (native or previously
+/// replicated) is left untouched, so this never disturbs local key material.
+async fn apply_dek_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+    let field = |k: &str| {
+        event.payload[k]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing {k} in dek_upsert payload"))
+    };
+    let tenant_id = field("tenant_id")?;
+    let key_id = field("key_id")?;
+    let dek_wrapped_root = field("dek_wrapped_root")?;
+    let algorithm = event.payload["algorithm"].as_str().unwrap_or("aes-256-gcm");
+    let version = event.payload["version"].as_i64().unwrap_or(1) as i32;
+
+    sqlx::query(
+        r#"
+        INSERT INTO system.key_descriptors
+            (id, version, algorithm, purpose, state, tenant_id, wrapped_key)
+        VALUES ($1::uuid, $2, $3, 'data_encryption', 'active', $4::uuid, $5)
+        ON CONFLICT (id) DO NOTHING
+        "#,
+    )
+    .bind(key_id)
+    .bind(version)
+    .bind(algorithm)
+    .bind(tenant_id)
+    .bind(dek_wrapped_root)
+    .execute(pool.inner())
+    .await?;
+
+    debug!(key_id, tenant_id, "applied dek_upsert (peer DEK installed)");
+    Ok(())
 }
 
 async fn apply_secret_upsert(
