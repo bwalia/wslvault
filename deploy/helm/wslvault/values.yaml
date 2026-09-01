@@ -164,6 +164,10 @@ ui:
   # -- Additional hostnames the UI Ingress answers, e.g. to keep an old name
   # working across a rename. Each needs the same DNS + PoP routing as `host`.
   extraHosts: []
+  # -- Overrides the release version the footer shows (/api/version). Leave
+  # empty: images built by CI bake the computed vX.Y.Z; set this only when a
+  # pinned image predates that scheme.
+  appVersion: ""
   # -- traefik-edge is the host-network Traefik daemonset on the edge nodes
   # (:443 on the pinned node). With the stack pinned to cloud001 the LAN
   # Traefik LB can no longer reach these pods, so the edge node serves the

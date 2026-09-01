@@ -35,6 +35,12 @@ RUN npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
+# Fallbacks for the footer build stamp (/api/version) when the image runs
+# outside the chart (docker-compose, local). The Deployment env wins in-cluster.
+ARG GIT_SHA=""
+ARG APP_VERSION=dev
+ENV APP_GIT_SHA=$GIT_SHA \
+    APP_VERSION=$APP_VERSION
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3011 \

@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Lock, Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
+import BuildStamp from '@/components/BuildStamp'
 
 export default function LoginPage() {
   const { login, verifyMfa } = useAuth()
@@ -83,9 +84,12 @@ export default function LoginPage() {
           </p>
         </div>
 
-        <p className="font-mono text-xs text-steel-ink-dim">
-          AES-256-GCM · per-tenant KEK · multi-region
-        </p>
+        <div>
+          <p className="font-mono text-xs text-steel-ink-dim">
+            AES-256-GCM · per-tenant KEK · multi-region
+          </p>
+          <BuildStamp className="mt-1.5 text-xs" />
+        </div>
       </div>
 
       {/* Right panel — the form */}

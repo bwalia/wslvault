@@ -25,7 +25,9 @@ note "migrations vendored into the chart match storage/postgres/init"
 # reach outside the chart root, and Argo CD renders the chart straight from Git.
 # That copy is the thing that can silently rot, so it is checked here rather
 # than trusted.
-if diff -rq "$ROOT/storage/postgres/init" "$CHART/files/migrations" >"$OUT/migdiff" 2>&1; then
+# *.disabled files are deliberately inert (see 019_rls_enforce.sql.disabled)
+# and never vendored into the chart, so they are not drift.
+if diff -rq -x '*.disabled' "$ROOT/storage/postgres/init" "$CHART/files/migrations" >"$OUT/migdiff" 2>&1; then
   ok "$(ls "$CHART/files/migrations"/*.sql | wc -l | tr -d ' ') files in sync"
 else
   bad "chart migrations have drifted from storage/postgres/init:"

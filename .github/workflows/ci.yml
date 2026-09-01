@@ -10,7 +10,56 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
+# Serialize main: two quick merges must not race to the same release version
+# (compute-version claims a number that auto-tag only pushes after the builds
+# succeed, so run #2 has to wait for run #1's tag to exist). PRs only queue
+# against themselves, and a newer push cancels their stale runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
+  # ─── work out the next release version (does NOT push the tag) ──────
+  # Ported from jobshout's release pipeline. v<MAJOR>.<MINOR>.<PATCH>, PATCH
+  # incrementing on every push to main. The repo's first tag is bare `1.0.0`
+  # and the line continues v-prefixed (v1.0.1, ...), so the lookup accepts
+  # both rather than forking a second tag line.
+  compute-version:
+    name: Compute Next Version
+    runs-on: [self-hosted, wslvault]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read # resolves a number; tagging happens after the build
+    outputs:
+      next_version: ${{ steps.calc.outputs.next_version }}
+      tag_is_new: ${{ steps.calc.outputs.tag_is_new }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the tags
+
+      - name: Calculate next version
+        id: calc
+        run: |
+          set -euo pipefail
+          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          [ -n "$LATEST_TAG" ] || LATEST_TAG="v1.0.0"
+          BASE_VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          NEXT_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
+
+          # A collision means there is nothing to release (a replay, mostly);
+          # the registry version tag and git tag are both skipped, while the
+          # SHA-tagged image builds proceed as always.
+          if git tag -l "$NEXT_VERSION" | grep -q "^$NEXT_VERSION$"; then
+            echo "::warning::Tag $NEXT_VERSION already exists — skipping the release tags."
+            echo "tag_is_new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag_is_new=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
   check:
     name: Check & Lint
     runs-on: ubuntu-latest
@@ -117,7 +166,9 @@ jobs:
     # and audit were `continue-on-error`, so gating on them meant gating on
     # nothing. They block now — and with them decoupled, code that failed its
     # tests was still built and pushed to the registry on every merge to main.
-    needs: [check, test]
+    # compute-version feeds the release image tag; it only runs on main, same
+    # as this job's own `if`.
+    needs: [check, test, compute-version]
     env:
       # Kubeconfig for k3s1, used by the buildx kubernetes driver below so the
       # actual compile runs on an amd64 node instead of under emulation here.
@@ -193,11 +244,71 @@ jobs:
           # silently produce an aarch64 binary that the amd64 cluster cannot
           # execute — and the failure only surfaces at pod start.
           platforms: linux/amd64
+          # The vX.Y.Z line lands only when the version is new; empty entries
+          # are dropped by the action's list parser.
           tags: |
             bwalia/wslvault-${{ matrix.service }}:latest
             bwalia/wslvault-${{ matrix.service }}:0.1.0
             bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}
+            ${{ needs.compute-version.outputs.tag_is_new == 'true' && format('bwalia/wslvault-{0}:{1}', matrix.service, needs.compute-version.outputs.next_version) || '' }}
+          # Only vault-ui declares these (footer build stamp); they are inert
+          # for the other services.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            APP_VERSION=${{ needs.compute-version.outputs.next_version }}
           # GHA cache is unavailable on a self-hosted runner without the
           # Actions cache service; use the local buildx cache instead.
           cache-from: type=local,src=/tmp/.buildx-cache-${{ matrix.service }}
           cache-to: type=local,dest=/tmp/.buildx-cache-${{ matrix.service }},mode=max
+
+  # ─── claim the version: push the tag + cut the release ──────────────
+  # Runs only after EVERY image is in the registry: a failed build leaves no
+  # tag and no release, and the next push retries the SAME version number.
+  # Never push the tag first — a tag naming images that were never published
+  # pins deploys to a version that cannot pull.
+  auto-tag:
+    name: Tag & Release
+    needs: [compute-version, build-images]
+    if: needs.compute-version.outputs.tag_is_new == 'true'
+    runs-on: [self-hosted, wslvault]
+    permissions:
+      contents: write # the only job that writes to the repo
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Tag exactly what was built, not HEAD of main (which may have
+          # advanced while the builds ran).
+          ref: ${{ github.sha }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag
+        id: create_tag
+        run: |
+          set -euo pipefail
+          NEXT_VERSION="${{ needs.compute-version.outputs.next_version }}"
+          # compute-version checked collisions against its clone; re-check the
+          # REMOTE, because the race being guarded is a tag appearing there
+          # during the long builds.
+          if git ls-remote --exit-code --tags origin "refs/tags/$NEXT_VERSION" >/dev/null 2>&1; then
+            echo "::warning::Tag $NEXT_VERSION appeared during the build, skipping creation"
+            echo "tag_created=false" >> "$GITHUB_OUTPUT"
+          else
+            git tag -a "$NEXT_VERSION" -m "Release $NEXT_VERSION"
+            git push origin "$NEXT_VERSION"
+            echo "tag_created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        if: steps.create_tag.outputs.tag_created == 'true'
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.compute-version.outputs.next_version }}
+          name: Release ${{ needs.compute-version.outputs.next_version }}
+          generate_release_notes: true
