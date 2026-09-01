@@ -67,7 +67,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: b6c8a85199386116b71fba914cba0ace53526dcf
   # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
   # the old name on the login page). The old host stays as an alias so existing
   # bookmarks and links keep working; both CNAME to pop0 and share the
