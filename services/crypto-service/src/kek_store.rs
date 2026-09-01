@@ -35,7 +35,8 @@ use wslvault_core::seal::Seal;
 use wslvault_core::types::key::{KeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, KeyState};
 
 use wslvault_storage::key_store::{
-    get_key_versions_with_wrapped_key, insert_key_descriptor, list_active_keys_with_wrapped_key,
+    emit_dek_upsert_event, get_key_versions_with_wrapped_key, insert_key_descriptor,
+    list_active_keys_with_wrapped_key,
     list_recent_loadable_keys, update_key_state,
 };
 use wslvault_storage::pool::DbPool;
@@ -414,15 +415,21 @@ impl KekStore {
                     aad.as_bytes(),
                 ) {
                     Ok(p) => p,
-                    Err(e) => {
-                        warn!(
-                            key_id = %row.key_id,
-                            tenant_id = %tenant_id,
-                            error = %e,
-                            "Failed to unwrap DEK — skipping (investigate immediately)"
-                        );
-                        continue;
-                    }
+                    // A DEK replicated from a peer is wrapped under the shared
+                    // root key, not this region's tenant KEK — fall back before
+                    // giving up.
+                    Err(e) => match self.transport_unwrap_dek(&row.wrapped_key, &row.key_id).await {
+                        Ok(p) => p,
+                        Err(_) => {
+                            warn!(
+                                key_id = %row.key_id,
+                                tenant_id = %tenant_id,
+                                error = %e,
+                                "Failed to unwrap DEK — skipping (investigate immediately)"
+                            );
+                            continue;
+                        }
+                    },
                 };
 
                 if plaintext.len() != 32 {
@@ -700,9 +707,64 @@ impl KekStore {
                 })?;
 
             debug!(tenant_id, key_id, "DEK persisted to database");
+
+            // Publish the DEK to peer regions, wrapped under the SHARED ROOT key
+            // rather than this region's tenant KEK (which no peer holds). The
+            // peer stores the row as-is; its crypto-service unwraps it through
+            // the root-key fallback in the reload path. Best-effort: a failed
+            // emit must not fail the encrypt — the DEK still works locally, and a
+            // later write for the same tenant re-mints and re-emits.
+            match self.transport_wrap_dek(&*raw_dek, &key_id).await {
+                Ok(dek_wrapped_root) => {
+                    let region_id =
+                        std::env::var("REGION_ID").unwrap_or_else(|_| "default".to_string());
+                    if let Err(e) = emit_dek_upsert_event(
+                        pool,
+                        &region_id,
+                        tenant_id,
+                        &key_id,
+                        1,
+                        &dek_wrapped_root,
+                    )
+                    .await
+                    {
+                        warn!(tenant_id, key_id, error = %e, "failed to emit dek_upsert replication event");
+                    }
+                }
+                Err(e) => {
+                    warn!(tenant_id, key_id, error = %e, "failed to transport-wrap DEK for replication");
+                }
+            }
         }
 
         Ok(key_id)
+    }
+
+    /// Wrap a raw DEK under the shared root key for cross-region transport.
+    /// AAD `dek:transport:<key_id>` matches the fallback used when unwrapping a
+    /// replicated DEK row (see `hydrate_dek` / `load_from_db`).
+    async fn transport_wrap_dek(
+        &self,
+        raw_dek: &[u8],
+        key_id: &str,
+    ) -> Result<String, VaultError> {
+        let root_kek = self.inner.seal.root_key().await?;
+        let aad = format!("dek:transport:{key_id}");
+        let envelope = encrypt_with_dek(&root_kek, raw_dek, aad.as_bytes())?;
+        Ok(envelope.ciphertext_b64)
+    }
+
+    /// Unwrap a DEK that a peer region wrapped for transport under the shared
+    /// root key. Mirror of [`transport_wrap_dek`]; used as the fallback when the
+    /// tenant-KEK reload unwrap fails because the row was replicated in.
+    async fn transport_unwrap_dek(
+        &self,
+        wrapped_b64: &str,
+        key_id: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        let root_kek = self.inner.seal.root_key().await?;
+        let aad = format!("dek:transport:{key_id}");
+        decrypt_with_dek(&root_kek, wrapped_b64, aad.as_bytes())
     }
 
     /// Pull one DEK's versions in from the database and cache them.
@@ -735,14 +797,22 @@ impl KekStore {
         let mut versions: Vec<(u32, Zeroizing<[u8; 32]>, String)> = Vec::new();
         for row in rows {
             let aad = format!("dek:reload:{}", row.key_id);
-            let Ok(plaintext) = decrypt_with_dek(&tenant_kek, &row.wrapped_key, aad.as_bytes())
-            else {
-                warn!(
-                    key_id,
-                    version = row.version,
-                    "could not unwrap DEK version — skipping"
-                );
-                continue;
+            let plaintext = match decrypt_with_dek(&tenant_kek, &row.wrapped_key, aad.as_bytes()) {
+                Ok(p) => p,
+                // A DEK replicated from a peer is wrapped under the shared root
+                // key (AAD dek:transport:<key_id>), not this region's tenant KEK,
+                // so the reload unwrap above fails. Fall back to the root key.
+                Err(_) => match self.transport_unwrap_dek(&row.wrapped_key, &row.key_id).await {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!(
+                            key_id,
+                            version = row.version,
+                            "could not unwrap DEK version — skipping"
+                        );
+                        continue;
+                    }
+                },
             };
             if plaintext.len() != 32 {
                 continue;
