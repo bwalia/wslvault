@@ -80,6 +80,7 @@ pub async fn run(
                 anyhow::anyhow!("PostgreSQL connection failed: {}", e)
             })?;
             info!("PostgreSQL connection pool established; using PgSecretBackend");
+            wslvault_storage::revocation_store::install_auth_revocation_checker(pool.clone());
             Arc::new(PgSecretBackend::new(pool))
         }
         Err(_) => {

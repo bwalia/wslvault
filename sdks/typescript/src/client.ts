@@ -304,6 +304,12 @@ class AuditSection extends BaseSection {
 
 /** Methods for lease lifecycle management. */
 class LeasesSection extends BaseSection {
+  /** List leases for the authenticated tenant. */
+  async list(): Promise<LeaseRecord[]> {
+    const body = await super.get<{ leases: LeaseRecord[] }>("/v1/leases");
+    return body.leases ?? [];
+  }
+
   /** Retrieve a lease by its UUID. */
   async get(leaseId: string): Promise<LeaseRecord> {
     return super.get<LeaseRecord>(`/v1/leases/${leaseId}`);

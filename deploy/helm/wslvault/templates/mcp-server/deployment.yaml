@@ -75,6 +75,10 @@ spec:
               value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "audit-service" "context" $))
                           (.Values.auditService.httpPort | toString) }}
+            - name: VAULT_LEASE_MANAGER_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $))
+                          (.Values.leaseManager.httpPort | toString) }}
             {{- with .Values.mcpServer.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

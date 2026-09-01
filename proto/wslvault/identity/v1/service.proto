@@ -5,6 +5,7 @@ service IdentityService {
   rpc Authenticate(AuthenticateRequest) returns (AuthenticateResponse);
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
   rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+  rpc RevokeTokenByHash(RevokeTokenByHashRequest) returns (RevokeTokenByHashResponse);
   rpc CreateServiceAccount(CreateServiceAccountRequest) returns (CreateServiceAccountResponse);
   rpc ListServiceAccounts(ListServiceAccountsRequest) returns (ListServiceAccountsResponse);
 }
@@ -87,6 +88,17 @@ message RevokeTokenRequest {
 }
 
 message RevokeTokenResponse {}
+
+// Used by lease-manager on token lease revoke/expire. The hash is SHA-256 of
+// the raw JWT, hex-encoded — never the token itself.
+message RevokeTokenByHashRequest {
+  string token_hash = 1;
+  string tenant_id = 2;
+  string principal_id = 3;
+  int64 expires_at = 4;
+}
+
+message RevokeTokenByHashResponse {}
 
 message CreateServiceAccountRequest {
   string tenant_id = 1;

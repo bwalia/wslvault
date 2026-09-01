@@ -112,7 +112,7 @@ networkPolicies:
     # traefik-edge is host-networked, so its source is the node's flannel host
     # address rather than a pod IP — hence the cidr carve-out rather than a
     # podSelector.
-    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091, 8092]
+    ports: [8081, 8082, 8083, 8084, 8086, 8087, 8088, 8091, 8092]
   # -- Destination ports the replication-agent and region-health may reach on
   # peer regions. Egress is opened to public address space only (RFC1918 and
   # link-local are excluded) and only when global.region.peers is non-empty.
@@ -223,7 +223,7 @@ edgeIngress:
     entrypoint: web
   # -- path -> component:port. Verified 2026-07-13 against source routes.
   # Deliberately omitted (no HTTP backend): /v1/identity (unimplemented),
-  # /v1/leases + /v1/audit (gRPC-only). /healthz + /readyz map to secret-engine.
+  # /v1/audit (gRPC-only). /healthz + /readyz map to secret-engine.
   routes:
     - { path: /healthz, component: secret-engine, port: 8081 }
     - { path: /readyz, component: secret-engine, port: 8081 }
@@ -256,6 +256,7 @@ edgeIngress:
     - { path: /v1/policies, component: policy-engine, port: 8083 }
     - { path: /v1/pki, component: pki-engine, port: 8088 }
     - { path: /v1/mcp, component: mcp-server, port: 8087 }
+    - { path: /v1/leases, component: lease-manager, port: 8084 }
 
 # -- Prometheus monitoring annotations
 monitoring:

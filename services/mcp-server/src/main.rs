@@ -55,6 +55,8 @@ pub struct AppState {
     pub transit_engine_url: String,
     /// Endpoint for the audit-service HTTP API.
     pub audit_engine_url: String,
+    /// Endpoint for the lease-manager HTTP API.
+    pub lease_manager_url: String,
     /// Whether Bearer token authentication is required on MCP endpoints.
     /// Only meaningful for the HTTP transport.
     pub auth_required: bool,
@@ -329,6 +331,8 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or_else(|_| "http://transit-engine:8086".into()),
         audit_engine_url: std::env::var("VAULT_AUDIT_SERVICE_ADDR")
             .unwrap_or_else(|_| "http://audit-service:8085".into()),
+        lease_manager_url: std::env::var("VAULT_LEASE_MANAGER_ADDR")
+            .unwrap_or_else(|_| "http://lease-manager:8084".into()),
         auth_required,
     };
 

@@ -508,6 +508,8 @@ pub struct LdapLoginResponse {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub tenant_id: String,
     pub policies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
 }
 
 /// `POST /v1/auth/ldap/login` — authenticate via LDAP bind and issue a JWT.
@@ -532,6 +534,13 @@ pub async fn handle_ldap_login(
                 LDAP_JWT_TTL_SECONDS,
             ) {
                 Ok((token, expires_at)) => {
+                    let lease_id = crate::lease_client::try_create_token_lease(
+                        &result.tenant_id,
+                        &subject,
+                        &token,
+                        LDAP_JWT_TTL_SECONDS,
+                    )
+                    .await;
                     info!(
                         username = %payload.username,
                         tenant_id = %result.tenant_id,
@@ -544,6 +553,7 @@ pub async fn handle_ldap_login(
                             expires_at,
                             tenant_id: result.tenant_id,
                             policies: result.policies,
+                            lease_id,
                         }),
                     )
                         .into_response()

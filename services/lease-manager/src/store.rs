@@ -91,6 +91,29 @@ impl LeaseRecord {
         let delta = self.expires_at.signed_duration_since(Utc::now());
         delta.num_seconds().max(0)
     }
+
+    /// Operator-facing label derived from `target_data`.
+    pub fn target_label(&self) -> String {
+        serde_json::from_str::<wslvault_core::types::lease::LeaseTarget>(&self.target_data)
+            .map(|t| t.label())
+            .unwrap_or_else(|_| self.target_type.clone())
+    }
+
+    /// Token-lease revocation payload: (token_hash, principal_id, expires_at unix).
+    pub fn token_revocation(&self) -> Option<(String, String, i64)> {
+        if self.target_type != "token" {
+            return None;
+        }
+        let target: wslvault_core::types::lease::LeaseTarget =
+            serde_json::from_str(&self.target_data).ok()?;
+        match target {
+            wslvault_core::types::lease::LeaseTarget::Token {
+                token_id,
+                principal_id,
+            } => Some((token_id, principal_id, self.expires_at.timestamp())),
+            _ => None,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +125,7 @@ impl LeaseRecord {
 #[async_trait]
 pub trait LeaseStoreBackend: Send + Sync {
     /// Insert a new lease, returning its assigned `LeaseId`.
-    async fn insert_lease(&self, record: LeaseRecord) -> LeaseId;
+    async fn insert_lease(&self, record: LeaseRecord) -> Result<LeaseId, String>;
 
     /// Retrieve a lease by ID.  Returns `None` when the lease does not exist.
     async fn get_lease(&self, lease_id: &LeaseId) -> Option<LeaseRecord>;
@@ -126,6 +149,13 @@ pub trait LeaseStoreBackend: Send + Sync {
     /// Sweep active leases whose wall-clock expiry has passed, transitioning
     /// them to Expired.  Returns the IDs of all leases that were expired.
     async fn expire_stale_leases(&self) -> Vec<LeaseId>;
+
+    /// Active leases whose `expires_at` has passed, without mutating them.
+    /// Used so token-lease identity callbacks can fail closed and retry.
+    async fn list_stale_active_leases(&self) -> Vec<LeaseRecord>;
+
+    /// Transition an active lease to Expired.
+    async fn mark_expired(&self, lease_id: &LeaseId) -> Result<(), String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -160,11 +190,11 @@ impl Default for InMemoryLeaseStore {
 
 #[async_trait]
 impl LeaseStoreBackend for InMemoryLeaseStore {
-    async fn insert_lease(&self, record: LeaseRecord) -> LeaseId {
+    async fn insert_lease(&self, record: LeaseRecord) -> Result<LeaseId, String> {
         let id = record.id.clone();
         let mut guard = self.inner.write().await;
         guard.insert(id.clone(), record);
-        id
+        Ok(id)
     }
 
     async fn get_lease(&self, lease_id: &LeaseId) -> Option<LeaseRecord> {
@@ -240,5 +270,26 @@ impl LeaseStoreBackend for InMemoryLeaseStore {
         }
 
         expired_ids
+    }
+
+    async fn list_stale_active_leases(&self) -> Vec<LeaseRecord> {
+        let now = Utc::now();
+        let guard = self.inner.read().await;
+        guard
+            .values()
+            .filter(|r| r.state == LeaseState::Active && r.expires_at <= now)
+            .cloned()
+            .collect()
+    }
+
+    async fn mark_expired(&self, lease_id: &LeaseId) -> Result<(), String> {
+        let mut guard = self.inner.write().await;
+        let record = guard
+            .get_mut(lease_id)
+            .ok_or_else(|| format!("lease not found: {}", lease_id))?;
+        if record.state == LeaseState::Active {
+            record.state = LeaseState::Expired;
+        }
+        Ok(())
     }
 }

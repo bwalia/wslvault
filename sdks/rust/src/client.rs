@@ -127,6 +127,8 @@ pub struct LeaseRecord {
     pub id: String,
     pub tenant_id: String,
     pub target_type: String,
+    #[serde(default)]
+    pub target_label: Option<String>,
     pub state: String,
     pub ttl_seconds: i64,
     pub max_ttl_seconds: i64,
@@ -134,6 +136,14 @@ pub struct LeaseRecord {
     pub issued_at: String,
     pub expires_at: String,
     pub revoked_at: Option<String>,
+    #[serde(default)]
+    pub remaining_seconds: Option<i64>,
+}
+
+/// Envelope returned by GET /v1/leases.
+#[derive(Debug, Deserialize)]
+pub struct LeaseListResponse {
+    pub leases: Vec<LeaseRecord>,
 }
 
 /// Response from a lease renewal operation.
@@ -446,6 +456,13 @@ impl VaultClient {
     // -----------------------------------------------------------------------
     // Lease API  (HTTP gateway exposes /v1/leases)
     // -----------------------------------------------------------------------
+
+    /// List leases for the authenticated tenant.
+    pub async fn list_leases(&self) -> Result<Vec<LeaseRecord>, VaultClientError> {
+        let url = format!("{}/v1/leases", self.config.endpoint);
+        let envelope: LeaseListResponse = self.get(&url).await?;
+        Ok(envelope.leases)
+    }
 
     /// Retrieve a lease by its UUID.
     pub async fn get_lease(&self, lease_id: &str) -> Result<LeaseRecord, VaultClientError> {

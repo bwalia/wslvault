@@ -16,24 +16,27 @@ import { cn } from '@/lib/utils'
 
 interface Lease {
   id: string
-  secret_path: string
+  tenant_id: string
+  target_type: string
+  target_label: string
   state: string
-  ttl: number
-  expires_at: string
+  ttl_seconds: number
+  max_ttl_seconds: number
   renewable: boolean
-  created_at: string
+  issued_at: string
+  expires_at: string
+  revoked_at: string | null
+  remaining_seconds: number
 }
 
-type StateFilter = 'all' | 'active' | 'renewing' | 'expired' | 'revoked'
+type StateFilter = 'all' | 'active' | 'expired' | 'revoked'
 
 const LEASES_KEY = '/api/lease/v1/leases'
 
-function TTLBar({ expiresAt }: { expiresAt: string }) {
+function TTLBar({ expiresAt, ttlSeconds }: { expiresAt: string; ttlSeconds: number }) {
   const remaining = getRemainingSeconds(expiresAt)
-  // Estimate total from when remaining could be 0–24h; show progress as % of 24h
-  const total = 24 * 3600
+  const total = Math.max(ttlSeconds, 1)
   const pct = Math.min(100, Math.round((remaining / total) * 100))
-  // Use functional colors: healthy → primary, warning → warn, critical → danger
   const fillColor =
     pct > 50 ? 'bg-primary-500' : pct > 20 ? 'bg-warn-500' : 'bg-danger-500'
 
@@ -56,12 +59,10 @@ export default function LeasesPage() {
   const vaultMutate = useVaultMutate()
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
 
+  const query = stateFilter === 'all' ? LEASES_KEY : `${LEASES_KEY}?state=${stateFilter}`
   const { data: leasesData, error: loadError, isLoading } =
-    useVaultSWR<{ leases: Lease[] }>(LEASES_KEY)
+    useVaultSWR<{ leases: Lease[] }>(query)
   const leases = leasesData?.leases ?? []
-
-  const filtered =
-    stateFilter === 'all' ? leases : leases.filter(l => l.state === stateFilter)
 
   const [revokeTarget, setRevokeTarget] = useState<Lease | null>(null)
   const [renewingId, setRenewingId] = useState<string | null>(null)
@@ -75,14 +76,16 @@ export default function LeasesPage() {
       void renew
         .run(
           async () => {
-            await vaultMutate(`${LEASES_KEY}/${lease.id}/renew`, 'POST', {})
-            await swrMutate(LEASES_KEY)
+            await vaultMutate(`${LEASES_KEY}/${lease.id}/renew`, 'POST', {
+              increment_seconds: 3600,
+            })
+            await swrMutate(query)
           },
           { fallback: 'Failed to renew lease' },
         )
         .finally(() => setRenewingId(null))
     },
-    [renew, vaultMutate],
+    [renew, vaultMutate, query],
   )
 
   const onRevoke = useCallback(() => {
@@ -92,18 +95,25 @@ export default function LeasesPage() {
     void revoke.run(
       async () => {
         await vaultMutate(`${LEASES_KEY}/${revokeTarget.id}/revoke`, 'POST', {})
-        await swrMutate(LEASES_KEY)
+        await swrMutate(query)
       },
       { fallback: 'Failed to revoke lease', onSuccess: () => setRevokeTarget(null) },
     )
-  }, [revoke, revokeTarget, vaultMutate])
+  }, [revoke, revokeTarget, vaultMutate, query])
 
   const columns: Column<Lease>[] = [
     {
-      field: 'secret_path',
-      label: 'Secret Path',
+      field: 'target_label',
+      label: 'Target',
       sortable: true,
       mono: true,
+    },
+    {
+      field: 'target_type',
+      label: 'Type',
+      render: row => (
+        <span className="text-xs text-ink-muted">{row.target_type}</span>
+      ),
     },
     {
       field: 'id',
@@ -117,39 +127,41 @@ export default function LeasesPage() {
     {
       field: 'expires_at',
       label: 'TTL',
-      render: row => <TTLBar expiresAt={row.expires_at} />,
+      render: row => <TTLBar expiresAt={row.expires_at} ttlSeconds={row.ttl_seconds} />,
     },
     {
-      field: 'created_at',
-      label: 'Created',
+      field: 'issued_at',
+      label: 'Issued',
       sortable: true,
-      render: row => <span className="text-xs text-ink-muted">{formatDateTime(row.created_at)}</span>,
+      render: row => <span className="text-xs text-ink-muted">{formatDateTime(row.issued_at)}</span>,
     },
     {
       field: '_actions',
       label: '',
       render: row => (
         <div className="flex items-center gap-1">
-          {row.renewable && (
+          {row.renewable && row.state === 'active' && (
             <Button
               variant="ghost"
               size="sm"
               loading={renewingId === row.id}
-              aria-label={`Renew lease for ${row.secret_path}`}
+              aria-label={`Renew lease for ${row.target_label}`}
               onClick={e => { e.stopPropagation(); onRenew(row) }}
             >
               <RefreshCw className="w-4 h-4" />
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label={`Revoke lease for ${row.secret_path}`}
-            onClick={e => { e.stopPropagation(); setRevokeTarget(row) }}
-            className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-600/10"
-          >
-            <XCircle className="w-4 h-4" />
-          </Button>
+          {row.state !== 'revoked' && (
+            <Button
+              variant="ghost"
+              size="sm"
+              aria-label={`Revoke lease for ${row.target_label}`}
+              onClick={e => { e.stopPropagation(); setRevokeTarget(row) }}
+              className="text-danger-600 hover:bg-danger-50 dark:hover:bg-danger-600/10"
+            >
+              <XCircle className="w-4 h-4" />
+            </Button>
+          )}
         </div>
       ),
     },
@@ -158,7 +170,6 @@ export default function LeasesPage() {
   const tabs: { value: StateFilter; label: string }[] = [
     { value: 'all', label: 'All' },
     { value: 'active', label: 'Active' },
-    { value: 'renewing', label: 'Renewing' },
     { value: 'expired', label: 'Expired' },
     { value: 'revoked', label: 'Revoked' },
   ]
@@ -167,10 +178,9 @@ export default function LeasesPage() {
     <div>
       <PageHeader
         title="Leases"
-        description="Active secret leases and TTL management"
+        description="Token leases and remaining TTL. Revoking a lease immediately invalidates that JWT."
       />
 
-      {/* State filter — quiet segmented buttons; selected = bg-surface-3 text-ink */}
       <div className="flex items-center gap-1 mb-6 p-1 rounded-lg bg-surface-2 border border-line w-fit">
         {tabs.map(tab => (
           <button
@@ -188,7 +198,6 @@ export default function LeasesPage() {
         ))}
       </div>
 
-      {/* Renew failures have no modal to live in — surface them on the page. */}
       <ErrorBanner message={renew.error} onDismiss={renew.clearError} />
 
       {loadError ? (
@@ -197,12 +206,12 @@ export default function LeasesPage() {
         <EmptyState
           icon={Key}
           title="No leases yet"
-          description="Secret leases will appear here once clients start reading time-bound credentials."
+          description="A lease is created when you log in. Token leases appear here; KV secret reads do not."
         />
       ) : (
         <DataTable
           columns={columns}
-          data={(filtered as unknown as Record<string, unknown>[]) ?? []}
+          data={(leases as unknown as Record<string, unknown>[]) ?? []}
           loading={isLoading}
           keyField="id"
           emptyMessage="No leases match the selected filter."
@@ -214,7 +223,7 @@ export default function LeasesPage() {
         onClose={() => { setRevokeTarget(null); revoke.clearError() }}
         onConfirm={onRevoke}
         title="Revoke lease"
-        description={`Revoke lease for "${revokeTarget?.secret_path}"? The associated credentials will be immediately invalidated.`}
+        description={`Revoke lease "${revokeTarget?.target_label}"? The associated token will stop working immediately.`}
         confirmLabel="Revoke"
         loading={revoke.pending}
         error={revoke.error}

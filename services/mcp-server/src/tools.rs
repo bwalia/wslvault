@@ -324,16 +324,15 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_leases".into(),
-            description: "List all active leases for a tenant".into(),
+            description: "List leases for the authenticated tenant. Tenant is taken from the bearer token, not from arguments.".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "tenant_id": {
+                    "state": {
                         "type": "string",
-                        "description": "Tenant ID"
+                        "description": "Optional filter: active | expired | revoked"
                     }
-                },
-                "required": ["tenant_id"]
+                }
             }),
         },
         ToolDefinition {
@@ -345,13 +344,9 @@ pub fn all_tool_definitions() -> Vec<ToolDefinition> {
                     "lease_id": {
                         "type": "string",
                         "description": "The lease ID to revoke"
-                    },
-                    "tenant_id": {
-                        "type": "string",
-                        "description": "Tenant ID"
                     }
                 },
-                "required": ["lease_id", "tenant_id"]
+                "required": ["lease_id"]
             }),
         },
     ]
@@ -759,24 +754,19 @@ async fn handle_rotate_transit_key(
     })
 }
 
-/// GET `/v1/leases?tenant_id={tenant_id}` — returns all active leases for
-/// the specified tenant.
+/// GET `/v1/leases` on lease-manager — tenant comes from the bearer token.
 async fn handle_list_leases(
     state: &AppState,
     args: Value,
     ctx: &CallerContext,
 ) -> Result<String, String> {
-    let tenant_id = args["tenant_id"]
-        .as_str()
-        .ok_or("missing 'tenant_id' argument")?;
-
-    let url = format!(
-        "{}/v1/leases?tenant_id={}",
-        state.secret_engine_url, tenant_id
-    );
+    let mut url = format!("{}/v1/leases", state.lease_manager_url);
+    if let Some(filter) = args["state"].as_str().filter(|s| !s.is_empty()) {
+        url.push_str(&format!("?state={}", filter));
+    }
 
     let client = reqwest::Client::new();
-    let resp = apply_caller_headers(client.get(&url), tenant_id, ctx)
+    let resp = apply_caller_headers(client.get(&url), "", ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -788,14 +778,14 @@ async fn handle_list_leases(
         .map_err(|e| format!("failed to read response: {}", e))?;
 
     if !status.is_success() {
-        return Err(format!("secret-engine returned {}: {}", status, body));
+        return Err(format!("lease-manager returned {}: {}", status, body));
     }
 
     Ok(body)
 }
 
-/// DELETE `/v1/leases/{lease_id}` — revokes the named lease immediately,
-/// invalidating any associated credentials or tokens.
+/// POST `/v1/leases/{lease_id}/revoke` — revokes the named lease immediately,
+/// invalidating any associated token.
 async fn handle_revoke_lease(
     state: &AppState,
     args: Value,
@@ -804,14 +794,11 @@ async fn handle_revoke_lease(
     let lease_id = args["lease_id"]
         .as_str()
         .ok_or("missing 'lease_id' argument")?;
-    let tenant_id = args["tenant_id"]
-        .as_str()
-        .ok_or("missing 'tenant_id' argument")?;
 
-    let url = format!("{}/v1/leases/{}", state.secret_engine_url, lease_id);
+    let url = format!("{}/v1/leases/{}/revoke", state.lease_manager_url, lease_id);
 
     let client = reqwest::Client::new();
-    let resp = apply_caller_headers(client.delete(&url), tenant_id, ctx)
+    let resp = apply_caller_headers(client.post(&url), "", ctx)
         .send()
         .await
         .map_err(|e| format!("request failed: {}", e))?;
@@ -822,8 +809,8 @@ async fn handle_revoke_lease(
         .await
         .map_err(|e| format!("failed to read response: {}", e))?;
 
-    if !status.is_success() {
-        return Err(format!("secret-engine returned {}: {}", status, body));
+    if status.as_u16() != 204 && !status.is_success() {
+        return Err(format!("lease-manager returned {}: {}", status, body));
     }
 
     Ok(if body.is_empty() {

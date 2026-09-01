@@ -58,21 +58,55 @@ impl LeaseClient {
     /// * `tenant_id`    — Tenant that owns the secret.
     /// * `secret_path`  — Normalised path of the secret being read.
     /// * `ttl_seconds`  — Requested TTL; the lease-manager may enforce a cap.
-    pub async fn create_lease_for_read(
+    /// Attempt to create a lease. Used by future dynamic engines; KV reads
+    /// do not call this.
+    #[allow(dead_code)]
+    pub async fn create_lease(
         &self,
         tenant_id: &str,
-        secret_path: &str,
+        target_type: &str,
+        target_data: &str,
         ttl_seconds: i64,
+        max_ttl_seconds: i64,
+        renewable: bool,
     ) -> Option<LeaseInfo> {
-        // The lease proto does not yet include a CreateLease RPC.  Log that
-        // the integration point is present but the RPC needs to be added to
-        // the proto before end-to-end lease creation can be exercised.
-        warn!(
-            tenant_id = tenant_id,
-            path = secret_path,
-            ttl = ttl_seconds,
-            "lease creation not yet wired (CreateLease RPC needed in proto)"
-        );
+        let mut client = LeaseServiceClient::new(self.channel.clone());
+        match client
+            .create_lease(lease_proto::CreateLeaseRequest {
+                tenant_id: tenant_id.to_string(),
+                target_type: target_type.to_string(),
+                target_data: target_data.to_string(),
+                ttl_seconds,
+                max_ttl_seconds,
+                renewable,
+            })
+            .await
+        {
+            Ok(resp) => {
+                let inner = resp.into_inner();
+                Some(LeaseInfo {
+                    lease_id: inner.lease_id,
+                    ttl_seconds: inner.ttl_seconds,
+                    renewable: inner.renewable,
+                })
+            }
+            Err(e) => {
+                warn!(error = %e, tenant_id, "lease-manager CreateLease failed");
+                None
+            }
+        }
+    }
+
+    /// KV reads are not leased. HashiCorp Vault does not lease static KV
+    /// either, and a row here could not revoke anything. Reserved for a
+    /// future dynamic secret engine.
+    #[allow(dead_code)]
+    pub async fn create_lease_for_read(
+        &self,
+        _tenant_id: &str,
+        _secret_path: &str,
+        _ttl_seconds: i64,
+    ) -> Option<LeaseInfo> {
         None
     }
 

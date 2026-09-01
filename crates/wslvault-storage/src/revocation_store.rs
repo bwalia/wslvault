@@ -75,6 +75,49 @@ pub async fn revoke(
     Ok(())
 }
 
+/// Record a revocation from a pre-computed token hash (lease-manager callback).
+///
+/// Same table as [`revoke`]. Idempotent. Do not pass a raw JWT.
+pub async fn revoke_by_hash(
+    pool: &DbPool,
+    token_hash: &str,
+    tenant_id: &str,
+    principal_id: &str,
+    expires_at_unix: i64,
+) -> Result<(), VaultError> {
+    if token_hash.len() != 64 || !token_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(VaultError::ValidationError {
+            field: "token_hash".into(),
+            reason: "token_hash must be 64 hex characters (SHA-256)".into(),
+        });
+    }
+
+    let expires_at = chrono::DateTime::from_timestamp(expires_at_unix, 0).ok_or_else(|| {
+        VaultError::ValidationError {
+            field: "expires_at".into(),
+            reason: format!("token exp {expires_at_unix} is not a representable timestamp"),
+        }
+    })?;
+
+    sqlx::query(
+        "INSERT INTO system.revoked_tokens
+             (token_hash, tenant_id, principal_id, expires_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (token_hash) DO NOTHING",
+    )
+    .bind(token_hash)
+    .bind(tenant_id)
+    .bind(principal_id)
+    .bind(expires_at)
+    .execute(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: format!("failed to record token revocation by hash: {e}"),
+    })?;
+
+    Ok(())
+}
+
 /// Whether this exact token has been revoked.
 ///
 /// Propagates database errors rather than returning `false`. The caller must
@@ -112,6 +155,32 @@ pub async fn reap_expired(pool: &DbPool) -> Result<i64, VaultError> {
         })?;
 
     Ok(row.try_get::<i64, _>("reaped").unwrap_or(0))
+}
+
+/// Wire this pool into `resolve_identity` so every HTTP handler that uses it
+/// rejects revoked JWTs. Call once at service startup when DATABASE_URL is set.
+pub fn install_auth_revocation_checker(pool: DbPool) {
+    struct Checker(DbPool);
+
+    #[async_trait::async_trait]
+    impl wslvault_core::auth::TokenRevocation for Checker {
+        async fn is_revoked(&self, token: &str) -> Result<bool, wslvault_core::auth::AuthFailure> {
+            match is_revoked(&self.0, token).await {
+                Ok(v) => Ok(v),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "revocation lookup failed — denying (fail-closed)"
+                    );
+                    Err(wslvault_core::auth::AuthFailure(
+                        "token revocation list is unavailable".into(),
+                    ))
+                }
+            }
+        }
+    }
+
+    wslvault_core::auth::set_token_revocation(std::sync::Arc::new(Checker(pool)));
 }
 
 #[cfg(test)]

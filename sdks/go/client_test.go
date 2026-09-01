@@ -863,6 +863,25 @@ func TestLeasesRevoke_SendsPostRequest(t *testing.T) {
 	}
 }
 
+func TestLeasesList_UnwrapsEnvelope(t *testing.T) {
+	_, client := newHandlerServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{ //nolint:errcheck
+			"leases": []map[string]interface{}{
+				{"id": "lease-1", "tenant_id": "t1", "target_type": "token", "state": "active"},
+			},
+		})
+	})
+
+	got, err := client.Leases.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "lease-1" {
+		t.Fatalf("List = %+v, want one lease-1", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // VaultConnectionError — unreachable server
 // ---------------------------------------------------------------------------

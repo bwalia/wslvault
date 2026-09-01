@@ -205,6 +205,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     error!(error = %e, "failed to connect to PostgreSQL");
                     e
                 })?;
+                wslvault_storage::revocation_store::install_auth_revocation_checker(pool.clone());
 
                 // Initialise leader election for the compilation background task.
                 let cluster_config = ClusterConfig::default();

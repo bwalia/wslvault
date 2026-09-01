@@ -20,6 +20,7 @@ mod azure_workload;
 mod crypto_client;
 mod grpc;
 mod health;
+mod lease_client;
 mod mfa;
 mod mtls;
 mod oidc;
@@ -433,6 +434,18 @@ async fn main() -> Result<(), anyhow::Error> {
     // crypto-service to wrap them with. Without both, token issuance falls back
     // to the shared HS256 secret and warns on every token.
     let signing_key_pool = revocation_pool.clone();
+
+    if let Ok(ep) = std::env::var("LEASE_MANAGER_ENDPOINT") {
+        if !ep.trim().is_empty() {
+            info!(endpoint = %ep, "lease-manager CreateLease enabled");
+            lease_client::init(ep.trim().to_string());
+        }
+    } else {
+        warn!(
+            "LEASE_MANAGER_ENDPOINT unset — issued tokens will not have a lease_id \
+             and cannot be killed by lease revoke/expire"
+        );
+    }
 
     let identity_svc = IdentityServiceImpl::new(
         token_manager,

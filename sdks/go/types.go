@@ -110,16 +110,23 @@ type AuditQueryResponse struct {
 
 // LeaseRecord is a full lease record returned by the service.
 type LeaseRecord struct {
-	ID            string `json:"id"`
-	TenantID      string `json:"tenant_id"`
-	TargetType    string `json:"target_type"`
-	State         string `json:"state"`
-	TTLSeconds    int    `json:"ttl_seconds"`
-	MaxTTLSeconds int    `json:"max_ttl_seconds"`
-	Renewable     bool   `json:"renewable"`
-	IssuedAt      string `json:"issued_at"`
-	ExpiresAt     string `json:"expires_at"`
-	RevokedAt     string `json:"revoked_at,omitempty"`
+	ID                string `json:"id"`
+	TenantID          string `json:"tenant_id"`
+	TargetType        string `json:"target_type"`
+	TargetLabel       string `json:"target_label,omitempty"`
+	State             string `json:"state"`
+	TTLSeconds        int    `json:"ttl_seconds"`
+	MaxTTLSeconds     int    `json:"max_ttl_seconds"`
+	Renewable         bool   `json:"renewable"`
+	IssuedAt          string `json:"issued_at"`
+	ExpiresAt         string `json:"expires_at"`
+	RevokedAt         string `json:"revoked_at,omitempty"`
+	RemainingSeconds  int    `json:"remaining_seconds,omitempty"`
+}
+
+// LeaseListResponse is the envelope returned by GET /v1/leases.
+type LeaseListResponse struct {
+	Leases []LeaseRecord `json:"leases"`
 }
 
 // LeaseRenewResponse is the response from a lease renewal operation.

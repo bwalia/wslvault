@@ -109,6 +109,10 @@ spec:
               value: {{ printf "%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))
                           (.Values.policyEngine.grpcPort | toString) }}
+            - name: LEASE_MANAGER_ENDPOINT
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $))
+                          (.Values.leaseManager.grpcPort | toString) }}
             {{- with .Values.identityService.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

@@ -101,6 +101,7 @@ export interface LeaseRecord {
   id: string;
   tenant_id: string;
   target_type: string;
+  target_label?: string;
   state: "active" | "expired" | "revoked";
   ttl_seconds: number;
   max_ttl_seconds: number;
@@ -108,6 +109,12 @@ export interface LeaseRecord {
   issued_at: string;
   expires_at: string;
   revoked_at?: string;
+  remaining_seconds?: number;
+}
+
+/** Envelope returned by GET /v1/leases. */
+export interface LeaseListResponse {
+  leases: LeaseRecord[];
 }
 
 /** Response from a lease renewal operation. */

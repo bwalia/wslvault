@@ -19,6 +19,8 @@
 mod expiration;
 mod grpc;
 mod health;
+mod http;
+mod identity_client;
 mod pg_store;
 mod rotation;
 mod rotation_metrics;
@@ -78,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
         info!("PostgreSQL connection pool established; using PgLeaseBackend");
+        wslvault_storage::revocation_store::install_auth_revocation_checker(pool.clone());
 
         // Initialise leader election for coordination tasks.
         let cluster_config = ClusterConfig::default();
@@ -101,10 +104,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         (Arc::new(store::InMemoryLeaseStore::new()), None, None)
     };
 
+    let identity_client = identity_client::from_env();
+
     // Spawn background expiration sweep (works with any backend).
     // When an elector is available, only the leader node runs the sweep.
-    let _expiration_handle =
-        expiration::spawn_expiration_task(Arc::clone(&lease_store), elector.clone());
+    let _expiration_handle = expiration::spawn_expiration_task(
+        Arc::clone(&lease_store),
+        elector.clone(),
+        identity_client.clone(),
+    );
 
     // Spawn rotation sweep and deprecated-version cleanup tasks.
     // These require a PostgreSQL pool, so they are only started when DATABASE_URL
@@ -119,12 +127,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let lease_service = LeaseServiceImpl::new(Arc::clone(&lease_store));
     let grpc_addr = "0.0.0.0:50055".parse()?;
 
-    // Build the health HTTP service.
-    let health_router = Router::new().route("/health", get(health::health_handler));
+    // HTTP: unauthenticated /health plus authenticated /v1/leases*.
+    let http_router = Router::new()
+        .route("/health", get(health::health_handler))
+        .merge(http::router(Arc::clone(&lease_store), identity_client));
     let health_addr = "0.0.0.0:8084".parse::<std::net::SocketAddr>()?;
 
     info!("gRPC server listening on {}", grpc_addr);
-    info!("health server listening on {}", health_addr);
+    info!("HTTP server listening on {}", health_addr);
 
     // Run both servers concurrently; if either fails the process exits.
     tokio::try_join!(
@@ -139,7 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // HTTP health server
         async {
             let listener = tokio::net::TcpListener::bind(health_addr).await?;
-            axum::serve(listener, health_router)
+            axum::serve(listener, http_router)
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })
         },

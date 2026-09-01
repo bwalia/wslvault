@@ -7,9 +7,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use wslvault_cluster::leader::LeaderElector;
 
+use crate::identity_client::IdentityClient;
 use crate::store::LeaseStoreBackend;
 
 /// How frequently the expiration sweep runs.
@@ -30,6 +31,7 @@ const EXPIRATION_INTERVAL_SECS: u64 = 5;
 pub fn spawn_expiration_task(
     store: Arc<dyn LeaseStoreBackend>,
     elector: Option<Arc<LeaderElector>>,
+    identity: Option<IdentityClient>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         info!(
@@ -51,8 +53,45 @@ pub fn spawn_expiration_task(
                 }
             }
 
-            let expired_ids = store.expire_stale_leases().await;
-            let expired_count = expired_ids.len();
+            let due = store.list_stale_active_leases().await;
+            let mut expired_count = 0usize;
+
+            for record in due {
+                if let Some((hash, principal_id, expires_at)) = record.token_revocation() {
+                    match &identity {
+                        Some(client) => {
+                            if let Err(e) = client
+                                .revoke_token_by_hash(
+                                    &hash,
+                                    &record.tenant_id,
+                                    &principal_id,
+                                    expires_at,
+                                )
+                                .await
+                            {
+                                error!(
+                                    lease_id = %record.id,
+                                    error = %e,
+                                    "token lease expire: identity unreachable; leaving lease active for retry"
+                                );
+                                continue;
+                            }
+                        }
+                        None => {
+                            error!(
+                                lease_id = %record.id,
+                                "token lease expired with IDENTITY_SERVICE_GRPC unset; JWT stays live until exp"
+                            );
+                        }
+                    }
+                }
+
+                if let Err(e) = store.mark_expired(&record.id).await {
+                    error!(lease_id = %record.id, error = %e, "failed to mark lease expired");
+                    continue;
+                }
+                expired_count += 1;
+            }
 
             if expired_count > 0 {
                 info!(

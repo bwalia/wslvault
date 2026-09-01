@@ -74,16 +74,18 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
-            # gRPC address for revocation callbacks to crypto-service
-            - name: CRYPTO_SERVICE_ADDR
-              value: {{ printf "%s:%s"
-                          (include "wslvault.componentFullname" (dict "component" "crypto-service" "context" $))
-                          (.Values.cryptoService.grpcPort | toString) }}
-            # gRPC address for revocation callbacks to secret-engine
-            - name: SECRET_ENGINE_ADDR
-              value: {{ printf "%s:%s"
-                          (include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $))
-                          (.Values.secretEngine.grpcPort | toString) }}
+            - name: VAULT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.jwtSecretName" . }}
+                  key: {{ include "wslvault.jwtSecretKey" . }}
+                  optional: false
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
+            - name: IDENTITY_SERVICE_GRPC
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "identity-service" "context" $))
+                          (.Values.identityService.grpcPort | toString) }}
             {{- with .Values.leaseManager.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

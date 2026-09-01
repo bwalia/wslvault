@@ -305,6 +305,11 @@ class _AuditSection(_BaseSection):
 class _LeasesSection(_BaseSection):
     """Methods for lease lifecycle management."""
 
+    async def list(self) -> list[LeaseRecord]:
+        """List leases for the authenticated tenant."""
+        data = await self._get("/v1/leases")
+        return [LeaseRecord.model_validate(item) for item in data.get("leases", [])]
+
     async def get(self, lease_id: str) -> LeaseRecord:
         """Retrieve a lease by its UUID."""
         data = await self._get(f"/v1/leases/{lease_id}")

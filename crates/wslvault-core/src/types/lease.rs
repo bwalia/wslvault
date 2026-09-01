@@ -31,9 +31,46 @@ impl std::fmt::Display for LeaseId {
 /// What the lease is attached to; drives revocation behavior.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeaseTarget {
-    Token { token_id: String },
-    DynamicSecret { path: String, role: String },
-    ServiceCredential { service: String, account_id: String },
+    Token {
+        /// SHA-256 hex of the JWT — never the raw token.
+        token_id: String,
+        /// Display / revocation callback identity. Empty on rows written
+        /// before this field existed.
+        #[serde(default)]
+        principal_id: String,
+    },
+    DynamicSecret {
+        path: String,
+        role: String,
+    },
+    ServiceCredential {
+        service: String,
+        account_id: String,
+    },
+}
+
+impl LeaseTarget {
+    /// Operator-facing label for list/get JSON (`target_label`).
+    pub fn label(&self) -> String {
+        match self {
+            LeaseTarget::Token {
+                principal_id,
+                token_id,
+            } => {
+                if principal_id.is_empty() {
+                    let prefix: String = token_id.chars().take(8).collect();
+                    format!("token:{prefix}")
+                } else {
+                    format!("principal:{principal_id}")
+                }
+            }
+            LeaseTarget::DynamicSecret { path, role } => format!("{path} ({role})"),
+            LeaseTarget::ServiceCredential {
+                service,
+                account_id,
+            } => format!("{service}:{account_id}"),
+        }
+    }
 }
 
 /// Current lifecycle state of a lease.
@@ -86,6 +123,7 @@ mod tests {
             tenant_id: TenantId::new(),
             target: LeaseTarget::Token {
                 token_id: "tok-1".into(),
+                principal_id: String::new(),
             },
             state: LeaseState::Active,
             ttl_seconds: 60,
@@ -106,6 +144,7 @@ mod tests {
             tenant_id: TenantId::new(),
             target: LeaseTarget::Token {
                 token_id: "tok-2".into(),
+                principal_id: "user-2".into(),
             },
             state: LeaseState::Active,
             ttl_seconds: 3600,

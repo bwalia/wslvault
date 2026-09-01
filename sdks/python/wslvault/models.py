@@ -125,6 +125,7 @@ class LeaseRecord(_Base):
     id: str
     tenant_id: str
     target_type: str
+    target_label: Optional[str] = None
     state: str
     ttl_seconds: int
     max_ttl_seconds: int
@@ -132,6 +133,13 @@ class LeaseRecord(_Base):
     issued_at: str
     expires_at: str
     revoked_at: Optional[str] = None
+    remaining_seconds: Optional[int] = None
+
+
+class LeaseListResponse(_Base):
+    """Envelope returned by GET /v1/leases."""
+
+    leases: list[LeaseRecord]
 
 
 class LeaseRenewResponse(_Base):
