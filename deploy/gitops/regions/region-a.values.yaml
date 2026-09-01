@@ -54,7 +54,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: b6c8a85199386116b71fba914cba0ace53526dcf
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure

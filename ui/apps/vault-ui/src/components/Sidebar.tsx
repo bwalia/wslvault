@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { cn } from '@/lib/utils'
+import BuildStamp from '@/components/BuildStamp'
 import {
   LayoutDashboard,
   Key,
@@ -142,6 +143,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
       >
         {open ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
       </button>
+      <BuildStamp collapsed={!open} className={open ? 'mx-3 mb-3 text-[10px]' : 'mx-1 mb-3 text-[9px]'} />
     </aside>
   )
 }
