@@ -36,8 +36,7 @@ use wslvault_core::types::key::{KeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, 
 
 use wslvault_storage::key_store::{
     emit_dek_upsert_event, get_key_versions_with_wrapped_key, insert_key_descriptor,
-    list_active_keys_with_wrapped_key,
-    list_recent_loadable_keys, update_key_state,
+    list_active_keys_with_wrapped_key, list_recent_loadable_keys, update_key_state,
 };
 use wslvault_storage::pool::DbPool;
 
@@ -418,7 +417,10 @@ impl KekStore {
                     // A DEK replicated from a peer is wrapped under the shared
                     // root key, not this region's tenant KEK — fall back before
                     // giving up.
-                    Err(e) => match self.transport_unwrap_dek(&row.wrapped_key, &row.key_id).await {
+                    Err(e) => match self
+                        .transport_unwrap_dek(&row.wrapped_key, &row.key_id)
+                        .await
+                    {
                         Ok(p) => p,
                         Err(_) => {
                             warn!(
@@ -743,11 +745,7 @@ impl KekStore {
     /// Wrap a raw DEK under the shared root key for cross-region transport.
     /// AAD `dek:transport:<key_id>` matches the fallback used when unwrapping a
     /// replicated DEK row (see `hydrate_dek` / `load_from_db`).
-    async fn transport_wrap_dek(
-        &self,
-        raw_dek: &[u8],
-        key_id: &str,
-    ) -> Result<String, VaultError> {
+    async fn transport_wrap_dek(&self, raw_dek: &[u8], key_id: &str) -> Result<String, VaultError> {
         let root_kek = self.inner.seal.root_key().await?;
         let aad = format!("dek:transport:{key_id}");
         let envelope = encrypt_with_dek(&root_kek, raw_dek, aad.as_bytes())?;
@@ -802,7 +800,10 @@ impl KekStore {
                 // A DEK replicated from a peer is wrapped under the shared root
                 // key (AAD dek:transport:<key_id>), not this region's tenant KEK,
                 // so the reload unwrap above fails. Fall back to the root key.
-                Err(_) => match self.transport_unwrap_dek(&row.wrapped_key, &row.key_id).await {
+                Err(_) => match self
+                    .transport_unwrap_dek(&row.wrapped_key, &row.key_id)
+                    .await
+                {
                     Ok(p) => p,
                     Err(_) => {
                         warn!(

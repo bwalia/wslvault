@@ -43,9 +43,7 @@ pub async fn try_create_token_lease(
     token: &str,
     ttl_seconds: i64,
 ) -> Option<String> {
-    let Some(client) = CLIENT.get() else {
-        return None;
-    };
+    let client = CLIENT.get()?;
 
     let ttl = if ttl_seconds > 0 {
         ttl_seconds

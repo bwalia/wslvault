@@ -47,19 +47,10 @@ impl LeaseClient {
         Self { channel }
     }
 
-    /// Attempt to create a lease for a secret read operation.
+    /// Create a lease. Used by future dynamic engines; KV reads do not call this.
     ///
-    /// Returns `Some(LeaseInfo)` on success, or `None` when the lease-manager
-    /// is unavailable or the proto does not yet expose a `CreateLease` RPC.
-    /// Callers MUST treat `None` as a non-fatal degraded result — the read
-    /// itself should still succeed.
-    ///
-    /// # Arguments
-    /// * `tenant_id`    — Tenant that owns the secret.
-    /// * `secret_path`  — Normalised path of the secret being read.
-    /// * `ttl_seconds`  — Requested TTL; the lease-manager may enforce a cap.
-    /// Attempt to create a lease. Used by future dynamic engines; KV reads
-    /// do not call this.
+    /// Returns `Some(LeaseInfo)` on success, or `None` when lease-manager is
+    /// down. Callers MUST treat `None` as non-fatal.
     #[allow(dead_code)]
     pub async fn create_lease(
         &self,
