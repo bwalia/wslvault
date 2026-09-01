@@ -57,7 +57,10 @@ fn apply_caller_headers(
     tenant_id: &str,
     ctx: &CallerContext,
 ) -> RequestBuilder {
-    let mut b = builder.header("X-Tenant-Id", tenant_id);
+    let mut b = builder;
+    if !tenant_id.is_empty() {
+        b = b.header("X-Tenant-Id", tenant_id);
+    }
     // The caller's own credential. secret-engine prefers a verified token over
     // the headers above, so this is what makes an agent's request properly
     // authenticated rather than merely asserted.
