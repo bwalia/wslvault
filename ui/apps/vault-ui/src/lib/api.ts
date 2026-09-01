@@ -51,6 +51,19 @@ export const api = {
     authApiKey: () => '/api/identity/v1/auth/api-key',
     /** Completes a login that returned an MFA challenge. */
     mfaTotp: () => '/api/identity/v1/auth/mfa/totp',
+    /**
+     * POST — begin TOTP enrolment for an API key.
+     *
+     * Authorised by the key itself in the request body, not by the session
+     * token: enrolment protects that specific key, so possession of it is the
+     * thing worth proving. This is also why it works when a key already
+     * requires MFA but has nothing enrolled — that key cannot obtain a token
+     * at all, so a token-authorised endpoint would be unreachable exactly when
+     * it is needed.
+     */
+    mfaEnroll: () => '/api/identity/v1/auth/mfa/totp/enroll',
+    /** POST — prove the authenticator works; until this lands, enrolment is inert. */
+    mfaConfirm: () => '/api/identity/v1/auth/mfa/totp/confirm',
   },
   policy: {
     list: () => '/api/policy/v1/policies',
