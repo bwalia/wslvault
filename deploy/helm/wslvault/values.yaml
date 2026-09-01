@@ -404,10 +404,15 @@ identityService:
     tag: ""
   httpPort: 8082
   grpcPort: 50054
-  # -- Policy a JWT must carry to manage API keys. Empty uses the service
-  # default ("admin"). The bootstrap token in secrets.adminToken bypasses this
-  # and is the only way to mint the first key.
-  adminPolicy: ""
+  # -- Policy a JWT must carry to manage API keys (tenants + api-keys admin
+  # endpoints the dashboard reads). Empty falls back to the service's compiled
+  # default, which is "wslvault:platform-admin" — but every key issued in this
+  # deployment carries the legacy {root, admin, default} set and none carry
+  # platform-admin, so an empty value makes the dashboard 401 with
+  # "admin credential required". Pin it to "admin", a policy the operator keys
+  # actually hold. The bootstrap token in secrets.adminToken bypasses this and
+  # is the only way to mint the first key.
+  adminPolicy: "admin"
   resources:
     requests:
       cpu: "100m"
