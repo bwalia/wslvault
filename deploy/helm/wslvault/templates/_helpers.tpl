@@ -244,6 +244,40 @@ Resolve the password key inside the DB credentials secret.
 {{- end }}
 
 {{/*
+Resolve the PostgreSQL role the SERVICES connect as.
+
+Defaults to postgresql.auth.username — the role that owns the schema — which is
+the historical behaviour and the reason row-level security never applied to
+anything: PostgreSQL exempts a table's owner from its own RLS policies.
+
+Set postgresql.appRole.username (see bootstrap/rls_app_role.sql) to a
+non-owning role and every service starts being constrained by the policies that
+migration 029 put in place. That switch is the whole enforcement step; nothing
+else has to change.
+
+The migration Job deliberately does NOT use this helper. It needs owner rights
+to run DDL, and it should keep them.
+*/}}
+{{- define "wslvault.dbAppUser" -}}
+{{- .Values.postgresql.appRole.username | default .Values.postgresql.auth.username }}
+{{- end }}
+
+{{/*
+Resolve the password key for the role above.
+
+Falls back to the owner's password key so that leaving appRole unset changes
+nothing. When appRole.username IS set, its password must live in the same
+credentials secret under appRole.passwordKey.
+*/}}
+{{- define "wslvault.dbAppPasswordSecretKey" -}}
+{{- if .Values.postgresql.appRole.username }}
+{{- .Values.postgresql.appRole.passwordKey | default "app-password" }}
+{{- else }}
+{{- include "wslvault.dbPasswordSecretKey" . }}
+{{- end }}
+{{- end }}
+
+{{/*
 ────────────────────────────────────────────────────────────────────────────
 Multi-region helpers.
 

@@ -1568,9 +1568,15 @@ pub async fn confirm_rotation(
         return vault_err_to_response(e);
     }
 
+    // The tenant is passed through, not just authorised against. Previously the
+    // authorize() call above was the only thing that looked at `tenant_id` on
+    // this path: the rotation id then went to the backend unqualified, and
+    // `shared.vault_confirm_rotation` resolves it by id alone — so a caller with
+    // write permission in their own tenant could confirm a rotation belonging to
+    // another one.
     let (old_version, new_version, grace_ends_at) = match state
         .store
-        .confirm_rotation(&body.rotation_id, &principal_id)
+        .confirm_rotation(&tenant_id, &body.rotation_id, &principal_id)
         .await
     {
         Ok(r) => r,

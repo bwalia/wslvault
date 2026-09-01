@@ -1,101 +1,81 @@
--- WSLVault: turn Row-Level Security from advisory into enforced.
--- Migration: 019_rls_enforce.sql   ** NOT APPLIED — see the .disabled suffix **
+-- WSLVault: SUPERSEDED. The work this file described now lives in 029.
+-- ** STILL NOT APPLIED — see the .disabled suffix. Do not rename it. **
 --
--- ## Two prerequisites, not one
+-- Kept rather than deleted because it records a claim that turned out to be
+-- wrong in a way that matters, and because the FORCE step at the bottom is the
+-- one piece of it that has not shipped.
 --
--- PostgreSQL lets a session past RLS for three different reasons, and this
--- deployment currently hits all three:
+-- ## What moved to 029_rls_enforce.sql
 --
---   1. **The table owner is exempt.** `FORCE ROW LEVEL SECURITY` fixes that,
---      and this file applies it.
+--   * Creating `wslvault_app` -> deploy/helm/wslvault/files/bootstrap/rls_app_role.sql.
+--     It could not stay in a migration: the migration Job connects as
+--     `wslvault`, which has neither SUPERUSER nor CREATEROLE in the live
+--     regions, so CREATE ROLE fails there.
+--   * The GRANTs and ALTER DEFAULT PRIVILEGES -> 029, guarded on the role
+--     existing so the migration is complete either way.
+--   * RLS coverage for the tenant-scoped tables 004 and 011 missed entirely
+--     (secret_rotations, tenant_quotas, scim_group_members, key_descriptors,
+--     tenant_signing_keys, revoked_tokens, sync_jobs, tenant_schemas) -> 029.
 --
---   2. **Superusers and BYPASSRLS roles are exempt, and FORCE does NOT change
---      that.** Every service connects as `POSTGRES_USER` (`wslvault`), which
---      the postgres image creates as a superuser:
+-- It could not simply be renamed to `019_rls_enforce.sql`, either: migrate.sh
+-- applies files once, in name order, by checksum. A new 019 would run before
+-- 020-028 on a fresh database and after them on the live ones, so the two would
+-- diverge on exactly the tables involved.
 --
---          SELECT rolname, rolsuper, rolbypassrls FROM pg_roles
---          WHERE rolname = 'wslvault';
---          --  wslvault | t | t
+-- ## The claim that was wrong
 --
---      So applying FORCE alone changes nothing at all. Verified empirically:
---      with FORCE on and the policies from 018 in place, a superuser session
---      still saw every tenant's rows. This is the trap — enforcement *looks*
---      enabled and is not.
+-- This file said, and 018 said before it, that FORCE ROW LEVEL SECURITY would
+-- "change nothing at all" because `wslvault` is a superuser with BYPASSRLS.
+-- That is true of the local docker-compose database, where the postgres image
+-- makes POSTGRES_USER a superuser. It is NOT true of the live regions, which
+-- run the Bitnami chart. Checked against region A:
 --
---   3. **The session variable must be set.** The 018 policies fail closed on
---      an unset `app.current_tenant_id`, so a correctly-restricted role that
---      does not set it sees zero rows.
+--     SELECT rolname, rolsuper, rolbypassrls FROM pg_roles;
+--      postgres | t | t
+--      wslvault | f | f      <-- neither
 --
--- ## The order to do this in
+-- `wslvault` is exempt there for one reason only: it owns the tables. So in
+-- production FORCE was never a formality — it was the live switch, and applying
+-- it "to see if anything changes" would have made every fail-closed policy match
+-- zero rows and taken both regions down. The safe-looking step was the dangerous
+-- one. That is why 029 does everything EXCEPT force.
 --
--- Step 1 — teach the storage layer to scope every transaction:
+-- ## What is actually left
 --
---     SET LOCAL app.current_tenant_id = '<uuid>';
+-- Enforcement does not need FORCE. PostgreSQL applies RLS to any role that is
+-- neither the table owner nor a superuser/BYPASSRLS role, so pointing the
+-- services at `wslvault_app` is the switch:
 --
---   and make the genuinely cross-tenant jobs opt out just as explicitly:
+--     postgresql.appRole.username: wslvault_app
 --
---     SET LOCAL app.bypass_rls = 'true';
+-- FORCE is only needed to also constrain `wslvault` itself — the migration Job
+-- and anyone at a psql prompt. That is worth having, but it is defence in depth,
+-- not the mechanism, and it must come after the switch rather than before it.
 --
---   The jobs that need the bypass, as of this writing:
---     * crypto-service     — warm-loads every tenant's KEKs and DEKs at boot
---     * lease-manager      — the expiry sweep is global by design
---     * replication-agent  — applies peer events across tenants
---     * region-health      — polls global region state
---
--- Step 2 — point every service's DATABASE_URL at `wslvault_app` (created
---   below), NOT at the superuser. Migrations keep running as the owner.
---
--- Step 3 — rename this file to `019_rls_enforce.sql` and apply it.
---
--- ## Verifying it actually took
---
--- Run this AS wslvault_app, never as the owner — as the owner it "passes"
--- while proving nothing:
---
---     SELECT count(*) FROM shared.secrets;                  -- expect 0
---     SET app.current_tenant_id = '<tenant-a-uuid>';
---     SELECT count(*) FROM shared.secrets;                  -- only tenant A's
---     SELECT count(*) FROM shared.secrets WHERE id = '<a-row-owned-by-B>';
---                                                           -- expect 0
+-- Before setting appRole.username, EVERY service that touches a row-level
+-- secured table has to open a scope (wslvault_storage::tenant_scope). Wired so
+-- far: secret-engine, replication-agent, lease-manager. Not yet wired:
+-- identity-service, crypto-service, transit-engine, policy-engine,
+-- sync-scheduler, and the audit writer in wslvault-storage. Flipping the switch
+-- before those are done does not raise an error — the policies fail closed, so
+-- those services quietly see an empty database. See docs/tenancy.md.
 
 -- =============================================================================
--- 1. A least-privilege role that RLS actually applies to
+-- The remaining step, for when the switch has been made and has held
 -- =============================================================================
--- No SUPERUSER, no BYPASSRLS, no CREATEDB, no CREATEROLE. That is the entire
--- point: the role must be one PostgreSQL is willing to constrain.
+-- Removes the owner exemption, so `wslvault` is constrained too. Apply as a new
+-- numbered migration (030) at that point, not by renaming this file.
 
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'wslvault_app') THEN
-        -- The password is set separately by the operator:
-        --   ALTER ROLE wslvault_app WITH PASSWORD '<from your secret store>';
-        CREATE ROLE wslvault_app LOGIN;
-    END IF;
-END $$;
-
-GRANT USAGE ON SCHEMA shared, system TO wslvault_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA shared, system TO wslvault_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA shared, system TO wslvault_app;
-GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA shared, system TO wslvault_app;
-
--- Tables and functions added by later migrations must be reachable too.
-ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO wslvault_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
-    GRANT USAGE, SELECT ON SEQUENCES TO wslvault_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA shared, system
-    GRANT EXECUTE ON FUNCTIONS TO wslvault_app;
-
--- =============================================================================
--- 2. Remove the owner exemption
--- =============================================================================
-
-ALTER TABLE shared.secrets          FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.secret_versions  FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.leases           FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.policies         FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.audit_events     FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.principals       FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.api_keys         FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.scim_users       FORCE ROW LEVEL SECURITY;
-ALTER TABLE shared.scim_groups      FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.secrets          FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.secret_versions  FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.secret_rotations FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.leases           FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.policies         FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.audit_events     FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.principals       FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.api_keys         FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.scim_users       FORCE ROW LEVEL SECURITY;
+-- ALTER TABLE shared.scim_groups      FORCE ROW LEVEL SECURITY;
+--
+-- NOTE: the migration Job runs as the owner and would be constrained by this.
+-- Any migration that touches tenant rows after 030 must set app.bypass_rls.

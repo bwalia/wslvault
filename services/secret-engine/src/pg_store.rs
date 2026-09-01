@@ -142,11 +142,17 @@ impl SecretStoreBackend for PgSecretBackend {
         version: Option<u32>,
     ) -> Result<VersionEntry, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
+        // One scope for all three queries. Besides setting the tenant that RLS
+        // resolves against, it makes the metadata read, the version resolution
+        // and the version fetch a consistent snapshot — previously a concurrent
+        // delete between the second and third query could return a version the
+        // second had just certified as live.
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let meta = secret_store::get_secret_metadata(scope.conn(), &tid, path).await?;
 
         let target_version = match version {
             Some(v) => v,
-            None => secret_store::latest_live_version(&self.pool, &meta.id).await?,
+            None => secret_store::latest_live_version(scope.conn(), &meta.id).await?,
         };
 
         if target_version == 0 {
@@ -157,7 +163,8 @@ impl SecretStoreBackend for PgSecretBackend {
             });
         }
 
-        let sv = secret_store::get_secret_version(&self.pool, &meta.id, target_version).await?;
+        let sv = secret_store::get_secret_version(scope.conn(), &meta.id, target_version).await?;
+        scope.commit().await?;
 
         Ok(VersionEntry {
             version: sv.version,
@@ -188,10 +195,13 @@ impl SecretStoreBackend for PgSecretBackend {
         max_versions: Option<u32>,
     ) -> Result<(String, u32), VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
 
         // Advisory quota check — reject writes that would exceed tenant limits.
+        // Inside the scope: shared.tenant_quotas is row-level secured and a
+        // missing row means "allow", so an unscoped check would pass everything.
         if let Err(e) =
-            quota_store::check_write_quota(&self.pool, *tid.as_uuid(), ciphertext.len()).await
+            quota_store::check_write_quota(scope.conn(), *tid.as_uuid(), ciphertext.len()).await
         {
             return Err(VaultError::QuotaExceeded {
                 reason: e.to_string(),
@@ -199,7 +209,7 @@ impl SecretStoreBackend for PgSecretBackend {
         }
 
         let (secret_id, version) = secret_store::upsert_secret_version(
-            &self.pool,
+            scope.conn(),
             &tid,
             path,
             &SecretEngine::KvV2,
@@ -211,6 +221,11 @@ impl SecretStoreBackend for PgSecretBackend {
             cas.is_some(),
         )
         .await?;
+
+        // Commit before emitting: the event announces a write that has landed,
+        // and emitting from inside the transaction would advertise one that
+        // could still roll back.
+        scope.commit().await?;
 
         // Emit a replication event so cross-region agents can propagate this write.
         // This is best-effort: failure to write the event does not fail the write.
@@ -242,14 +257,17 @@ impl SecretStoreBackend for PgSecretBackend {
         versions: &[u32],
     ) -> Result<u32, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let meta = secret_store::get_secret_metadata(scope.conn(), &tid, path).await?;
 
         let targets = resolve_soft_delete_targets(versions, meta.current_version);
         if targets.is_empty() {
             return Ok(0);
         }
 
-        secret_store::soft_delete_versions(&self.pool, &meta.id, &targets).await
+        let deleted = secret_store::soft_delete_versions(scope.conn(), &meta.id, &targets).await?;
+        scope.commit().await?;
+        Ok(deleted)
     }
 
     /// Permanently destroy specific versions in PostgreSQL.
@@ -266,11 +284,12 @@ impl SecretStoreBackend for PgSecretBackend {
         versions: &[u32],
     ) -> Result<u32, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let meta = secret_store::get_secret_metadata(scope.conn(), &tid, path).await?;
 
         // Only pay for the history query on the "destroy everything" path.
         let targets = if versions.is_empty() {
-            let history = secret_store::list_version_history(&self.pool, &tid, path).await?;
+            let history = secret_store::list_version_history(scope.conn(), &tid, path).await?;
             let live: Vec<u32> = history
                 .iter()
                 .filter(|v| !v.destroyed)
@@ -285,7 +304,9 @@ impl SecretStoreBackend for PgSecretBackend {
             return Ok(0);
         }
 
-        secret_store::destroy_versions(&self.pool, &meta.id, &targets).await
+        let destroyed = secret_store::destroy_versions(scope.conn(), &meta.id, &targets).await?;
+        scope.commit().await?;
+        Ok(destroyed)
     }
 
     /// List secret paths matching a prefix for the given tenant.
@@ -299,7 +320,10 @@ impl SecretStoreBackend for PgSecretBackend {
             Err(_) => return Vec::new(),
         };
 
-        secret_store::list_secret_paths(&self.pool, &tid, prefix)
+        let Ok(mut scope) = self.pool.begin_tenant(&tid).await else {
+            return Vec::new();
+        };
+        secret_store::list_secret_paths(scope.conn(), &tid, prefix)
             .await
             .unwrap_or_default()
     }
@@ -319,8 +343,10 @@ impl SecretStoreBackend for PgSecretBackend {
     /// carry secret material, and no caller of `get_metadata` reads it.
     async fn get_metadata(&self, tenant_id: &str, path: &str) -> Result<SecretEntry, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let meta = secret_store::get_secret_metadata(&self.pool, &tid, path).await?;
-        let history = secret_store::list_version_history(&self.pool, &tid, path).await?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let meta = secret_store::get_secret_metadata(scope.conn(), &tid, path).await?;
+        let history = secret_store::list_version_history(scope.conn(), &tid, path).await?;
+        scope.commit().await?;
 
         let mut versions: Vec<VersionEntry> = history
             .into_iter()
@@ -362,8 +388,9 @@ impl SecretStoreBackend for PgSecretBackend {
         timeout_secs: Option<i32>,
     ) -> Result<(String, u32), VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        secret_store::initiate_rotation(
-            &self.pool,
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let out = secret_store::initiate_rotation(
+            scope.conn(),
             &tid,
             path,
             &ciphertext,
@@ -372,15 +399,23 @@ impl SecretStoreBackend for PgSecretBackend {
             webhook_url,
             timeout_secs,
         )
-        .await
+        .await?;
+        scope.commit().await?;
+        Ok(out)
     }
 
     async fn confirm_rotation(
         &self,
+        tenant_id: &str,
         rotation_id: &str,
         confirmed_by: &str,
     ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError> {
-        secret_store::confirm_rotation(&self.pool, rotation_id, confirmed_by).await
+        let tid = Self::parse_tenant_id(tenant_id)?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let out =
+            secret_store::confirm_rotation(scope.conn(), &tid, rotation_id, confirmed_by).await?;
+        scope.commit().await?;
+        Ok(out)
     }
 
     async fn rollback(
@@ -391,7 +426,12 @@ impl SecretStoreBackend for PgSecretBackend {
         rolled_back_by: &str,
     ) -> Result<u32, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        secret_store::rollback_secret(&self.pool, &tid, path, target_version, rolled_back_by).await
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let out =
+            secret_store::rollback_secret(scope.conn(), &tid, path, target_version, rolled_back_by)
+                .await?;
+        scope.commit().await?;
+        Ok(out)
     }
 
     async fn list_versions(
@@ -400,7 +440,9 @@ impl SecretStoreBackend for PgSecretBackend {
         path: &str,
     ) -> Result<Vec<VersionMeta>, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let metas = secret_store::list_version_history(&self.pool, &tid, path).await?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let metas = secret_store::list_version_history(scope.conn(), &tid, path).await?;
+        scope.commit().await?;
         Ok(metas
             .into_iter()
             .map(|m| VersionMeta {
@@ -422,7 +464,9 @@ impl SecretStoreBackend for PgSecretBackend {
         path: &str,
     ) -> Result<Option<RotationInfo>, VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
-        let record = secret_store::get_active_rotation(&self.pool, &tid, path).await?;
+        let mut scope = self.pool.begin_tenant(&tid).await?;
+        let record = secret_store::get_active_rotation(scope.conn(), &tid, path).await?;
+        scope.commit().await?;
         Ok(record.map(|r| RotationInfo {
             rotation_id: r.rotation_id,
             secret_id: r.secret_id,

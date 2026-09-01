@@ -65,11 +65,11 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "wslvault.dbCredentialsSecretName" . }}
-                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  key: {{ include "wslvault.dbAppPasswordSecretKey" . }}
                   optional: false
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
-                          .Values.postgresql.auth.username
+                          (include "wslvault.dbAppUser" .)
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
