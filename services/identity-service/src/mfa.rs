@@ -385,6 +385,61 @@ mod tests {
         assert!(otpauth_uri(&a, "user@example.com", "WSLVault").starts_with("otpauth://totp/"));
     }
 
+    /// Pins the `otpauth://` parameters that authenticator apps actually read.
+    ///
+    /// Authy is the reason this is asserted rather than assumed. Google
+    /// Authenticator ignores `algorithm`, `digits` and `period` and just assumes
+    /// SHA1/6/30, so a drift away from those defaults still works there and
+    /// silently produces codes Authy rejects — the failure shows up as "the app
+    /// gives the wrong code", with nothing wrong in any log.
+    ///
+    /// Also pins the `Issuer:Account` label prefix alongside the `issuer=`
+    /// parameter. Authy uses it to name and group the entry; without it every
+    /// key lands as an unlabelled account.
+    #[test]
+    fn otpauth_uri_is_what_authenticator_apps_expect() {
+        let secret = generate_secret().unwrap();
+        let uri = otpauth_uri(&secret, "3f2a1b4c-0000-0000-0000-000000000001", "WSLVault");
+
+        // The label carries the issuer prefix, and the issuer is repeated as a
+        // parameter. Both are required for correct display in Authy.
+        assert!(
+            uri.starts_with("otpauth://totp/WSLVault:3f2a1b4c-0000-0000-0000-000000000001?"),
+            "label must be Issuer:Account — got {uri}"
+        );
+        assert!(
+            uri.contains("&issuer=WSLVault"),
+            "issuer parameter missing: {uri}"
+        );
+
+        // SHA1/6/30 is the only combination every TOTP app agrees on. Changing
+        // any of these is a breaking change for already-enrolled authenticators,
+        // not a tuning knob.
+        assert!(
+            uri.contains("&algorithm=SHA1"),
+            "algorithm must be SHA1: {uri}"
+        );
+        assert!(uri.contains("&digits=6"), "digits must be 6: {uri}");
+        assert!(uri.contains("&period=30"), "period must be 30: {uri}");
+
+        // The secret must be base32 with no padding: `=` is not valid in the
+        // query string unescaped, and Authy will not import a padded secret.
+        assert!(
+            uri.contains(&format!("secret={secret}")),
+            "secret not in the URI: {uri}"
+        );
+        assert!(
+            !secret.contains('='),
+            "base32 secret must be unpadded: {secret}"
+        );
+        assert!(
+            secret
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)),
+            "secret must be RFC 4648 base32 alphabet: {secret}"
+        );
+    }
+
     #[test]
     fn recovery_codes_are_distinct_and_only_hashes_are_storable() {
         let codes = generate_recovery_codes(8).unwrap();

@@ -11,6 +11,7 @@ import { Sun, Moon, Monitor, Save, CheckCircle, Check, Copy } from 'lucide-react
 import { formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
+import { TwoFactorSetup } from '@/components/TwoFactorSetup'
 
 interface ServiceUrls {
   IDENTITY_URL: string
@@ -228,6 +229,10 @@ export default function SettingsPage() {
           </dl>
         </CardBody>
       </Card>
+
+      {/* Second factor. Sits next to Session because it is a property of the
+          credential you signed in with, not a deployment setting. */}
+      <TwoFactorSetup />
 
       {/* Bootstrap */}
       <Card>
