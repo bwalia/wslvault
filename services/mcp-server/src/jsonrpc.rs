@@ -334,6 +334,7 @@ mod tests {
             secret_engine_url: "http://127.0.0.1:19981".into(),
             transit_engine_url: "http://127.0.0.1:19982".into(),
             audit_engine_url: "http://127.0.0.1:19983".into(),
+            lease_manager_url: "http://127.0.0.1:19984".into(),
             auth_required: false,
         }
     }

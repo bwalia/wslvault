@@ -442,11 +442,20 @@ impl DeviceFlowManager {
             "device flow authentication completed; JWT issued"
         );
 
+        let lease_id = crate::lease_client::try_create_token_lease(
+            &oidc_result.tenant_id,
+            &oidc_result.subject,
+            &token,
+            DEVICE_JWT_TTL_SECONDS,
+        )
+        .await;
+
         Ok(DevicePollResponse {
             token,
             expires_at,
             tenant_id: oidc_result.tenant_id,
             policies: oidc_result.policies,
+            lease_id,
         })
     }
 
@@ -579,6 +588,8 @@ pub struct DevicePollResponse {
     pub expires_at: chrono::DateTime<chrono::Utc>,
     pub tenant_id: String,
     pub policies: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
 }
 
 // ── HTTP handlers ─────────────────────────────────────────────────────────────

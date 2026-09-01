@@ -2451,6 +2451,7 @@ dependencies = [
  "ldap3",
  "pem",
  "prost",
+ "protoc-bin-vendored",
  "rand 0.8.5",
  "reqwest",
  "ring",

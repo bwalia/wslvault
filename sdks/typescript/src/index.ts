@@ -52,6 +52,7 @@ export type {
   AuditQueryFilters,
   AuditQueryResponse,
   LeaseRecord,
+  LeaseListResponse,
   LeaseRenewResponse,
   ListResponse,
   PolicyCreateRequest,

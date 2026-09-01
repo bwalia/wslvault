@@ -9,8 +9,8 @@ objects named the same. Enable exactly one of the two mechanisms.
 The path map lives in values (edgeIngress.routes) and is verified against the
 actual axum route registrations under services/ — axum matches routes exactly,
 so only prefixes a backend really serves are listed. Backends whose APIs are
-gRPC-only (lease-manager, audit-service) or unimplemented over HTTP
-(/v1/identity) are deliberately absent.
+gRPC-only (audit-service) or unimplemented over HTTP
+(/v1/identity) are deliberately absent. /v1/leases is HTTP on lease-manager.
 */}}
 {{- if .Values.edgeIngress.enabled }}
 {{- $ctx := . }}

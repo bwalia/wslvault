@@ -14,11 +14,14 @@ type LeasesClient struct {
 
 // List returns all leases for the configured tenant.
 func (l *LeasesClient) List(ctx context.Context) ([]LeaseRecord, error) {
-	var out []LeaseRecord
-	if err := l.c.do(ctx, "GET", "/v1/leases", requestOptions{expectBody: true}, &out); err != nil {
+	var envelope LeaseListResponse
+	if err := l.c.do(ctx, "GET", "/v1/leases", requestOptions{expectBody: true}, &envelope); err != nil {
 		return nil, err
 	}
-	return out, nil
+	if envelope.Leases == nil {
+		return []LeaseRecord{}, nil
+	}
+	return envelope.Leases, nil
 }
 
 // Get retrieves a single lease by its UUID.

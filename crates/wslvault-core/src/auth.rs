@@ -312,6 +312,31 @@ fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
     .map_err(|e| AuthFailure(format!("invalid token: {e}")))
 }
 
+/// Optional lookup into the durable token-revocation list.
+///
+/// Services that have a database install this at startup via
+/// [`set_token_revocation`]. Without it, a cryptographically valid JWT is
+/// accepted until `exp` — fine for local in-memory mode, not for production.
+/// The checker **fails closed**: an error is treated as "do not authenticate".
+#[async_trait::async_trait]
+pub trait TokenRevocation: Send + Sync {
+    async fn is_revoked(&self, token: &str) -> Result<bool, AuthFailure>;
+}
+
+static TOKEN_REVOCATION: once_cell::sync::OnceCell<std::sync::Arc<dyn TokenRevocation>> =
+    once_cell::sync::OnceCell::new();
+
+/// Install the process-wide revocation checker. Subsequent calls are ignored.
+pub fn set_token_revocation(checker: std::sync::Arc<dyn TokenRevocation>) {
+    if TOKEN_REVOCATION.set(checker).is_err() {
+        tracing::warn!("token revocation checker already installed; ignoring");
+    }
+}
+
+fn token_revocation() -> Option<&'static std::sync::Arc<dyn TokenRevocation>> {
+    TOKEN_REVOCATION.get()
+}
+
 /// Header a superuser uses to name the tenant it is acting on.
 ///
 /// Only honoured for an identity whose *signed* token carries `superuser`.
@@ -380,7 +405,17 @@ pub async fn resolve_identity(headers: &HeaderMap) -> Result<Identity, AuthFailu
 
     // 3. A raw token — the path Vault clients (and ESO) take.
     if let Some(token) = extract_token(headers) {
-        return verify_token_async(&token).await.map(|claims| Identity {
+        let claims = verify_token_async(&token).await?;
+        if let Some(checker) = token_revocation() {
+            match checker.is_revoked(&token).await {
+                Ok(true) => {
+                    return Err(AuthFailure("token has been revoked".to_string()));
+                }
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        return Ok(Identity {
             tenant_id: claims.tenant_id,
             principal_id: claims.sub,
             policies: claims.policies,

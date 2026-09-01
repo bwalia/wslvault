@@ -6,12 +6,14 @@ service mesh.
 Traffic topology (allowed ingress paths):
   gateway           <- external clients (port 443)
   identity-service  <- gateway (auth), mcp-server (session auth),
-                       secret-engine + policy-engine (JWKS fetch)
+                       secret-engine + policy-engine + lease-manager (JWKS),
+                       lease-manager (RevokeTokenByHash)
   secret-engine     <- gateway, mcp-server
   policy-engine     <- secret-engine, transit-engine, gateway, identity-service
   crypto-service    <- secret-engine, transit-engine, lease-manager,
                        identity-service (token-signing key wrap)
-  lease-manager     <- secret-engine (lease creation), gateway (renewal API)
+  lease-manager     <- identity-service (CreateLease), secret-engine,
+                       gateway / mcp-server / vault-ui (HTTP)
   audit-service     <- all services (fire-and-forget audit events)
   transit-engine    <- gateway
   mcp-server        <- gateway (MCP HTTP sessions)
@@ -372,8 +374,19 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+    # lease-manager RevokeTokenByHash
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.grpcPort }}
           protocol: TCP
   egress:
     # Policy checks during token validation
@@ -409,11 +422,20 @@ spec:
       ports:
         - port: {{ .Values.auditService.grpcPort }}
           protocol: TCP
+    # CreateLease for issued tokens
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.leaseManager.grpcPort }}
+          protocol: TCP
 {{- end }}
 
 {{/*
 ────────────────────────────────────────────────────────────────────────────
-lease-manager: accept gRPC from secret-engine and HTTP from gateway
+lease-manager: accept gRPC from identity-service and secret-engine; HTTP from
+gateway, mcp-server, and the public edge
 ────────────────────────────────────────────────────────────────────────────
 */}}
 {{- if .Values.leaseManager.enabled }}
@@ -436,31 +458,34 @@ spec:
     - from:
         - podSelector:
             matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.leaseManager.grpcPort }}
+          protocol: TCP
+    - from:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "gateway" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.leaseManager.httpPort }}
           protocol: TCP
         - port: {{ .Values.leaseManager.grpcPort }}
           protocol: TCP
   egress:
-    # Revocation callbacks to crypto-service
     - to:
         - podSelector:
             matchLabels:
-              {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 14 }}
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
       ports:
-        - port: {{ .Values.cryptoService.grpcPort }}
+        - port: {{ .Values.identityService.grpcPort }}
           protocol: TCP
-    # Revocation callbacks to secret-engine
-    - to:
-        - podSelector:
-            matchLabels:
-              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
-      ports:
-        - port: {{ .Values.secretEngine.grpcPort }}
+        - port: {{ .Values.identityService.httpPort }}
           protocol: TCP
     - to:
         - podSelector:
@@ -618,6 +643,15 @@ spec:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.identityService.grpcPort }}
+          protocol: TCP
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.leaseManager.httpPort }}
           protocol: TCP
 {{- end }}
 

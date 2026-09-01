@@ -88,6 +88,7 @@ pub struct SecretServiceImpl {
     /// Client for the policy-engine authorization service.
     pub policy_client: PolicyClient,
     /// Client for the lease-manager; lease creation is best-effort.
+    #[allow(dead_code)] // reserved for a future dynamic secret engine
     pub lease_client: LeaseClient,
 }
 
@@ -245,15 +246,6 @@ impl SecretService for SecretServiceImpl {
                 return Err(Status::internal(format!("decryption failed: {}", e)));
             }
         };
-
-        // Attempt to create a TTL-based lease for this secret read.
-        // This is best-effort — if the lease-manager is unavailable the RPC
-        // still succeeds and no lease is included in the response (degraded mode).
-        let default_ttl_seconds: i64 = 3600;
-        let _lease_info = self
-            .lease_client
-            .create_lease_for_read(&req.tenant_id, &path, default_ttl_seconds)
-            .await;
 
         self.audit_client
             .emit(

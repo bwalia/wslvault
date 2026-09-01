@@ -644,6 +644,8 @@ pub struct KubernetesLoginResponse {
     pub policies: Vec<String>,
     pub namespace: String,
     pub service_account_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
 }
 
 /// `POST /v1/auth/kubernetes/login` — authenticate a Kubernetes SA token.
@@ -664,18 +666,28 @@ pub async fn handle_kubernetes_login(
                 result.policies.clone(),
                 K8S_JWT_TTL_SECONDS,
             ) {
-                Ok((token, expires_at)) => (
-                    StatusCode::OK,
-                    Json(KubernetesLoginResponse {
-                        token,
-                        expires_at,
-                        tenant_id: result.tenant_id,
-                        policies: result.policies,
-                        namespace: result.namespace,
-                        service_account_name: result.service_account_name,
-                    }),
-                )
-                    .into_response(),
+                Ok((token, expires_at)) => {
+                    let lease_id = crate::lease_client::try_create_token_lease(
+                        &result.tenant_id,
+                        &subject,
+                        &token,
+                        K8S_JWT_TTL_SECONDS,
+                    )
+                    .await;
+                    (
+                        StatusCode::OK,
+                        Json(KubernetesLoginResponse {
+                            token,
+                            expires_at,
+                            tenant_id: result.tenant_id,
+                            policies: result.policies,
+                            namespace: result.namespace,
+                            service_account_name: result.service_account_name,
+                            lease_id,
+                        }),
+                    )
+                        .into_response()
+                }
                 Err(e) => {
                     let err = KubernetesError::TokenIssuance(e.to_string());
                     err.into_response()

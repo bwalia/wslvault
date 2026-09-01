@@ -61,6 +61,7 @@ pub struct AppState {
     pub crypto_channel: tonic::transport::Channel,
     pub audit_client: AuditClient,
     pub policy_client: PolicyClient,
+    #[allow(dead_code)] // reserved for a future dynamic secret engine
     pub lease_client: LeaseClient,
 }
 
@@ -470,15 +471,6 @@ pub async fn get_secret(
         .with_label_values(&["read", &tenant_id, "success"])
         .inc();
 
-    // Attempt to create a TTL-based lease for this secret read.
-    // This is best-effort — if the lease-manager is unavailable the read still
-    // succeeds and `lease_info` will be `None` (degraded mode).
-    let default_ttl_seconds: i64 = 3600;
-    let lease_info = state
-        .lease_client
-        .create_lease_for_read(&tenant_id, &normalized_path, default_ttl_seconds)
-        .await;
-
     state
         .audit_client
         .emit(
@@ -493,10 +485,7 @@ pub async fn get_secret(
         )
         .await;
 
-    let (lease_id, lease_duration) = match lease_info {
-        Some(info) => (Some(info.lease_id), Some(info.ttl_seconds)),
-        None => (None, None),
-    };
+    let (lease_id, lease_duration): (Option<String>, Option<i64>) = (None, None);
 
     (
         StatusCode::OK,

@@ -8,13 +8,15 @@
 use std::sync::Arc;
 
 use tonic::{Request, Response, Status};
+use uuid::Uuid;
 
 use crate::store::{LeaseId, LeaseRecord, LeaseState, LeaseStoreBackend};
 
 use proto::lease_service_server::LeaseService;
 use proto::{
-    GetLeaseRequest, GetLeaseResponse, LeaseInfo, ListLeasesRequest, ListLeasesResponse,
-    RenewLeaseRequest, RenewLeaseResponse, RevokeLeaseRequest, RevokeLeaseResponse,
+    CreateLeaseRequest, CreateLeaseResponse, GetLeaseRequest, GetLeaseResponse, LeaseInfo,
+    ListLeasesRequest, ListLeasesResponse, RenewLeaseRequest, RenewLeaseResponse,
+    RevokeLeaseRequest, RevokeLeaseResponse,
 };
 
 pub mod proto {
@@ -35,6 +37,84 @@ impl LeaseServiceImpl {
 
 #[tonic::async_trait]
 impl LeaseService for LeaseServiceImpl {
+    async fn create_lease(
+        &self,
+        request: Request<CreateLeaseRequest>,
+    ) -> Result<Response<CreateLeaseResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.tenant_id.is_empty() {
+            return Err(Status::invalid_argument("tenant_id is required"));
+        }
+        if Uuid::parse_str(&req.tenant_id).is_err() {
+            return Err(Status::invalid_argument("tenant_id must be a UUID"));
+        }
+        if req.ttl_seconds <= 0 {
+            return Err(Status::invalid_argument("ttl_seconds must be positive"));
+        }
+
+        let mut ttl = req.ttl_seconds;
+        let mut max_ttl = req.max_ttl_seconds;
+        if max_ttl <= 0 {
+            max_ttl = 86_400;
+        }
+        if ttl > max_ttl {
+            ttl = max_ttl;
+        }
+
+        let target: wslvault_core::types::lease::LeaseTarget =
+            serde_json::from_str(&req.target_data).map_err(|e| {
+                Status::invalid_argument(format!("target_data is not valid LeaseTarget JSON: {e}"))
+            })?;
+
+        let expected_type = match &target {
+            wslvault_core::types::lease::LeaseTarget::Token { .. } => "token",
+            wslvault_core::types::lease::LeaseTarget::DynamicSecret { .. } => "dynamic_secret",
+            wslvault_core::types::lease::LeaseTarget::ServiceCredential { .. } => {
+                "service_credential"
+            }
+        };
+        if !req.target_type.is_empty() && req.target_type != expected_type {
+            return Err(Status::invalid_argument(format!(
+                "target_type '{}' does not match target_data ({expected_type})",
+                req.target_type
+            )));
+        }
+
+        let target_type = expected_type.to_string();
+        let target_data = serde_json::to_string(&target)
+            .map_err(|e| Status::internal(format!("failed to serialise lease target: {e}")))?;
+
+        let now = chrono::Utc::now();
+        let id = LeaseId::new();
+        let record = LeaseRecord {
+            id: id.clone(),
+            tenant_id: req.tenant_id,
+            target_type,
+            target_data,
+            state: LeaseState::Active,
+            ttl_seconds: ttl,
+            max_ttl_seconds: max_ttl,
+            renewable: req.renewable,
+            issued_at: now,
+            expires_at: now + chrono::Duration::seconds(ttl),
+            revoked_at: None,
+        };
+        let expires_at = record.expires_at.to_rfc3339();
+
+        self.store
+            .insert_lease(record)
+            .await
+            .map_err(Status::internal)?;
+
+        Ok(Response::new(CreateLeaseResponse {
+            lease_id: id.to_string(),
+            ttl_seconds: ttl,
+            expires_at,
+            renewable: req.renewable,
+        }))
+    }
+
     /// Return the full lease record for the given lease ID.
     async fn get_lease(
         &self,
@@ -189,6 +269,141 @@ pub async fn seed_lease(
         revoked_at: None,
     };
 
-    store.insert_lease(record).await;
+    store
+        .insert_lease(record)
+        .await
+        .expect("seed insert must succeed");
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::InMemoryLeaseStore;
+    use proto::lease_service_server::LeaseService;
+
+    fn token_target(hash: &str, principal: &str) -> String {
+        serde_json::to_string(&wslvault_core::types::lease::LeaseTarget::Token {
+            token_id: hash.into(),
+            principal_id: principal.into(),
+        })
+        .unwrap()
+    }
+
+    async fn svc() -> LeaseServiceImpl {
+        LeaseServiceImpl::new(Arc::new(InMemoryLeaseStore::new()))
+    }
+
+    #[tokio::test]
+    async fn create_get_list_renew_revoke() {
+        let svc = svc().await;
+        let tenant = uuid::Uuid::now_v7().to_string();
+
+        let created = svc
+            .create_lease(Request::new(CreateLeaseRequest {
+                tenant_id: tenant.clone(),
+                target_type: "token".into(),
+                target_data: token_target(&"a".repeat(64), "principal-1"),
+                ttl_seconds: 3600,
+                max_ttl_seconds: 86_400,
+                renewable: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(!created.lease_id.is_empty());
+        assert_eq!(created.ttl_seconds, 3600);
+
+        let got = svc
+            .get_lease(Request::new(GetLeaseRequest {
+                lease_id: created.lease_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(got.tenant_id, tenant);
+        assert_eq!(got.target_type, "token");
+
+        let listed = svc
+            .list_leases(Request::new(ListLeasesRequest {
+                tenant_id: tenant.clone(),
+                state_filter: "active".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(listed.leases.len(), 1);
+        assert_eq!(listed.leases[0].lease_id, created.lease_id);
+
+        let renewed = svc
+            .renew_lease(Request::new(RenewLeaseRequest {
+                lease_id: created.lease_id.clone(),
+                increment_seconds: 1800,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(renewed.lease_id, created.lease_id);
+
+        svc.revoke_lease(Request::new(RevokeLeaseRequest {
+            lease_id: created.lease_id.clone(),
+        }))
+        .await
+        .unwrap();
+
+        let after = svc
+            .get_lease(Request::new(GetLeaseRequest {
+                lease_id: created.lease_id,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(after.state, "revoked");
+    }
+
+    #[tokio::test]
+    async fn create_caps_ttl_to_max_and_rejects_non_positive() {
+        let svc = svc().await;
+        let tenant = uuid::Uuid::now_v7().to_string();
+
+        let err = svc
+            .create_lease(Request::new(CreateLeaseRequest {
+                tenant_id: tenant.clone(),
+                target_type: "token".into(),
+                target_data: token_target(&"b".repeat(64), ""),
+                ttl_seconds: 0,
+                max_ttl_seconds: 3600,
+                renewable: true,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let created = svc
+            .create_lease(Request::new(CreateLeaseRequest {
+                tenant_id: tenant,
+                target_type: "token".into(),
+                target_data: token_target(&"c".repeat(64), ""),
+                ttl_seconds: 10_000,
+                max_ttl_seconds: 3600,
+                renewable: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(created.ttl_seconds, 3600);
+    }
+
+    #[tokio::test]
+    async fn revoke_missing_is_not_found() {
+        let svc = svc().await;
+        let err = svc
+            .revoke_lease(Request::new(RevokeLeaseRequest {
+                lease_id: uuid::Uuid::now_v7().to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
 }

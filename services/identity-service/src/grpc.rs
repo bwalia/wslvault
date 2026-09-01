@@ -27,8 +27,8 @@ use crate::{
         authenticate_request::Method, identity_service_server::IdentityService,
         AuthenticateRequest, AuthenticateResponse, CreateServiceAccountRequest,
         CreateServiceAccountResponse, ListServiceAccountsRequest, ListServiceAccountsResponse,
-        RevokeTokenRequest, RevokeTokenResponse, ServiceAccountInfo, ValidateTokenRequest,
-        ValidateTokenResponse,
+        RevokeTokenByHashRequest, RevokeTokenByHashResponse, RevokeTokenRequest,
+        RevokeTokenResponse, ServiceAccountInfo, ValidateTokenRequest, ValidateTokenResponse,
     },
     store::{PrincipalRecord, PrincipalStore},
     token::TokenManager,
@@ -134,7 +134,7 @@ impl IdentityServiceImpl {
         }
 
         match self.revoked_tokens.read() {
-            Ok(set) => set.contains(token),
+            Ok(set) => set.contains(&wslvault_storage::revocation_store::token_hash(token)),
             Err(e) => {
                 error!(error = %e, "revocation set lock poisoned — denying (fail-closed)");
                 true
@@ -402,8 +402,6 @@ impl IdentityService for IdentityServiceImpl {
                     ));
                 }
 
-                let lease_id = Uuid::now_v7().to_string();
-
                 let (token, expires_at) = self
                     .token_manager
                     .issue_token(
@@ -413,6 +411,15 @@ impl IdentityService for IdentityServiceImpl {
                         TOKEN_REISSUE_TTL_SECONDS,
                     )
                     .map_err(vault_err_to_status)?;
+
+                let lease_id = crate::lease_client::try_create_token_lease(
+                    &result.tenant_id,
+                    &mtls_principal_id,
+                    &token,
+                    TOKEN_REISSUE_TTL_SECONDS,
+                )
+                .await
+                .unwrap_or_default();
 
                 info!(
                     principal_id = %mtls_principal_id,
@@ -434,8 +441,6 @@ impl IdentityService for IdentityServiceImpl {
             }
         };
 
-        let lease_id = Uuid::now_v7().to_string();
-
         let (new_token, expires_at) = self
             .token_manager
             .issue_token(
@@ -445,6 +450,15 @@ impl IdentityService for IdentityServiceImpl {
                 TOKEN_REISSUE_TTL_SECONDS,
             )
             .map_err(vault_err_to_status)?;
+
+        let lease_id = crate::lease_client::try_create_token_lease(
+            &req.tenant_id,
+            &principal_id,
+            &new_token,
+            TOKEN_REISSUE_TTL_SECONDS,
+        )
+        .await
+        .unwrap_or_default();
 
         info!(
             principal_id = %principal_id,
@@ -564,7 +578,7 @@ impl IdentityService for IdentityServiceImpl {
                 error!(error = %e, "revocation set lock poisoned");
                 Status::internal("internal lock error")
             })?;
-            set.insert(req.token.clone());
+            set.insert(wslvault_storage::revocation_store::token_hash(&req.token));
         }
 
         info!(
@@ -575,6 +589,55 @@ impl IdentityService for IdentityServiceImpl {
         );
 
         Ok(Response::new(RevokeTokenResponse {}))
+    }
+
+    async fn revoke_token_by_hash(
+        &self,
+        request: Request<RevokeTokenByHashRequest>,
+    ) -> Result<Response<RevokeTokenByHashResponse>, Status> {
+        let req = request.into_inner();
+
+        if req.token_hash.len() != 64 || !req.token_hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(Status::invalid_argument(
+                "token_hash must be 64 hex characters",
+            ));
+        }
+
+        let expires_at = if req.expires_at > 0 {
+            req.expires_at
+        } else {
+            chrono::Utc::now().timestamp() + 3600
+        };
+
+        if let Some(pool) = &self.revocation_pool {
+            wslvault_storage::revocation_store::revoke_by_hash(
+                pool,
+                &req.token_hash,
+                &req.tenant_id,
+                &req.principal_id,
+                expires_at,
+            )
+            .await
+            .map_err(|e| {
+                error!(error = %e, "failed to persist token revocation by hash");
+                Status::internal("could not persist revocation")
+            })?;
+        } else {
+            let mut set = self.revoked_tokens.write().map_err(|e| {
+                error!(error = %e, "revocation set lock poisoned");
+                Status::internal("internal lock error")
+            })?;
+            set.insert(req.token_hash.clone());
+        }
+
+        info!(
+            tenant_id = %req.tenant_id,
+            principal_id = %req.principal_id,
+            durable = self.revocation_pool.is_some(),
+            "token revoked by hash"
+        );
+
+        Ok(Response::new(RevokeTokenByHashResponse {}))
     }
 
     /// Creates a new service-account principal and issues an initial JWT.
@@ -617,12 +680,19 @@ impl IdentityService for IdentityServiceImpl {
             .create_principal(record)
             .map_err(vault_err_to_status)?;
 
-        let lease_id = Uuid::now_v7().to_string();
-
         let (token, _expires_at) = self
             .token_manager
             .issue_token(&principal_id, &req.tenant_id, req.policies, ttl_seconds)
             .map_err(vault_err_to_status)?;
+
+        let lease_id = crate::lease_client::try_create_token_lease(
+            &req.tenant_id,
+            &principal_id,
+            &token,
+            ttl_seconds,
+        )
+        .await
+        .unwrap_or_default();
 
         info!(
             principal_id = %principal_id,

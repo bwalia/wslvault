@@ -77,6 +77,7 @@ fn record_to_core_lease(record: &LeaseRecord) -> Result<Lease, String> {
         // Fall back to a Token variant carrying the opaque data string.
         LeaseTarget::Token {
             token_id: record.target_data.clone(),
+            principal_id: String::new(),
         }
     });
 
@@ -132,18 +133,21 @@ fn core_lease_to_record(lease: Lease) -> LeaseRecord {
 
 #[async_trait]
 impl LeaseStoreBackend for PgLeaseBackend {
-    async fn insert_lease(&self, record: LeaseRecord) -> LeaseId {
+    async fn insert_lease(&self, record: LeaseRecord) -> Result<LeaseId, String> {
         let id = record.id.clone();
 
         match record_to_core_lease(&record) {
             Ok(core_lease) => {
-                if let Err(err) = lease_store::create_lease(&self.pool, &core_lease).await {
-                    error!(
-                        lease_id = %id,
-                        error = %err,
-                        "failed to persist lease to PostgreSQL"
-                    );
-                }
+                lease_store::create_lease(&self.pool, &core_lease)
+                    .await
+                    .map_err(|e| {
+                        error!(
+                            lease_id = %id,
+                            error = %e,
+                            "failed to persist lease to PostgreSQL"
+                        );
+                        e.to_string()
+                    })?;
             }
             Err(err) => {
                 error!(
@@ -151,10 +155,11 @@ impl LeaseStoreBackend for PgLeaseBackend {
                     error = %err,
                     "failed to convert LeaseRecord to core Lease for storage"
                 );
+                return Err(err);
             }
         }
 
-        id
+        Ok(id)
     }
 
     async fn get_lease(&self, lease_id: &LeaseId) -> Option<LeaseRecord> {
@@ -224,14 +229,22 @@ impl LeaseStoreBackend for PgLeaseBackend {
             .map_err(|e| e.to_string())
     }
 
-    async fn list_leases(&self, _tenant_id: &str, _state_filter: Option<&str>) -> Vec<LeaseRecord> {
-        // The wslvault_storage lease_store does not expose a list operation.
-        // Return an empty vec; a future migration can add the SQL query.
-        //
-        // This does not regress existing behaviour because the in-memory store
-        // returns the full list and the PG backend is only activated when
-        // DATABASE_URL is set.
-        Vec::new()
+    async fn list_leases(&self, tenant_id: &str, state_filter: Option<&str>) -> Vec<LeaseRecord> {
+        let tenant = match Uuid::parse_str(tenant_id) {
+            Ok(u) => TenantId(u),
+            Err(err) => {
+                error!(tenant_id, error = %err, "list_leases: invalid tenant_id");
+                return Vec::new();
+            }
+        };
+
+        match lease_store::list_leases(&self.pool, &tenant, state_filter).await {
+            Ok(leases) => leases.into_iter().map(core_lease_to_record).collect(),
+            Err(err) => {
+                error!(error = %err, "failed to list leases from PostgreSQL");
+                Vec::new()
+            }
+        }
     }
 
     async fn expire_stale_leases(&self) -> Vec<LeaseId> {
@@ -248,6 +261,24 @@ impl LeaseStoreBackend for PgLeaseBackend {
                 Vec::new()
             }
         }
+    }
+
+    async fn list_stale_active_leases(&self) -> Vec<LeaseRecord> {
+        const BATCH_SIZE: i32 = 500;
+        match lease_store::list_stale_leases(&self.pool, BATCH_SIZE).await {
+            Ok(leases) => leases.into_iter().map(core_lease_to_record).collect(),
+            Err(err) => {
+                error!(error = %err, "failed to list stale leases from PostgreSQL");
+                Vec::new()
+            }
+        }
+    }
+
+    async fn mark_expired(&self, lease_id: &LeaseId) -> Result<(), String> {
+        let core_id = CoreLeaseId(lease_id.0);
+        lease_store::mark_lease_expired(&self.pool, &core_id)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 

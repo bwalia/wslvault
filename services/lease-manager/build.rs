@@ -9,7 +9,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .build_client(true)
         .compile_protos(
-            &["../../proto/wslvault/lease/v1/service.proto"],
+            &[
+                "../../proto/wslvault/lease/v1/service.proto",
+                "../../proto/wslvault/identity/v1/service.proto",
+            ],
             &["../../proto"],
         )?;
     Ok(())

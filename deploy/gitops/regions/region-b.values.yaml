@@ -62,7 +62,7 @@ networkPolicies:
     # 8091 replication-agent (peer pulls), 8092 region-health
     # (/v1/sys/regions + /v1/sys/cluster, which the vault-ui Regions and
     # Cluster pages read).
-    ports: [8081, 8082, 8083, 8086, 8087, 8088, 8091, 8092]
+    ports: [8081, 8082, 8083, 8084, 8086, 8087, 8088, 8091, 8092]
 
 ui:
   enabled: true

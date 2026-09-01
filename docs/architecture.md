@@ -54,7 +54,12 @@ WSLVault is a next-generation secrets management platform designed for enterpris
 | secret-engine | 8081 | 50052 | KV secrets CRUD, versioning, CAS writes |
 | identity-service | 8082 | 50054 | Authentication, JWT tokens, SCIM, OIDC |
 | policy-engine | 8083 | 50053 | RBAC policy evaluation, path-based access control |
-| lease-manager | 8084 | 50055 | Lease lifecycle, automatic expiration, renewal |
+| lease-manager | 8084 | 50055 | Token lease lifecycle, expiration, renewal, revoke |
+
+Token leases: every issued JWT gets a row in `shared.leases`. List/renew/revoke
+are HTTP on lease-manager (`/v1/leases`). Revoke and expire put the token hash
+on identity-service's durable revocation list so the JWT stops working. KV
+secret reads are not leased. See `docs/leases-plan.md`.
 | audit-service | 8085 | 50056 | Immutable audit logging, HMAC integrity |
 | transit-engine | 8086 | — | Encryption-as-a-service (encrypt/decrypt/sign/verify) |
 | mcp-server | 8087 | — | AI agent integration via Model Context Protocol |

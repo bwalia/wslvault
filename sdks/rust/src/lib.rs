@@ -61,6 +61,7 @@ pub use client::{
     AuditEvent,
     AuditQueryFilters,
     AuditQueryResponse,
+    LeaseListResponse,
     // Lease types
     LeaseRecord,
     LeaseRenewResponse,

@@ -17,7 +17,6 @@
 #
 # Routes intentionally NOT exposed here (backend serves no HTTP under them):
 #   /v1/identity  -> identity-service registers no such route
-#   /v1/leases    -> lease-manager  API is gRPC-only (:50055); HTTP :8084 = /health
 #   /v1/audit     -> audit-service  API is gRPC-only (:50056); HTTP :8085 = /health
 # Re-add them here only once those services expose the corresponding HTTP routes.
 apiVersion: networking.k8s.io/v1
@@ -103,6 +102,9 @@ spec:
           - path: /v1/mcp
             pathType: Prefix
             backend: { service: { name: wslvault-mcp-server, port: { number: 8087 } } }
+          - path: /v1/leases
+            pathType: Prefix
+            backend: { service: { name: wslvault-lease-manager, port: { number: 8084 } } }
 ---
 # HTTP -> HTTPS redirect. Encoded explicitly so the repo is self-sufficient and
 # does not depend on any cluster-global Traefik entrypoint redirect. Traefik's

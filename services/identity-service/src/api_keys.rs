@@ -1232,6 +1232,10 @@ pub struct ApiKeyAuthResponse {
     pub expires_at: DateTime<Utc>,
     pub tenant_id: String,
     pub policies: Vec<String>,
+    /// Present when lease-manager accepted the token lease. Omitted when
+    /// lease-manager is down (login still succeeds).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1617,6 +1621,14 @@ pub async fn handle_auth_api_key(
         "api key exchanged for jwt"
     );
 
+    let lease_id = crate::lease_client::try_create_token_lease(
+        &validation_result.tenant_id,
+        &subject,
+        &token,
+        API_KEY_JWT_TTL_SECONDS,
+    )
+    .await;
+
     (
         StatusCode::OK,
         Json(ApiKeyAuthResponse {
@@ -1624,6 +1636,7 @@ pub async fn handle_auth_api_key(
             expires_at,
             tenant_id: validation_result.tenant_id,
             policies: validation_result.policies,
+            lease_id,
         }),
     )
         .into_response()
@@ -1749,6 +1762,14 @@ pub async fn handle_mfa_verify(
     }
     info!(key_id = %pending.api_key_id, "MFA accepted; token issued");
 
+    let lease_id = crate::lease_client::try_create_token_lease(
+        &pending.tenant_id,
+        &pending.api_key_id.to_string(),
+        &token,
+        API_KEY_JWT_TTL_SECONDS,
+    )
+    .await;
+
     (
         StatusCode::OK,
         Json(ApiKeyAuthResponse {
@@ -1756,6 +1777,7 @@ pub async fn handle_mfa_verify(
             expires_at,
             tenant_id: pending.tenant_id.clone(),
             policies: pending.policies.clone(),
+            lease_id,
         }),
     )
         .into_response()
