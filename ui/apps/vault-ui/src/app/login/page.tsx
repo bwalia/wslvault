@@ -56,6 +56,13 @@ export default function LoginPage() {
     }
   }
 
+  // The key is valid and demands a second factor, but none is enrolled — the
+  // API answers 403 naming the endpoint to call (api_keys.rs:1571). That is an
+  // instruction a person cannot act on, so it is replaced with a link. Matched
+  // on the endpoint path rather than the whole sentence: the wording may be
+  // reworded, the route is what the message is about.
+  const needsEnrolment = error.includes('mfa/totp/enroll')
+
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-canvas">
       {/* Left panel — vault steel, the brand moment */}
@@ -120,7 +127,16 @@ export default function LoginPage() {
               className="flex items-start gap-2 p-3 mb-4 rounded-lg border border-danger-100 bg-danger-50 dark:bg-danger-600/10 dark:border-danger-600/30 text-danger-700 dark:text-danger-400 text-sm"
             >
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-              {error}
+              {needsEnrolment ? (
+                <span>
+                  This account needs an authenticator app before you can sign in.{' '}
+                  <a href="/enroll" className="font-medium underline underline-offset-2 focus-ring rounded">
+                    Set up your authenticator app
+                  </a>
+                </span>
+              ) : (
+                error
+              )}
             </div>
           )}
 

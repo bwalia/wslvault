@@ -96,7 +96,26 @@ pub async fn upsert_pending(
 }
 
 /// Mark an enrolment confirmed, recording the step that proved it.
+/// Mark an enrolment confirmed, and make the key actually demand it.
+///
+/// Both updates commit together. `mfa_required` was previously only ever
+/// written by the INSERT in `api_key_store` (see its `mfa_required ||
+/// is_superuser` bind), so a key created without it stayed exempt no matter
+/// what the holder enrolled — the UI told them "signing in with this key now
+/// asks for a code" and it did not. Enrolling is the act of asking for the
+/// protection, so it is what turns it on.
+///
+/// Splitting these across two statements would leave a window either way round:
+/// required with nothing enrolled locks the holder out, enrolled without
+/// required silently leaves them unprotected while telling them otherwise.
+///
+/// Setting `mfa_required` true can never violate `superuser_requires_mfa`
+/// (025_superuser.sql) — that constraint only forbids the false case.
 pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), VaultError> {
+    let mut tx = pool.inner().begin().await.map_err(|e| VaultError::Database {
+        reason: format!("could not open transaction to confirm MFA enrolment: {e}"),
+    })?;
+
     sqlx::query(
         "UPDATE shared.mfa_totp
          SET confirmed_at = now(), last_used_step = $2
@@ -104,11 +123,24 @@ pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), V
     )
     .bind(api_key_id)
     .bind(step)
-    .execute(pool.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("could not confirm MFA enrolment: {e}"),
     })?;
+
+    sqlx::query("UPDATE shared.api_keys SET mfa_required = true WHERE id = $1")
+        .bind(api_key_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: format!("could not enable MFA on the key: {e}"),
+        })?;
+
+    tx.commit().await.map_err(|e| VaultError::Database {
+        reason: format!("could not commit MFA enrolment: {e}"),
+    })?;
+
     Ok(())
 }
 

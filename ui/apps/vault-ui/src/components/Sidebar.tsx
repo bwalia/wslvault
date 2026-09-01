@@ -18,6 +18,7 @@ import {
   Globe,
   Server,
   UserCog,
+  Smartphone,
 } from 'lucide-react'
 
 const navGroups = [
@@ -35,6 +36,7 @@ const navGroups = [
       { href: '/policies', label: 'Policies', icon: Shield },
       { href: '/identity', label: 'Identity', icon: Users },
       { href: '/leases', label: 'Leases', icon: Key },
+      { href: '/mfa', label: 'MFA', icon: Smartphone },
       { href: '/scim', label: 'SCIM', icon: UserCog },
     ],
   },
