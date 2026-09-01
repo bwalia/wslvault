@@ -363,6 +363,18 @@ living in Git.
 {{- end }}
 {{- end }}
 
+{{- define "wslvault.auditSigningKeySecretName" -}}
+{{- .Values.secrets.existingSecret | default (printf "%s-audit-signing-key" (include "wslvault.fullname" .)) }}
+{{- end }}
+
+{{- define "wslvault.auditSigningKeySecretKey" -}}
+{{- if .Values.secrets.existingSecret }}
+{{- .Values.secrets.existingSecretKeys.auditSigningKey | default "audit-signing-key" }}
+{{- else }}
+{{- print "audit-signing-key" }}
+{{- end }}
+{{- end }}
+
 {{/*
 Environment block shared by the region-aware services (replication-agent and
 region-health). REGION_ID used to come from a downward-API fieldRef on the
