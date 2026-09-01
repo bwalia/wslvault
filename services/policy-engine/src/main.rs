@@ -144,8 +144,8 @@ async fn run_compilation_task(
         let all_docs = store.get_all().await;
         let mut new_snapshot = CompiledPolicies::new();
 
-        for (_tenant_id, doc) in all_docs {
-            new_snapshot.upsert(doc.name.clone(), doc.rules);
+        for (tenant_id, doc) in all_docs {
+            new_snapshot.upsert(tenant_id, doc.name.clone(), doc.rules);
         }
 
         {
@@ -232,8 +232,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let all_docs = store.get_all().await;
         let mut snapshot = compiled.write().await;
-        for (_tenant_id, doc) in all_docs {
-            snapshot.upsert(doc.name.clone(), doc.rules);
+        for (tenant_id, doc) in all_docs {
+            snapshot.upsert(tenant_id, doc.name.clone(), doc.rules);
         }
     }
 

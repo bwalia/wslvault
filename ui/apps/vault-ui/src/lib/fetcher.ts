@@ -51,10 +51,17 @@ async function toApiError(res: Response): Promise<ApiError> {
   return new ApiError(message, res.status, body.reason)
 }
 
-function authHeaders(token: string | null, tenantId: string | null): Record<string, string> {
+/**
+ * The bearer token is the whole credential.
+ *
+ * We deliberately do NOT send `X-Tenant-Id`. The backends derive the tenant
+ * from the signed token's own `tenant_id` claim, so a client-supplied tenant
+ * header is at best redundant and at worst a way for a compromised browser
+ * session to name a tenant it does not belong to. One source of truth.
+ */
+function authHeaders(token: string | null): Record<string, string> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (token) headers['Authorization'] = `Bearer ${token}`
-  if (tenantId) headers['X-Tenant-Id'] = tenantId
   return headers
 }
 
@@ -64,10 +71,10 @@ function authHeaders(token: string | null, tenantId: string | null): Record<stri
  * Memoize this at the call site (see `useVaultSWR`) — a fresh function identity
  * on every render defeats SWR's deduplication.
  */
-export function createFetcher(token: string | null, tenantId: string | null) {
+export function createFetcher(token: string | null) {
   return async <T = unknown>(url: string): Promise<T> => {
     const res = await fetch(url, {
-      headers: authHeaders(token, tenantId),
+      headers: authHeaders(token),
       // Secret material must never land in the browser HTTP cache.
       cache: 'no-store',
     })
@@ -88,11 +95,10 @@ export async function mutate<T = unknown>(
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   body: unknown,
   token: string | null,
-  tenantId: string | null,
 ): Promise<T | null> {
   const res = await fetch(url, {
     method,
-    headers: authHeaders(token, tenantId),
+    headers: authHeaders(token),
     body: body === null || body === undefined ? undefined : JSON.stringify(body),
     cache: 'no-store',
   })

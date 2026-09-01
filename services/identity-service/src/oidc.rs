@@ -54,6 +54,7 @@ pub enum OidcError {
 
 // ─── Configuration types ─────────────────────────────────────────────────────
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Configuration for a single OIDC provider.
 ///
 /// Instances are typically loaded from the `VAULT_OIDC_PROVIDERS` environment
@@ -69,6 +70,7 @@ pub struct OidcProviderConfig {
 
     /// Optional client secret — reserved for future token-exchange flows;
     /// not required for pure ID token validation.
+    #[allow(dead_code)]
     pub client_secret: Option<String>,
 
     /// Override the JWKS URI instead of discovering it via `.well-known`.
@@ -108,10 +110,12 @@ struct OpenIdConfiguration {
 
 // ─── ID token claims ──────────────────────────────────────────────────────────
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Standard + custom claims extracted from a validated OIDC ID token.
 #[derive(Debug, serde::Deserialize)]
 pub struct IdTokenClaims {
     /// Issuer — must match the configured issuer.
+    #[allow(dead_code)]
     pub iss: String,
     /// Subject — stable identifier for the end-user at the IdP.
     pub sub: String,

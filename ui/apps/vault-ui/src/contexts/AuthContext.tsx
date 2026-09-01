@@ -20,8 +20,23 @@ interface AuthState {
   expiresAt: number | null // timestamp ms
 }
 
+/** Returned when the key is right but a second factor is still needed. */
+export interface MfaChallenge {
+  challenge: string
+  expiresInSeconds: number
+}
+
 interface AuthContextType extends AuthState {
-  login(apiKey: string): Promise<void>
+  /**
+   * Exchange an API key for a session.
+   *
+   * Resolves to an `MfaChallenge` when the key requires an authenticator code —
+   * the key was accepted, but no session exists yet. Resolves to `null` when the
+   * session is established. Machine keys never see a challenge.
+   */
+  login(apiKey: string): Promise<MfaChallenge | null>
+  /** Complete a login by answering its challenge with a code. */
+  verifyMfa(challenge: string, code: string): Promise<void>
   logout(): void
   isAuthenticated: boolean
 }
@@ -68,6 +83,22 @@ interface AuthResponse {
   expires_at: string
 }
 
+/** The body returned instead of a token when a second factor is required. */
+interface ChallengeResponse {
+  mfa_required: true
+  challenge: string
+  expires_in_seconds: number
+}
+
+function isChallenge(body: unknown): body is ChallengeResponse {
+  return (
+    typeof body === 'object' &&
+    body !== null &&
+    (body as { mfa_required?: unknown }).mfa_required === true &&
+    typeof (body as { challenge?: unknown }).challenge === 'string'
+  )
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [isMounted, setIsMounted] = useState(false)
@@ -88,29 +119,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/login')
   }, [router])
 
-  const login = useCallback(
-    async (apiKey: string) => {
-      let res: Response
-      try {
-        res = await fetch(api.identity.authApiKey(), {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ api_key: apiKey }),
-          cache: 'no-store',
-        })
-      } catch {
-        // fetch() rejects only on network failure. Without this the login page
-        // shows "Authentication failed" when the truth is the API is down —
-        // sending the user to re-check a key that was never the problem.
-        throw new ApiError('Cannot reach the vault API. Is the backend running?', 0)
-      }
-
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { message?: string }
-        throw new ApiError(body.message ?? 'Authentication failed', res.status)
-      }
-
-      const data = (await res.json().catch(() => null)) as AuthResponse | null
+  /** Turn a successful auth response into a live session. */
+  const establishSession = useCallback(
+    (data: AuthResponse | null) => {
       if (!data?.token) {
         throw new ApiError('Malformed response from identity-service', 502)
       }
@@ -139,6 +150,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [router],
   )
 
+  /** POST a body to an auth endpoint, distinguishing "API is down" from "rejected". */
+  const postAuth = useCallback(async (url: string, body: unknown): Promise<unknown> => {
+    let res: Response
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        cache: 'no-store',
+      })
+    } catch {
+      // fetch() rejects only on network failure. Without this the login page
+      // shows "Authentication failed" when the truth is the API is down —
+      // sending the user to re-check a key that was never the problem.
+      throw new ApiError('Cannot reach the vault API. Is the backend running?', 0)
+    }
+
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { message?: string }
+      throw new ApiError(err.message ?? 'Authentication failed', res.status)
+    }
+    return await res.json().catch(() => null)
+  }, [])
+
+  const login = useCallback(
+    async (apiKey: string): Promise<MfaChallenge | null> => {
+      const body = await postAuth(api.identity.authApiKey(), { api_key: apiKey })
+
+      // The key was accepted but a second factor is outstanding. Hand the
+      // challenge back rather than throwing: this is a step in the flow, not a
+      // failure, and the caller needs it to complete the login.
+      if (isChallenge(body)) {
+        return { challenge: body.challenge, expiresInSeconds: body.expires_in_seconds }
+      }
+
+      establishSession(body as AuthResponse | null)
+      return null
+    },
+    [postAuth, establishSession],
+  )
+
+  const verifyMfa = useCallback(
+    async (challenge: string, code: string) => {
+      const body = await postAuth(api.identity.mfaTotp(), { challenge, code })
+      establishSession(body as AuthResponse | null)
+    },
+    [postAuth, establishSession],
+  )
+
   // Log out the moment the token expires rather than waiting for the next
   // request to 401. Otherwise the UI keeps rendering as if authenticated and
   // every action fails with a confusing message.
@@ -162,8 +222,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `logout` (e.g. useAsyncAction) gets a fresh identity each time, defeating
   // its own memoization.
   const value = useMemo<AuthContextType>(
-    () => ({ ...state, login, logout, isAuthenticated }),
-    [state, login, logout, isAuthenticated],
+    () => ({ ...state, login, verifyMfa, logout, isAuthenticated }),
+    [state, login, verifyMfa, logout, isAuthenticated],
   )
 
   if (!isMounted) return null

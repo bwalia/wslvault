@@ -17,13 +17,16 @@ mod api_keys;
 mod auth_methods;
 mod aws_iam;
 mod azure_workload;
+mod crypto_client;
 mod grpc;
 mod health;
+mod mfa;
 mod mtls;
 mod oidc;
 mod openapi;
 mod quota_handlers;
 mod scim;
+mod signing_keys;
 mod store;
 mod tenant_handlers;
 mod token;
@@ -389,6 +392,48 @@ async fn main() -> Result<(), anyhow::Error> {
     // device-flow router can share the same OIDC validation state.
     let oidc_manager_for_device = oidc_manager.clone();
 
+    // Token revocations live in PostgreSQL so they survive restarts and are
+    // visible to every replica. Without a database they fall back to an
+    // in-process set, which IdentityServiceImpl::new warns loudly about.
+    // One pool, two consumers: token revocation and per-tenant signing keys.
+    // Cloned before either takes ownership.
+    let revocation_pool = match std::env::var("DATABASE_URL") {
+        Ok(url) if !url.is_empty() => {
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(5)
+                .connect(&url)
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to connect to PostgreSQL for token revocation: {e}")
+                })?;
+            info!("token revocation: using PostgreSQL backend");
+            Some(wslvault_storage::pool::DbPool::from_pool(pool))
+        }
+        _ => None,
+    };
+
+    // Reap revocations whose tokens have expired on their own; past a token's
+    // own exp the JWT validator rejects it regardless, so the row is dead
+    // weight. This is what keeps the table bounded.
+    if let Some(pool) = revocation_pool.clone() {
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                ticker.tick().await;
+                match wslvault_storage::revocation_store::reap_expired(&pool).await {
+                    Ok(0) => {}
+                    Ok(n) => info!(reaped = n, "expired token revocations reaped"),
+                    Err(e) => warn!(error = %e, "revocation reaper failed; will retry"),
+                }
+            }
+        });
+    }
+
+    // Per-tenant Ed25519 signing keys need a database to keep them in and a
+    // crypto-service to wrap them with. Without both, token issuance falls back
+    // to the shared HS256 secret and warns on every token.
+    let signing_key_pool = revocation_pool.clone();
+
     let identity_svc = IdentityServiceImpl::new(
         token_manager,
         principal_store,
@@ -396,6 +441,7 @@ async fn main() -> Result<(), anyhow::Error> {
         mtls_manager,
         aws_iam_manager,
         azure_workload_manager,
+        revocation_pool,
     );
     let grpc_service = IdentityServiceServer::new(identity_svc);
 
@@ -437,11 +483,54 @@ async fn main() -> Result<(), anyhow::Error> {
     // rather than relying solely on the gateway-origin check: a deployment that
     // routes around the gateway, or leaves VAULT_GATEWAY_SECRET unset, would
     // otherwise expose key creation to anyone who can reach the port.
-    let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone());
+
+    let crypto_for_identity = std::env::var("CRYPTO_SERVICE_ENDPOINT")
+        .ok()
+        .filter(|e| !e.trim().is_empty())
+        .map(|e| crypto_client::CryptoClient::new(e.trim()));
+
+    let signing_keys = match (&signing_key_pool, std::env::var("CRYPTO_SERVICE_ENDPOINT")) {
+        (Some(pool), Ok(endpoint)) if !endpoint.trim().is_empty() => {
+            info!(endpoint = %endpoint, "per-tenant token signing keys enabled");
+            Some(signing_keys::SigningKeys::new(
+                pool.clone(),
+                crypto_client::CryptoClient::new(endpoint.trim()),
+            ))
+        }
+        _ => {
+            warn!(
+                "per-tenant signing keys are DISABLED (needs DATABASE_URL and \
+                 CRYPTO_SERVICE_ENDPOINT). Tokens will be HS256 under the shared \
+                 VAULT_JWT_SECRET, which every service that verifies them also holds."
+            );
+            None
+        }
+    };
+
+    // The second factor needs a database for enrolments and the crypto-service
+    // to wrap secrets with. Without both it is unavailable, and a key marked
+    // mfa_required fails closed rather than quietly logging in without it.
+    if signing_key_pool.is_none() || crypto_for_identity.is_none() {
+        warn!(
+            "authenticator (TOTP) MFA is DISABLED (needs DATABASE_URL and \
+             CRYPTO_SERVICE_ENDPOINT); keys marked mfa_required will be refused"
+        );
+    }
+
+    // Built after `signing_keys` so the admin gate can verify per-tenant EdDSA
+    // tokens. Without them it falls back to HS256 only, which rejects every
+    // token issued under per-tenant keys — every Bearer-authorised admin
+    // operation would break silently.
+    let admin_auth = api_keys::AdminAuth::from_env(token_manager_for_api_keys.clone())
+        .with_signing_keys(signing_keys.clone());
 
     let api_key_state = api_keys::ApiKeyState {
         manager: api_key_manager,
         token_manager: token_manager_for_api_keys,
+        signing_keys: signing_keys.clone(),
+        mfa_pool: signing_key_pool.clone(),
+        crypto: crypto_for_identity,
+        challenges: mfa::ChallengeStore::new(),
     };
 
     // Construct the SCIM shared state.  When DATABASE_URL is set, use
@@ -612,7 +701,7 @@ async fn main() -> Result<(), anyhow::Error> {
     // probes and the Swagger docs are intentionally left open.
     // Fold optional auth-method routers into the protected route set.
     // Each is `Option<Router>` — absent when the feature is not configured.
-    let mut protected_routes: Router = tenant_handlers::router(tenant_store)
+    let mut protected_routes: Router = tenant_handlers::router(tenant_store, admin_auth.clone())
         .merge(api_keys::router(api_key_state, admin_auth))
         .merge(quota_handlers::router(quota_state))
         .merge(scim::router().with_state(scim_state));

@@ -1,11 +1,45 @@
 # WSLVault — Project Status
 
-**Audit date:** 2026-07-10 · **Commit:** `c8b63fd` · **Branch:** `main`
-**Scale:** ~47,000 lines of Rust · 4 library crates · 13 services · 1 OpenResty gateway · 275 unit tests (4 ignored)
+**Last audit:** 2026-07-10 (commit `c8b63fd`) · **Remediated:** 2026-08-31 (branch `fix/tenant-isolation`)
 
-This document is a ground-truth assessment of what is built, what is faked, and what is missing —
-benchmarked against HashiCorp Vault (OSS and Enterprise). Every claim below is anchored to a
-file and line number that was read directly.
+> **This document is partly historical.** Sections 3–4 describe defects that
+> have since been fixed; each now carries a FIXED note pointing at the commit
+> that closed it. The parity tables in sections 5–6 are still accurate — they
+> describe features that were never built, not defects, and none of them were
+> in scope for the remediation.
+>
+> **What changed on `fix/tenant-isolation`:**
+>
+> | Was | Now |
+> |---|---|
+> | Native secret API accepted `X-Tenant-Id` + `X-Policies` from the client | One authenticated identity path (`wslvault-core::auth`) for every mount, enforced as a router layer |
+> | Policy snapshot keyed on name alone — tenants collided | Keyed on `(tenant_id, policy_name)`; `evaluate` takes the tenant |
+> | UI injected identity headers from an unverified JWT | Deleted; backends read the signed token |
+> | Chart shipped a working, published JWT signing key | Chart refuses to render without real keys |
+> | DEK rotation destroyed everything under the old key | Superseded versions retained; decrypt walks the chain |
+> | Transit key material never persisted — restart lost all ciphertext | Wrapped under the root KEK, warm-loaded, AAD-bound per version |
+> | Revocation was a per-pod `HashSet` that failed open | Durable, hashed, reaped, fails closed |
+> | Audit was unchained, unverified, one hardcoded key, failures swallowed | Hash-chained, verified on read, per-tenant keys, failures propagate |
+> | SCIM group sync logged "would be added" and did nothing | Grants and revokes for real |
+> | A new DEK per encrypt — memory and boot grew with every write | Rolling per-tenant DEK, lazy hydration, bounded warm-load |
+> | Gateway forwarded client identity headers and could not start | Headers stripped at server level; config actually valid |
+> | **No seal. Root key in a plaintext env var.** | **Shamir-split custody, `sys/init` / `unseal` / `seal-status`** |
+> | One shared HS256 secret signed every tenant's tokens | Per-tenant Ed25519 keypairs + JWKS; only identity-service can mint |
+> | No cross-tenant administration was possible at all | Superuser, granted in a signed claim, MFA-forced, audited on every crossing |
+> | Authentication was one factor: possession of an API key | Authenticator-app TOTP with recovery codes; machine keys exempt |
+>
+> **Still open**, and deliberately so — these are the honest remainder:
+>
+> * **RLS is corrected but not enforced.** Migration 018 fixes the policies and
+>   proves isolation under a least-privilege role; 019 ships disabled because
+>   enabling it needs the storage layer to set `app.current_tenant_id` per
+>   transaction first. Doing it in the wrong order is an outage.
+> * ~~Tokens are still symmetric HS256~~ — **FIXED.** Per-tenant Ed25519
+>   keypairs, private halves wrapped under the root KEK (so a sealed vault
+>   cannot mint tokens), public keys served via JWKS. Verifiers can only verify.
+>   HS256 remains accepted for tokens issued before the change, until they
+>   expire.
+> * Everything in sections 5 and 6 marked ❌ is still absent.
 
 ---
 
@@ -65,7 +99,11 @@ custody, and durable revocation).
 
 These are ordered by blast radius. Each is a confirmed defect, not a missing feature.
 
-### P0-1 · There is no seal/unseal. The root key is a plaintext env var.
+### P0-1 · ~~There is no seal/unseal~~ — **FIXED** (`feat(seal)!`)
+
+> Shamir-split custody with `sys/init`, `sys/unseal`, `sys/seal-status`, `sys/seal`. `VAULT_ROOT_KEY` still boots unsealed for compatibility, with a warning. Original finding below.
+
+#### Original: P0-1 · There is no seal/unseal. The root key is a plaintext env var.
 
 `grep -rniE '\bshamir\b|\bunseal\b|seal_status|\brekey\b'` across the entire repo returns exactly
 one hit — a *comment* in [applier.rs:235](services/replication-agent/src/applier.rs#L235) explaining
@@ -84,7 +122,11 @@ Consequence: whoever can read your Kubernetes Secret, your Helm values, or a pro
 owns every secret in the vault, in perpetuity. There is no documented recovery path if the key is
 lost. **This is the defining feature of Vault and it is 0% built.**
 
-### P0-2 · Transit keys are never persisted. A pod restart permanently destroys all transit ciphertext.
+### P0-2 · ~~Transit keys are never persisted~~ — **FIXED** (`fix(transit-engine)!`)
+
+> Key material is wrapped under the root KEK and warm-loaded; migration 021 adds the missing `key_name` column that made persistence impossible. Original finding below.
+
+#### Original: P0-2 · Transit keys are never persisted. A pod restart permanently destroys all transit ciphertext.
 
 [pg_store.rs:178](services/transit-engine/src/pg_store.rs#L178) and
 [:262](services/transit-engine/src/pg_store.rs#L262) literally write the ASCII string
@@ -100,7 +142,11 @@ transit key becomes permanently undecryptable. With more than one replica, encry
 routed to different pods will not even agree in the first place. **This is unrecoverable data loss
 and it triggers on the most routine event in Kubernetes.**
 
-### P0-3 · Policy authorization over HTTP ignores the principal entirely.
+### P0-3 · ~~Policy authorization ignores the principal~~ — **FIXED** (`fix(policy-engine)!`)
+
+> The HTTP endpoint takes the caller's policies like the gRPC path; the snapshot is tenant-scoped. Original finding below.
+
+#### Original: P0-3 · Policy authorization over HTTP ignores the principal entirely.
 
 [http.rs:242-245](services/policy-engine/src/http.rs#L242-L245):
 
@@ -125,7 +171,11 @@ tenants with a policy of the same name collide; last writer wins. That is a cros
 
 There are **zero tests** in `policy-engine/src/http.rs`, which is why this survives.
 
-### P0-4 · Token revocation is an in-memory `HashSet`. It does not survive a restart and does not propagate between replicas.
+### P0-4 · ~~Token revocation is an in-memory `HashSet`~~ — **FIXED** (`feat(identity)`)
+
+> Durable in `system.revoked_tokens`, keyed by SHA-256, reaped on expiry, fails closed. Original finding below.
+
+#### Original: P0-4 · Token revocation is an in-memory `HashSet`. It does not survive a restart and does not propagate between replicas.
 
 [grpc.rs:67](services/identity-service/src/grpc.rs#L67):
 `revoked_tokens: Arc<RwLock<HashSet<String>>>`.
@@ -141,7 +191,11 @@ Related: the entire principal store is an in-memory `HashMap`
 ([store.rs:38-40](services/identity-service/src/store.rs#L38-L40)) with no database backing.
 Principals vanish on restart.
 
-### P0-5 · The Helm gateway runs stock OpenResty. None of your auth, rate-limiting, or quota Lua is mounted.
+### P0-5 · The Helm gateway runs stock OpenResty — **PARTLY FIXED**
+
+> The gateway config now strips client identity headers and is syntactically valid for the first time (`env` was in the wrong context, so it could never start). Backends no longer depend on it for identity, so a missing gateway is no longer an authentication bypass. Mounting the Lua from a ConfigMap is still not done. Original finding below.
+
+#### Original: P0-5 · The Helm gateway runs stock OpenResty. None of your auth, rate-limiting, or quota Lua is mounted.
 
 [deploy/helm/wslvault/templates/gateway/deployment.yaml](deploy/helm/wslvault/templates/gateway/deployment.yaml)
 mounts exactly three volumes: `tls`, `tmp`, `openresty-cache`. It never mounts `nginx.conf` and never

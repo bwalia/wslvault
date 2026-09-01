@@ -125,14 +125,14 @@ export default function SettingsPage() {
         slug: values.tenant_slug,
         display_name: values.tenant_name,
         tier: 'shared',
-      }, token, tenantId) as { id: string }
+      }, token) as { id: string }
 
       // Create API key for new tenant
       const apiKey = await mutate('/api/identity/v1/api-keys', 'POST', {
         name: values.key_name,
         policies: values.key_policies.split(',').map(p => p.trim()),
         tenant_id: tenant.id,
-      }, token, tenantId) as { key: string }
+      }, token) as { key: string }
 
       setBootstrapResult({ tenant_id: tenant.id, api_key: apiKey.key })
       bootstrapForm.reset()

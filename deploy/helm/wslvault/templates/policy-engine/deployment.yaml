@@ -68,6 +68,11 @@ spec:
                   name: {{ include "wslvault.dbCredentialsSecretName" . }}
                   key: {{ include "wslvault.dbPasswordSecretKey" . }}
                   optional: false
+            # Public keys for verifying per-tenant Ed25519 tokens. Verification
+            # only — holding these confers no ability to mint a token, which is
+            # the whole point of moving off the shared HS256 secret.
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
                           .Values.postgresql.auth.username

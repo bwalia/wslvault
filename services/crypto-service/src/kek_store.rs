@@ -31,10 +31,12 @@ use zeroize::Zeroizing;
 
 use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
 use wslvault_core::error::VaultError;
+use wslvault_core::seal::Seal;
 use wslvault_core::types::key::{KeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, KeyState};
 
 use wslvault_storage::key_store::{
-    insert_key_descriptor, list_active_keys_with_wrapped_key, update_key_state,
+    get_key_versions_with_wrapped_key, insert_key_descriptor, list_active_keys_with_wrapped_key,
+    list_recent_loadable_keys, update_key_state,
 };
 use wslvault_storage::pool::DbPool;
 
@@ -54,11 +56,47 @@ struct TenantKekEntry {
     version: u32,
 }
 
+/// How many encryptions one DEK serves before it is rolled.
+///
+/// Well below the birthday bound for random 96-bit nonces under a single
+/// AES-GCM key (~2^32 messages), while still collapsing the key table by
+/// several orders of magnitude versus one key per operation.
+///
+/// ponytail: a fixed threshold, not a policy. Make it configurable per tenant
+/// if anyone needs a different rotation cadence.
+const DEK_MAX_OPERATIONS: u64 = 100_000;
+
+/// How many DEKs to pull into memory at startup.
+///
+/// Warm-load was unbounded, so boot time and resident memory grew with the
+/// total number of keys ever created — which, with the old key-per-encrypt
+/// model, meant every secret version ever written. Older keys are hydrated on
+/// demand by `hydrate_dek`, so this only needs to cover what is hot.
+const WARM_LOAD_DEK_LIMIT: i64 = 10_000;
+
+/// The DEK a tenant's new encryptions currently use.
+#[derive(Debug)]
+struct CurrentDek {
+    key_id: String,
+    /// Encryptions served so far. Rolled at [`DEK_MAX_OPERATIONS`].
+    operations: u64,
+}
+
 /// A DEK entry registered in the in-memory store.
 #[derive(Debug)]
 struct DekEntry {
     /// The raw 32-byte DEK, kept only for decryption use during its lifetime.
     raw_dek: Zeroizing<[u8; 32]>,
+    /// Key material for versions this DEK has been rotated away from, oldest
+    /// first.
+    ///
+    /// Rotation used to overwrite `raw_dek` and drop the old bytes on the
+    /// floor. Everything encrypted under the previous version became
+    /// permanently undecryptable the instant rotation succeeded — the database
+    /// still held the superseded descriptor, but nothing ever read it back.
+    /// Decryption now walks newest-first through `raw_dek` then this chain;
+    /// AES-GCM's authentication tag makes trying a wrong key a clean miss.
+    superseded: Vec<Zeroizing<[u8; 32]>>,
     /// The DEK wrapped under the owning tenant's active KEK.
     /// Format: base64(nonce || AES-256-GCM ciphertext).
     wrapped_dek_b64: String,
@@ -80,11 +118,34 @@ pub struct KekStore {
 #[derive(Debug)]
 struct KekStoreInner {
     /// Root KEK loaded from `VAULT_ROOT_KEY` at startup.
-    root_kek: Zeroizing<[u8; 32]>,
+    /// Custody of the root key, held by the seal rather than by this store.
+    ///
+    /// It used to be a `Zeroizing<[u8; 32]>` field set once at construction
+    /// from `VAULT_ROOT_KEY`, so the process was permanently unsealed by
+    /// definition and there was nothing to seal. Reading it through the seal
+    /// means every operation that needs key material fails with
+    /// `VaultError::Sealed` while the vault is sealed, enforced in one place.
+    seal: Seal,
     /// Tenant KEK map: tenant_id -> TenantKekEntry.
     tenant_keks: RwLock<HashMap<String, TenantKekEntry>>,
     /// DEK map: key_id -> DekEntry.
     deks: RwLock<HashMap<String, DekEntry>>,
+    /// The DEK new encryptions for a tenant currently use, and how many
+    /// operations it has served.
+    ///
+    /// `Encrypt` used to mint a brand-new DEK on EVERY call. Each one inserted
+    /// a row into `system.key_descriptors` and an entry into the map above,
+    /// neither of which was ever evicted — so memory and boot time grew as
+    /// O(total secret versions ever written), and every crypto-service pod
+    /// warm-loaded and AES-decrypted the entire history before it could answer
+    /// a health check. Writing one secret a hundred times left a hundred
+    /// resident keys behind, forever.
+    ///
+    /// The stated rationale was forward secrecy, and it does not hold: all of
+    /// those DEKs are wrapped under the same tenant KEK, so compromising that
+    /// one key unwraps every one of them. The per-encrypt DEK bought nothing
+    /// the AAD binding did not already provide.
+    current_dek: RwLock<HashMap<String, CurrentDek>>,
     /// Optional database connection pool.  When `Some`, all key creation and
     /// rotation events are also persisted to PostgreSQL (wrapped keys only).
     /// When `None`, the store operates in ephemeral in-memory mode.
@@ -105,13 +166,14 @@ impl KekStore {
     /// before constructing the store.  Using an already-decoded key avoids a second
     /// trip to whatever key backend is configured and keeps all raw-byte handling in
     /// one place.
-    pub fn with_root_kek_ephemeral(root_kek: Zeroizing<[u8; 32]>) -> Self {
+    pub fn with_seal_ephemeral(seal: Seal) -> Self {
         info!("KekStore initialised in ephemeral mode (no DB persistence)");
         Self {
             inner: Arc::new(KekStoreInner {
-                root_kek,
+                seal,
                 tenant_keks: RwLock::new(HashMap::new()),
                 deks: RwLock::new(HashMap::new()),
+                current_dek: RwLock::new(HashMap::new()),
                 db_pool: None,
             }),
         }
@@ -123,13 +185,14 @@ impl KekStore {
     /// before constructing the store.  Persists all newly generated and rotated keys
     /// (wrapped form only) to PostgreSQL so that the in-memory caches can be restored
     /// across restarts via [`load_from_db`].
-    pub fn with_root_kek(root_kek: Zeroizing<[u8; 32]>, pool: DbPool) -> Result<Self, VaultError> {
+    pub fn with_seal(seal: Seal, pool: DbPool) -> Result<Self, VaultError> {
         info!("KekStore initialised with database persistence");
         Ok(Self {
             inner: Arc::new(KekStoreInner {
-                root_kek,
+                seal,
                 tenant_keks: RwLock::new(HashMap::new()),
                 deks: RwLock::new(HashMap::new()),
+                current_dek: RwLock::new(HashMap::new()),
                 db_pool: Some(pool),
             }),
         })
@@ -145,21 +208,25 @@ impl KekStore {
     /// Returns a `VaultError::Internal` if the variable is missing or malformed.
     ///
     /// This constructor creates an ephemeral (in-memory only) store with no database
-    /// connection.  Prefer constructing via [`select_provider`] + [`with_root_kek_ephemeral`]
+    /// connection.  Prefer constructing via [`select_provider`] + [`with_seal_ephemeral`]
     /// for new code; this method is retained for backward compatibility.
-    pub fn from_env() -> Result<Self, VaultError> {
+    #[allow(dead_code)]
+    pub async fn from_env() -> Result<Self, VaultError> {
         let root_kek = Self::load_root_kek_from_env()?;
+        let seal = Seal::new();
+        seal.unseal_with_root_key(root_kek).await;
         info!("Root KEK loaded from environment variable (ephemeral mode — no DB persistence)");
-        Ok(Self::with_root_kek_ephemeral(root_kek))
+        Ok(Self::with_seal_ephemeral(seal))
     }
 
     /// Initialise the store with a database connection pool, decoding the root KEK
     /// from a base64 string.
     ///
     /// `root_kek_b64` is the standard base64-encoded 32-byte root KEK.  Prefer
-    /// constructing via [`select_provider`] + [`with_root_kek`] for new code; this
+    /// constructing via [`select_provider`] + [`with_seal`] for new code; this
     /// method is retained for tests and callers that already hold a base64-encoded key.
-    pub fn with_db(root_kek_b64: &str, pool: DbPool) -> Result<Self, VaultError> {
+    #[allow(dead_code)]
+    pub async fn with_db(root_kek_b64: &str, pool: DbPool) -> Result<Self, VaultError> {
         let raw_bytes = BASE64
             .decode(root_kek_b64.trim())
             .map_err(|e| VaultError::Internal {
@@ -178,19 +245,26 @@ impl KekStore {
         let mut root_kek = Zeroizing::new([0u8; 32]);
         root_kek.copy_from_slice(&raw_bytes);
 
-        Self::with_root_kek(root_kek, pool)
+        let seal = Seal::new();
+        seal.unseal_with_root_key(root_kek).await;
+        Self::with_seal(seal, pool)
     }
 
     /// Test-only constructor building an ephemeral store from a raw 32-byte
     /// root KEK, with no database pool and no dependency on process env vars
     /// (which would race across parallel tests).
     #[cfg(test)]
-    pub(crate) fn new_ephemeral_for_test(root_kek_bytes: [u8; 32]) -> Self {
+    pub(crate) async fn new_ephemeral_for_test(root_kek_bytes: [u8; 32]) -> Self {
+        let seal = Seal::new();
+        // Tests want an already-open vault.
+        seal.unseal_with_root_key(Zeroizing::new(root_kek_bytes))
+            .await;
         Self {
             inner: Arc::new(KekStoreInner {
-                root_kek: Zeroizing::new(root_kek_bytes),
+                seal,
                 tenant_keks: RwLock::new(HashMap::new()),
                 deks: RwLock::new(HashMap::new()),
+                current_dek: RwLock::new(HashMap::new()),
                 db_pool: None,
             }),
         }
@@ -221,6 +295,10 @@ impl KekStore {
             }
         };
 
+        // Fails with VaultError::Sealed when the vault is sealed, which is the
+        // correct outcome: there is nothing to load without the root key.
+        let root_kek = self.inner.seal.root_key().await?;
+
         // ---- 1. Load tenant KEKs ------------------------------------------------
         let tenant_kek_rows =
             list_active_keys_with_wrapped_key(pool, &KeyPurpose::TenantKek).await?;
@@ -244,11 +322,8 @@ impl KekStore {
 
                 // Unwrap the tenant KEK using the root KEK.
                 let aad = format!("tenant-kek:{tenant_id}");
-                let plaintext = match decrypt_with_dek(
-                    &self.inner.root_kek,
-                    &row.wrapped_key,
-                    aad.as_bytes(),
-                ) {
+                let plaintext = match decrypt_with_dek(&root_kek, &row.wrapped_key, aad.as_bytes())
+                {
                     Ok(p) => p,
                     Err(e) => {
                         warn!(
@@ -287,7 +362,12 @@ impl KekStore {
         info!(loaded = kek_count, "Tenant KEKs loaded from database");
 
         // ---- 2. Load DEKs -------------------------------------------------------
-        let dek_rows = list_active_keys_with_wrapped_key(pool, &KeyPurpose::DataEncryption).await?;
+        // Bounded: anything not loaded here is fetched on first use by
+        // `hydrate_dek`. Tenant KEKs above are still loaded in full — there is
+        // one per tenant, so that set is small and every request needs it.
+        let dek_rows =
+            list_recent_loadable_keys(pool, &KeyPurpose::DataEncryption, WARM_LOAD_DEK_LIMIT)
+                .await?;
 
         let mut dek_count: usize = 0;
 
@@ -357,15 +437,36 @@ impl KekStore {
                 let mut raw_dek = Zeroizing::new([0u8; 32]);
                 raw_dek.copy_from_slice(&plaintext);
 
-                let entry = DekEntry {
-                    raw_dek,
-                    wrapped_dek_b64: row.wrapped_key.clone(),
-                    tenant_id: tenant_id.clone(),
-                    version: row.version,
-                    key_id: row.key_id.clone(),
-                };
-
-                dek_writer.insert(row.key_id.clone(), entry);
+                // Rows arrive version-ASC, and a rotated DEK keeps its key_id
+                // across versions. So a repeat key_id here is a SUPERSEDED
+                // version of one we have already seen: demote the incumbent
+                // into the chain and let the newer row take the active slot.
+                // Overwriting instead — which is what this did — is how a
+                // restart used to finish the job rotation started and make old
+                // ciphertext permanently unreadable.
+                match dek_writer.get_mut(&row.key_id) {
+                    Some(existing) => {
+                        let mut demoted = Zeroizing::new([0u8; 32]);
+                        demoted.copy_from_slice(&*existing.raw_dek);
+                        existing.superseded.push(demoted);
+                        existing.raw_dek = raw_dek;
+                        existing.wrapped_dek_b64 = row.wrapped_key.clone();
+                        existing.version = row.version;
+                    }
+                    None => {
+                        dek_writer.insert(
+                            row.key_id.clone(),
+                            DekEntry {
+                                raw_dek,
+                                superseded: Vec::new(),
+                                wrapped_dek_b64: row.wrapped_key.clone(),
+                                tenant_id: tenant_id.clone(),
+                                version: row.version,
+                                key_id: row.key_id.clone(),
+                            },
+                        );
+                    }
+                }
                 dek_count += 1;
             }
         }
@@ -413,7 +514,8 @@ impl KekStore {
         // Wrap the new tenant KEK under the root KEK.
         // AAD binds the wrapped key to this tenant so it cannot be transplanted.
         let aad = format!("tenant-kek:{tenant_id}");
-        let envelope = encrypt_with_dek(&self.inner.root_kek, &*raw_kek, aad.as_bytes())?;
+        let root_kek = self.inner.seal.root_key().await?;
+        let envelope = encrypt_with_dek(&root_kek, &*raw_kek, aad.as_bytes())?;
 
         let mut raw_kek_stored = Zeroizing::new([0u8; 32]);
         raw_kek_stored.copy_from_slice(&*raw_kek);
@@ -466,8 +568,66 @@ impl KekStore {
         Ok(out)
     }
 
+    /// The DEK new encryptions for this tenant should use.
+    ///
+    /// Reuses the tenant's current DEK until it has served
+    /// [`DEK_MAX_OPERATIONS`] encryptions, then mints a fresh one. This is the
+    /// difference between a key table that grows with the number of tenants and
+    /// one that grew with every write ever made — see [`CurrentDek`].
+    ///
+    /// Superseded DEKs are NOT discarded: they stay in the store and in the
+    /// database so everything encrypted under them still decrypts. Rolling
+    /// changes which key new writes use, nothing else.
+    pub async fn current_dek_for_encrypt(&self, tenant_id: &str) -> Result<String, VaultError> {
+        // Fast path: an existing DEK with budget left.
+        {
+            let mut current = self.inner.current_dek.write().await;
+            if let Some(entry) = current.get_mut(tenant_id) {
+                if entry.operations < DEK_MAX_OPERATIONS {
+                    entry.operations += 1;
+                    return Ok(entry.key_id.clone());
+                }
+            }
+        }
+
+        // Either no DEK yet, or the current one is spent. Mint one.
+        //
+        // The lock is deliberately released across this: DEK generation touches
+        // the database, and holding a tenant-map lock across I/O would serialise
+        // every tenant behind one. A concurrent caller may mint a second DEK
+        // here; that is harmless — both are valid, both persist, and the loser
+        // is simply not adopted as current.
+        let key_id = self
+            .generate_and_store_dek(tenant_id, "encrypt:current")
+            .await?;
+
+        let mut current = self.inner.current_dek.write().await;
+        match current.get_mut(tenant_id) {
+            // Another caller already installed a fresh one; use theirs and let
+            // ours sit as an unused-but-valid key rather than churning again.
+            Some(entry) if entry.operations < DEK_MAX_OPERATIONS => {
+                entry.operations += 1;
+                Ok(entry.key_id.clone())
+            }
+            _ => {
+                current.insert(
+                    tenant_id.to_string(),
+                    CurrentDek {
+                        key_id: key_id.clone(),
+                        operations: 1,
+                    },
+                );
+                debug!(tenant_id, key_id, "rolled to a new current DEK");
+                Ok(key_id)
+            }
+        }
+    }
+
     /// Generate a new DEK for the given tenant, wrap it under the tenant KEK,
     /// and register it in the store.  Returns the new key_id.
+    ///
+    /// Prefer [`current_dek_for_encrypt`] on the encryption path: this mints
+    /// unconditionally, which is what made the key table grow without bound.
     ///
     /// When a DB pool is configured, the wrapped DEK descriptor is also written
     /// to PostgreSQL before this function returns.
@@ -498,6 +658,7 @@ impl KekStore {
 
         let entry = DekEntry {
             raw_dek: raw_dek_stored,
+            superseded: Vec::new(),
             wrapped_dek_b64: envelope.ciphertext_b64.clone(),
             tenant_id: tenant_id.to_string(),
             version: 1,
@@ -544,6 +705,75 @@ impl KekStore {
         Ok(key_id)
     }
 
+    /// Pull one DEK's versions in from the database and cache them.
+    ///
+    /// The warm-load at boot brings in what is currently in use; anything older
+    /// — a key superseded long ago, still needed by ciphertext written under it
+    /// — is fetched here on first use instead. Without this the service could
+    /// only decrypt what it had loaded eagerly, which is what forced warm-load
+    /// to be exhaustive and made boot time grow with total write history.
+    ///
+    /// Returns `Ok(false)` when the key genuinely does not exist.
+    async fn hydrate_dek(&self, key_id: &str) -> Result<bool, VaultError> {
+        let Some(pool) = &self.inner.db_pool else {
+            return Ok(false);
+        };
+        let Ok(uuid) = Uuid::parse_str(key_id) else {
+            return Ok(false);
+        };
+
+        let rows = get_key_versions_with_wrapped_key(pool, &uuid).await?;
+        if rows.is_empty() {
+            return Ok(false);
+        }
+
+        let Some(tenant_id) = rows[0].tenant_id.clone() else {
+            return Ok(false);
+        };
+        let tenant_kek = self.get_or_create_tenant_kek(&tenant_id).await?;
+
+        let mut versions: Vec<(u32, Zeroizing<[u8; 32]>, String)> = Vec::new();
+        for row in rows {
+            let aad = format!("dek:reload:{}", row.key_id);
+            let Ok(plaintext) = decrypt_with_dek(&tenant_kek, &row.wrapped_key, aad.as_bytes())
+            else {
+                warn!(
+                    key_id,
+                    version = row.version,
+                    "could not unwrap DEK version — skipping"
+                );
+                continue;
+            };
+            if plaintext.len() != 32 {
+                continue;
+            }
+            let mut raw = Zeroizing::new([0u8; 32]);
+            raw.copy_from_slice(&plaintext);
+            versions.push((row.version, raw, row.wrapped_key));
+        }
+
+        if versions.is_empty() {
+            return Ok(false);
+        }
+
+        // Rows arrive version-ASC; the last is current, the rest are superseded.
+        let (version, raw_dek, wrapped_dek_b64) = versions.pop().expect("non-empty");
+        let superseded = versions.into_iter().map(|(_, k, _)| k).collect();
+
+        self.inner.deks.write().await.insert(
+            key_id.to_string(),
+            DekEntry {
+                raw_dek,
+                superseded,
+                wrapped_dek_b64,
+                tenant_id,
+                version,
+                key_id: key_id.to_string(),
+            },
+        );
+        Ok(true)
+    }
+
     /// Look up an existing DEK by its key_id. Returns a `VaultError::KeyNotFound`
     /// if no DEK with that id is registered.
     pub async fn get_dek(
@@ -551,6 +781,9 @@ impl KekStore {
         key_id: &str,
         tenant_id: &str,
     ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
+        if !self.inner.deks.read().await.contains_key(key_id) {
+            self.hydrate_dek(key_id).await?;
+        }
         let reader = self.inner.deks.read().await;
         let entry = reader.get(key_id).ok_or_else(|| VaultError::KeyNotFound {
             key_id: key_id.to_string(),
@@ -578,6 +811,53 @@ impl KekStore {
         let mut out = Zeroizing::new([0u8; 32]);
         out.copy_from_slice(&*entry.raw_dek);
         Ok(out)
+    }
+
+    /// Every key version this DEK can decrypt with, newest first.
+    ///
+    /// The decrypt path must try each in turn: a ciphertext produced before a
+    /// rotation is still valid and still readable. AES-GCM authenticates, so a
+    /// wrong key fails the tag check cleanly rather than returning garbage,
+    /// which makes trying in order both safe and unambiguous.
+    ///
+    /// Tenant-scoped exactly like [`get_dek`] — a caller that does not own the
+    /// key gets `KeyNotFound`, not somebody else's key history.
+    pub async fn get_dek_chain(
+        &self,
+        key_id: &str,
+        tenant_id: &str,
+    ) -> Result<Vec<Zeroizing<[u8; 32]>>, VaultError> {
+        if !self.inner.deks.read().await.contains_key(key_id) {
+            self.hydrate_dek(key_id).await?;
+        }
+        let reader = self.inner.deks.read().await;
+        let entry = reader.get(key_id).ok_or_else(|| VaultError::KeyNotFound {
+            key_id: key_id.to_string(),
+        })?;
+
+        if entry.tenant_id != tenant_id {
+            warn!(
+                key_id,
+                requesting_tenant = tenant_id,
+                "cross-tenant DEK access denied"
+            );
+            return Err(VaultError::KeyNotFound {
+                key_id: key_id.to_string(),
+            });
+        }
+
+        let mut chain = Vec::with_capacity(1 + entry.superseded.len());
+        let mut current = Zeroizing::new([0u8; 32]);
+        current.copy_from_slice(&*entry.raw_dek);
+        chain.push(current);
+        // superseded is oldest-first; walk it backwards so the most recently
+        // retired version is tried before older ones.
+        for old in entry.superseded.iter().rev() {
+            let mut k = Zeroizing::new([0u8; 32]);
+            k.copy_from_slice(&**old);
+            chain.push(k);
+        }
+        Ok(chain)
     }
 
     /// Return the wrapped DEK (base64 envelope) and version for a key_id.
@@ -631,9 +911,10 @@ impl KekStore {
     /// - The old descriptor is transitioned to `RotatingOut` state.
     /// - A new descriptor is inserted for the rotated key.
     ///
-    /// Data previously encrypted with the old DEK version remains decryptable during
-    /// a re-encryption migration window (not implemented here — the old raw_dek is
-    /// discarded from memory; in production it would be retained for a grace period).
+    /// Data previously encrypted under an earlier version stays decryptable:
+    /// the superseded key material is retained in `DekEntry::superseded` and
+    /// `get_dek_chain` hands it to the decrypt path. Rotation changes which key
+    /// new writes use; it does not invalidate old ciphertext.
     pub async fn rotate_dek(&self, tenant_id: &str, key_id: &str) -> Result<u32, VaultError> {
         // Verify the key belongs to this tenant.
         {
@@ -669,6 +950,14 @@ impl KekStore {
             let mut new_raw_stored = Zeroizing::new([0u8; 32]);
             new_raw_stored.copy_from_slice(&*new_raw_dek);
 
+            // Demote the outgoing key rather than dropping it. Overwriting
+            // `raw_dek` here is what made rotation an unrecoverable data-loss
+            // operation: every ciphertext written under the previous version
+            // became undecryptable the moment this line ran.
+            let mut demoted = Zeroizing::new([0u8; 32]);
+            demoted.copy_from_slice(&*entry.raw_dek);
+            entry.superseded.push(demoted);
+
             entry.raw_dek = new_raw_stored;
             entry.wrapped_dek_b64 = envelope.ciphertext_b64.clone();
             entry.version = new_version;
@@ -676,11 +965,11 @@ impl KekStore {
             new_version
         };
 
-        warn!(
+        info!(
             tenant_id,
             key_id,
             new_version,
-            "DEK rotated — existing ciphertext encrypted under the previous version must be re-encrypted"
+            "DEK rotated — new writes use the new version; earlier versions stay decryptable"
         );
 
         // Persist rotation to the database when a pool is available.
@@ -740,13 +1029,14 @@ impl KekStore {
     /// can be unwrapped with the current root KEK.  Not used in the standard
     /// `load_from_db` flow, which handles unwrapping internally.
     #[allow(dead_code)]
-    pub fn unwrap_tenant_kek(
+    pub async fn unwrap_tenant_kek(
         &self,
         tenant_id: &str,
         wrapped_kek_b64: &str,
     ) -> Result<Zeroizing<[u8; 32]>, VaultError> {
         let aad = format!("tenant-kek:{tenant_id}");
-        let plaintext = decrypt_with_dek(&self.inner.root_kek, wrapped_kek_b64, aad.as_bytes())?;
+        let root_kek = self.inner.seal.root_key().await?;
+        let plaintext = decrypt_with_dek(&root_kek, wrapped_kek_b64, aad.as_bytes())?;
 
         if plaintext.len() != 32 {
             return Err(VaultError::Internal {
@@ -808,18 +1098,18 @@ fn generate_random_32_bytes() -> Result<Zeroizing<[u8; 32]>, VaultError> {
 mod tests {
     use super::*;
 
-    fn test_store() -> KekStore {
+    async fn test_store() -> KekStore {
         // Deterministic non-zero root KEK so tests are reproducible.
         let mut root = [0u8; 32];
         for (i, b) in root.iter_mut().enumerate() {
             *b = (i as u8).wrapping_mul(7).wrapping_add(1);
         }
-        KekStore::new_ephemeral_for_test(root)
+        KekStore::new_ephemeral_for_test(root).await
     }
 
     #[tokio::test]
     async fn tenant_kek_is_stable_across_calls() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-a";
 
         let kek1 = store.get_or_create_tenant_kek(tenant).await.unwrap();
@@ -830,7 +1120,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_tenants_get_different_keks() {
-        let store = test_store();
+        let store = test_store().await;
 
         let kek_a = store.get_or_create_tenant_kek("tenant-a").await.unwrap();
         let kek_b = store.get_or_create_tenant_kek("tenant-b").await.unwrap();
@@ -843,7 +1133,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_tenant_kek_creation_converges() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-race";
 
         // Fire many concurrent first-touch requests for the same tenant. The
@@ -872,7 +1162,7 @@ mod tests {
 
     #[tokio::test]
     async fn dek_generate_get_roundtrip() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-a";
 
         let key_id = store
@@ -894,7 +1184,7 @@ mod tests {
 
     #[tokio::test]
     async fn each_dek_is_unique() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-a";
 
         let id1 = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
@@ -912,7 +1202,7 @@ mod tests {
     /// reach crypto-service could decrypt any tenant's data.
     #[tokio::test]
     async fn dek_is_not_readable_by_another_tenant() {
-        let store = test_store();
+        let store = test_store().await;
         let key_id = store
             .generate_and_store_dek("tenant-a", "prod/db/password")
             .await
@@ -942,14 +1232,14 @@ mod tests {
 
     #[tokio::test]
     async fn get_missing_dek_returns_key_not_found() {
-        let store = test_store();
+        let store = test_store().await;
         let result = store.get_dek("nonexistent-key-id", "tenant-a").await;
         assert!(matches!(result, Err(VaultError::KeyNotFound { .. })));
     }
 
     #[tokio::test]
     async fn rotate_dek_changes_key_and_bumps_version() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-a";
 
         let key_id = store.generate_and_store_dek(tenant, "ctx").await.unwrap();
@@ -967,7 +1257,7 @@ mod tests {
 
     #[tokio::test]
     async fn rotate_dek_rejects_wrong_tenant() {
-        let store = test_store();
+        let store = test_store().await;
 
         let key_id = store
             .generate_and_store_dek("tenant-owner", "ctx")
@@ -983,29 +1273,33 @@ mod tests {
 
     #[tokio::test]
     async fn rotate_missing_dek_returns_key_not_found() {
-        let store = test_store();
+        let store = test_store().await;
         let result = store.rotate_dek("tenant-a", "missing").await;
         assert!(matches!(result, Err(VaultError::KeyNotFound { .. })));
     }
 
     #[tokio::test]
     async fn unwrap_tenant_kek_roundtrips_and_binds_to_tenant() {
-        let store = test_store();
+        let store = test_store().await;
         let tenant = "tenant-a";
 
         // Create a tenant KEK, then reproduce its wrapped form to feed unwrap.
         let raw = store.get_or_create_tenant_kek(tenant).await.unwrap();
         let aad = format!("tenant-kek:{tenant}");
-        let envelope = encrypt_with_dek(&store.inner.root_kek, &*raw, aad.as_bytes()).unwrap();
+        let root = store.inner.seal.root_key().await.unwrap();
+        let envelope = encrypt_with_dek(&root, &*raw, aad.as_bytes()).unwrap();
 
         let unwrapped = store
             .unwrap_tenant_kek(tenant, &envelope.ciphertext_b64)
+            .await
             .unwrap();
         assert_eq!(&*unwrapped, &*raw, "unwrap must recover the original KEK");
 
         // AAD binds the wrapped KEK to its tenant: unwrapping under a different
         // tenant id must fail authentication.
-        let wrong = store.unwrap_tenant_kek("tenant-other", &envelope.ciphertext_b64);
+        let wrong = store
+            .unwrap_tenant_kek("tenant-other", &envelope.ciphertext_b64)
+            .await;
         assert!(
             wrong.is_err(),
             "tenant-bound KEK must not unwrap under a different tenant"
@@ -1022,7 +1316,7 @@ mod tests {
         let db = DbPool::from_pool(pool);
 
         let short = BASE64.encode([0u8; 16]);
-        let result = KekStore::with_db(&short, db);
+        let result = KekStore::with_db(&short, db).await;
         assert!(matches!(result, Err(VaultError::Internal { .. })));
     }
 
@@ -1032,7 +1326,183 @@ mod tests {
             .expect("lazy pool construction should not connect");
         let db = DbPool::from_pool(pool);
 
-        let result = KekStore::with_db("not!valid!base64!", db);
+        let result = KekStore::with_db("not!valid!base64!", db).await;
         assert!(matches!(result, Err(VaultError::Internal { .. })));
+    }
+
+    /// Rotation must not destroy data.
+    ///
+    /// This is the regression test for the defect where `rotate_dek` overwrote
+    /// `raw_dek` in place: a ciphertext written before the rotation became
+    /// permanently undecryptable the instant rotation succeeded.
+    #[tokio::test]
+    async fn ciphertext_survives_dek_rotation() {
+        use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
+
+        let store = test_store().await;
+        let tenant = "11111111-1111-1111-1111-111111111111";
+
+        let key_id = store
+            .generate_and_store_dek(tenant, "rotation-test")
+            .await
+            .expect("DEK generation should succeed");
+
+        // Encrypt under version 1.
+        let dek_v1 = store.get_dek(&key_id, tenant).await.unwrap();
+        let aad = b"tenant:path";
+        let envelope = encrypt_with_dek(&dek_v1, b"pre-rotation-secret", aad).unwrap();
+
+        let new_version = store
+            .rotate_dek(tenant, &key_id)
+            .await
+            .expect("rotation should succeed");
+        assert_eq!(new_version, 2);
+
+        // The active key really did change...
+        let dek_v2 = store.get_dek(&key_id, tenant).await.unwrap();
+        assert_ne!(*dek_v1, *dek_v2, "rotation must produce fresh key material");
+
+        // ...and the old ciphertext is still readable via the chain.
+        let chain = store.get_dek_chain(&key_id, tenant).await.unwrap();
+        assert_eq!(chain.len(), 2, "current + one superseded version");
+
+        let recovered = chain
+            .iter()
+            .find_map(|k| decrypt_with_dek(k, &envelope.ciphertext_b64, aad).ok())
+            .expect("ciphertext written before rotation must still decrypt");
+        assert_eq!(recovered.as_slice(), b"pre-rotation-secret");
+    }
+
+    /// Two rotations, and the oldest ciphertext still reads.
+    #[tokio::test]
+    async fn chain_survives_repeated_rotation() {
+        use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
+
+        let store = test_store().await;
+        let tenant = "22222222-2222-2222-2222-222222222222";
+        let key_id = store
+            .generate_and_store_dek(tenant, "multi-rotation")
+            .await
+            .unwrap();
+
+        let aad = b"aad";
+        let v1 = store.get_dek(&key_id, tenant).await.unwrap();
+        let ct1 = encrypt_with_dek(&v1, b"first", aad).unwrap();
+
+        store.rotate_dek(tenant, &key_id).await.unwrap();
+        let v2 = store.get_dek(&key_id, tenant).await.unwrap();
+        let ct2 = encrypt_with_dek(&v2, b"second", aad).unwrap();
+
+        store.rotate_dek(tenant, &key_id).await.unwrap();
+
+        let chain = store.get_dek_chain(&key_id, tenant).await.unwrap();
+        assert_eq!(chain.len(), 3);
+
+        for (ct, expected) in [(&ct1, &b"first"[..]), (&ct2, &b"second"[..])] {
+            let got = chain
+                .iter()
+                .find_map(|k| decrypt_with_dek(k, &ct.ciphertext_b64, aad).ok())
+                .expect("every prior version must remain decryptable");
+            assert_eq!(got.as_slice(), expected);
+        }
+    }
+
+    /// The version chain is tenant-scoped like every other key accessor.
+    #[tokio::test]
+    async fn dek_chain_is_not_readable_by_another_tenant() {
+        let store = test_store().await;
+        let owner = "33333333-3333-3333-3333-333333333333";
+        let key_id = store.generate_and_store_dek(owner, "ctx").await.unwrap();
+        store.rotate_dek(owner, &key_id).await.unwrap();
+
+        let result = store
+            .get_dek_chain(&key_id, "44444444-4444-4444-4444-444444444444")
+            .await;
+        assert!(
+            matches!(result, Err(VaultError::KeyNotFound { .. })),
+            "another tenant must not reach the key history"
+        );
+    }
+
+    // ── The key table must not grow with every write ─────────────────────────
+
+    /// The defect this replaced: `Encrypt` minted a brand-new DEK on every
+    /// call, so memory and boot time grew as O(total secret versions written).
+    #[tokio::test]
+    async fn repeated_encrypts_reuse_one_dek() {
+        let store = test_store().await;
+        let tenant = "55555555-5555-5555-5555-555555555555";
+
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..500 {
+            ids.insert(store.current_dek_for_encrypt(tenant).await.unwrap());
+        }
+
+        assert_eq!(
+            ids.len(),
+            1,
+            "500 encryptions must share one DEK, not create 500"
+        );
+    }
+
+    #[tokio::test]
+    async fn each_tenant_gets_its_own_current_dek() {
+        let store = test_store().await;
+        let a = store
+            .current_dek_for_encrypt("66666666-6666-6666-6666-666666666666")
+            .await
+            .unwrap();
+        let b = store
+            .current_dek_for_encrypt("77777777-7777-7777-7777-777777777777")
+            .await
+            .unwrap();
+        assert_ne!(a, b, "tenants must not share a DEK");
+    }
+
+    /// Rolling changes which key NEW writes use; it must not make existing
+    /// ciphertext unreadable.
+    #[tokio::test]
+    async fn rolling_the_current_dek_keeps_the_old_one_usable() {
+        use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
+
+        let store = test_store().await;
+        let tenant = "88888888-8888-8888-8888-888888888888";
+
+        let first_id = store.current_dek_for_encrypt(tenant).await.unwrap();
+        let first_key = store.get_dek(&first_id, tenant).await.unwrap();
+        let envelope =
+            encrypt_with_dek(&first_key, b"written-under-the-first-dek", b"aad").unwrap();
+
+        // Spend the budget so the next call rolls.
+        {
+            let mut current = store.inner.current_dek.write().await;
+            current.get_mut(tenant).unwrap().operations = DEK_MAX_OPERATIONS;
+        }
+
+        let second_id = store.current_dek_for_encrypt(tenant).await.unwrap();
+        assert_ne!(second_id, first_id, "a spent DEK must be rolled");
+
+        // The superseded key is still registered and still decrypts.
+        let recovered = decrypt_with_dek(
+            &store.get_dek(&first_id, tenant).await.unwrap(),
+            &envelope.ciphertext_b64,
+            b"aad",
+        )
+        .unwrap();
+        assert_eq!(recovered.as_slice(), b"written-under-the-first-dek");
+    }
+
+    /// The current DEK is still tenant-scoped like every other key accessor.
+    #[tokio::test]
+    async fn another_tenant_cannot_read_the_current_dek() {
+        let store = test_store().await;
+        let owner = "99999999-9999-9999-9999-999999999999";
+        let key_id = store.current_dek_for_encrypt(owner).await.unwrap();
+        assert!(matches!(
+            store
+                .get_dek(&key_id, "aaaaaaaa-1111-1111-1111-111111111111")
+                .await,
+            Err(VaultError::KeyNotFound { .. })
+        ));
     }
 }

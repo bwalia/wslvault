@@ -81,7 +81,8 @@ pub struct SecretServiceImpl {
     pub store: Arc<dyn SecretStoreBackend>,
     /// Base endpoint URL for the crypto-service gRPC connection, e.g.
     /// "http://crypto-service:50051". The client is cloned per request.
-    pub crypto_endpoint: String,
+    /// Lazily-connected, shared channel to the crypto-service.
+    pub crypto_channel: tonic::transport::Channel,
     /// Client for the audit-service event emitter.
     pub audit_client: AuditClient,
     /// Client for the policy-engine authorization service.
@@ -100,7 +101,8 @@ impl SecretServiceImpl {
     ) -> Self {
         Self {
             store,
-            crypto_endpoint,
+            crypto_channel: wslvault_core::grpc_channel::lazy_channel(&crypto_endpoint)
+                .unwrap_or_else(|e| panic!("crypto-service endpoint is unusable: {e}")),
             audit_client,
             policy_client,
             lease_client,
@@ -109,19 +111,16 @@ impl SecretServiceImpl {
 
     /// Build an ephemeral crypto-service client for a single request.
     ///
-    /// In a production system you would maintain a connection pool. For the
-    /// initial in-memory implementation a lazily created client per-call is
-    /// sufficient and avoids lifecycle complexity.
+    /// A client over the shared channel.
+    ///
+    /// This used to `connect()` per call, so every encrypt and decrypt paid for
+    /// a TCP plus HTTP/2 handshake first. The channel multiplexes and
+    /// reconnects on its own, so this is now just a cheap clone.
     #[allow(clippy::result_large_err)]
     async fn crypto_client(
         &self,
     ) -> Result<CryptoServiceClient<tonic::transport::Channel>, Status> {
-        CryptoServiceClient::connect(self.crypto_endpoint.clone())
-            .await
-            .map_err(|e| {
-                error!(error = %e, "failed to connect to crypto-service");
-                Status::unavailable(format!("crypto-service unavailable: {}", e))
-            })
+        Ok(CryptoServiceClient::new(self.crypto_channel.clone()))
     }
 
     /// Build the additional authenticated data (AAD) bytes used for envelope

@@ -1,5 +1,24 @@
 import type { NextConfig } from 'next'
 
+/**
+ * Backend proxying.
+ *
+ * These rewrites make the UI pod a reverse proxy to the internal services. That
+ * is only safe because the services behind them now authenticate every request
+ * themselves (`services/secret-engine/src/identity.rs`) — the proxy adds no
+ * credential of its own and grants nothing.
+ *
+ * There used to be a `src/middleware.ts` alongside this file that decoded the
+ * caller's JWT *without verifying its signature* and injected `x-principal-id`,
+ * `x-policies` and `x-tenant-id` from the result. Anyone could mint an unsigned
+ * token claiming `{"policies":["root"],"tenant_id":"<victim>"}` and have this
+ * proxy stamp it as trusted identity on the internal network. It has been
+ * deleted: backends read identity from the signed token directly, so the
+ * translation is now both unsafe and unnecessary.
+ *
+ * The browser's `Authorization: Bearer <jwt>` header passes through untouched,
+ * which is all the backends need.
+ */
 const nextConfig: NextConfig = {
   output: 'standalone',
   async rewrites() {
@@ -29,13 +48,10 @@ const nextConfig: NextConfig = {
         destination: `${process.env.LEASE_URL ?? 'http://localhost:18084'}/:path*`,
       },
       {
-        // Regions and cluster pages call `/api/gateway/*`. Historically this hit
-        // the OpenResty gateway; with the gateway disabled GATEWAY_URL points at
-        // region-health, which serves /v1/sys/regions and /v1/sys/cluster/*.
-        // Those pages now use the real paths — they previously requested the
-        // pre-gateway /v1/regions and /v1/cluster/status and 404'd. SCIM moved to
-        // /api/identity/scim/v2/*, being served by identity-service rather than
-        // region-health.
+        // Regions and cluster pages call `/api/gateway/*`. With the gateway
+        // disabled GATEWAY_URL points at region-health, which serves
+        // /v1/sys/regions and /v1/sys/cluster/*. SCIM is served by
+        // identity-service at /api/identity/scim/v2/*.
         source: '/api/gateway/:path*',
         destination: `${process.env.GATEWAY_URL ?? 'http://localhost:8088'}/:path*`,
       },

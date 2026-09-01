@@ -15,14 +15,11 @@ use lease_proto::lease_service_client::LeaseServiceClient;
 
 /// Thin gRPC client for the lease-manager `LeaseService`.
 ///
-/// The struct stores only the endpoint URL so each call opens a fresh
-/// connection.  This avoids lifecycle complexity while the feature is being
-/// wired up; a connection pool can be introduced later without changing the
-/// public API.
+/// Holds a lazily-connected, shared `Channel`; revocation used to dial the
+/// lease-manager afresh on every call.
 #[derive(Debug, Clone)]
 pub struct LeaseClient {
-    /// Base URL of the lease-manager gRPC server, e.g. `http://lease-manager:50055`.
-    endpoint: String,
+    channel: tonic::transport::Channel,
 }
 
 /// Simplified lease info returned to the caller after a successful lease
@@ -35,13 +32,19 @@ pub struct LeaseInfo {
     /// Duration of the lease in seconds as agreed with the lease-manager.
     pub ttl_seconds: i64,
     /// Whether the lease can be renewed before it expires.
+    #[allow(dead_code)]
     pub renewable: bool,
 }
 
 impl LeaseClient {
     /// Create a new `LeaseClient` targeting `endpoint`.
+    ///
+    /// # Panics
+    /// If `endpoint` is not a valid URI — a startup-time configuration error.
     pub fn new(endpoint: String) -> Self {
-        Self { endpoint }
+        let channel = wslvault_core::grpc_channel::lazy_channel(&endpoint)
+            .unwrap_or_else(|e| panic!("lease-manager endpoint is unusable: {e}"));
+        Self { channel }
     }
 
     /// Attempt to create a lease for a secret read operation.
@@ -82,24 +85,19 @@ impl LeaseClient {
     ///
     /// # Arguments
     /// * `lease_id` — The opaque lease identifier returned at creation time.
+    #[allow(dead_code)]
     pub async fn revoke(&self, lease_id: &str) {
-        let endpoint = self.endpoint.clone();
+        let channel = self.channel.clone();
         let lease_id = lease_id.to_string();
 
         // Fire-and-forget: spawn a background task so the caller is not blocked.
         tokio::spawn(async move {
-            match LeaseServiceClient::connect(endpoint).await {
-                Ok(mut client) => {
-                    if let Err(e) = client
-                        .revoke_lease(lease_proto::RevokeLeaseRequest { lease_id })
-                        .await
-                    {
-                        warn!(error = %e, "failed to revoke lease via lease-manager");
-                    }
-                }
-                Err(e) => {
-                    warn!(error = %e, "failed to connect to lease-manager for revocation");
-                }
+            let mut client = LeaseServiceClient::new(channel);
+            if let Err(e) = client
+                .revoke_lease(lease_proto::RevokeLeaseRequest { lease_id })
+                .await
+            {
+                warn!(error = %e, "failed to revoke lease via lease-manager");
             }
         });
     }

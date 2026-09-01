@@ -1,18 +1,22 @@
 //! wslvault-core: shared kernel for the WSLVault secrets platform.
 //!
 //! Provides:
+//! - Caller authentication (`auth::resolve_identity`) — the one sanctioned
+//!   source of a tenant id, principal id or policy set
 //! - Domain types (TenantId, SecretId, LeaseId, Principal, etc.)
 //! - Core traits (SecretBackend, CryptoBackend, AuditSink, PolicyEvaluator)
 //! - Cryptographic primitives (envelope encryption, KDF, algorithm registry)
 //! - Configuration types
 //! - Unified error hierarchy
 
+pub mod auth;
 pub mod config;
 pub mod crypto;
 pub mod error;
-pub mod ha;
+pub mod grpc_channel;
 pub mod metrics;
 pub mod middleware;
+pub mod seal;
 pub mod traits;
 pub mod types;
 

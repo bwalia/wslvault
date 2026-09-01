@@ -14,14 +14,19 @@ use crate::model::{Capability, PolicyDecision, PolicyRule};
 
 /// Pre-processed view of all policies loaded into the engine.
 ///
-/// Keyed by policy name so individual policy lookups are O(1). The value is
-/// the list of rules exactly as stored in `PolicyDocument`; the only
-/// "compilation" step is flattening the document wrapper away so the hot
-/// evaluation path avoids an extra indirection.
+/// Keyed by **(tenant_id, policy_name)** so individual lookups stay O(1) while
+/// remaining scoped to the tenant that owns the policy.
+///
+/// The tenant half of that key is load-bearing. This map was previously keyed
+/// on the policy name alone, with the tenant discarded at compile time. Two
+/// tenants that each defined a policy called `admin` — the single most likely
+/// name in any deployment — collapsed into one entry, and whichever compiled
+/// last silently supplied its rules to both. A principal in tenant B carrying
+/// the name `admin` was then evaluated against tenant A's `admin` rules.
 #[derive(Debug, Default, Clone)]
 pub struct CompiledPolicies {
-    /// Map from policy name to its compiled rule list.
-    pub policies: HashMap<String, Vec<PolicyRule>>,
+    /// Map from (tenant_id, policy name) to its compiled rule list.
+    pub policies: HashMap<(String, String), Vec<PolicyRule>>,
 }
 
 impl CompiledPolicies {
@@ -32,15 +37,16 @@ impl CompiledPolicies {
         }
     }
 
-    /// Insert or replace a single policy by name.
-    pub fn upsert(&mut self, name: String, rules: Vec<PolicyRule>) {
-        self.policies.insert(name, rules);
+    /// Insert or replace a single policy within a tenant.
+    pub fn upsert(&mut self, tenant_id: String, name: String, rules: Vec<PolicyRule>) {
+        self.policies.insert((tenant_id, name), rules);
     }
 
-    /// Remove a policy by name. Returns true if the policy existed.
-    #[allow(dead_code)]
-    pub fn remove(&mut self, name: &str) -> bool {
-        self.policies.remove(name).is_some()
+    /// Remove a policy from a tenant. Returns true if the policy existed.
+    pub fn remove(&mut self, tenant_id: &str, name: &str) -> bool {
+        self.policies
+            .remove(&(tenant_id.to_string(), name.to_string()))
+            .is_some()
     }
 }
 
@@ -56,11 +62,15 @@ impl CompiledPolicies {
 /// # Arguments
 ///
 /// * `compiled`  – The pre-compiled policies snapshot.
+/// * `tenant_id` – The tenant the caller belongs to. Policy names are resolved
+///   only within this tenant, so naming a policy that exists in a different
+///   tenant matches nothing.
 /// * `policies`  – Names of the policies to evaluate (e.g. the principal's assigned policies).
 /// * `action`    – Action string such as `"secret:read"` or just `"read"`.
 /// * `resource`  – The resource path being accessed, e.g. `"secret/db/prod/password"`.
 pub fn evaluate(
     compiled: &CompiledPolicies,
+    tenant_id: &str,
     policies: &[String],
     action: &str,
     resource: &str,
@@ -79,10 +89,17 @@ pub fn evaluate(
     let mut any_allow = false;
 
     for policy_name in policies {
-        let rules = match compiled.policies.get(policy_name.as_str()) {
+        // Scoped lookup: a policy name only resolves inside the caller's own
+        // tenant, never against an identically named policy in another.
+        let key = (tenant_id.to_string(), policy_name.clone());
+        let rules = match compiled.policies.get(&key) {
             Some(r) => r,
             None => {
-                trace!(policy_name, "policy not found in compiled set – skipping");
+                trace!(
+                    tenant_id,
+                    policy_name,
+                    "policy not found in this tenant's compiled set – skipping"
+                );
                 continue;
             }
         };
@@ -268,10 +285,13 @@ mod tests {
     use super::*;
     use crate::model::{Capability, PolicyRule};
 
+    /// Tenant every helper-built policy belongs to, unless stated otherwise.
+    const T: &str = "tenant-a";
+
     fn make_compiled(policies: Vec<(&str, Vec<PolicyRule>)>) -> CompiledPolicies {
         let mut c = CompiledPolicies::new();
         for (name, rules) in policies {
-            c.upsert(name.to_string(), rules);
+            c.upsert(T.to_string(), name.to_string(), rules);
         }
         c
     }
@@ -328,6 +348,7 @@ mod tests {
         )]);
         let decision = evaluate(
             &compiled,
+            T,
             &["read-policy".to_string()],
             "secret:read",
             "secret/db",
@@ -343,6 +364,7 @@ mod tests {
         )]);
         let decision = evaluate(
             &compiled,
+            T,
             &["read-policy".to_string()],
             "secret:write",
             "secret/db",
@@ -366,6 +388,7 @@ mod tests {
         // also matches, the result should be Deny.
         let decision = evaluate(
             &compiled,
+            T,
             &["allow-policy".to_string(), "deny-policy".to_string()],
             "secret:read",
             "secret/db/prod",
@@ -376,14 +399,14 @@ mod tests {
     #[test]
     fn unknown_action_is_denied() {
         let compiled = CompiledPolicies::new();
-        let decision = evaluate(&compiled, &[], "secret:teleport", "secret/db");
+        let decision = evaluate(&compiled, T, &[], "secret:teleport", "secret/db");
         assert!(matches!(decision, PolicyDecision::Deny { .. }));
     }
 
     #[test]
     fn empty_policy_list_is_denied() {
         let compiled = CompiledPolicies::new();
-        let decision = evaluate(&compiled, &[], "secret:read", "secret/db");
+        let decision = evaluate(&compiled, T, &[], "secret:read", "secret/db");
         assert!(matches!(decision, PolicyDecision::Deny { .. }));
     }
 
@@ -392,10 +415,70 @@ mod tests {
         let compiled = CompiledPolicies::new();
         let decision = evaluate(
             &compiled,
+            T,
             &["nonexistent".to_string()],
             "secret:read",
             "secret/db",
         );
         assert!(matches!(decision, PolicyDecision::Deny { .. }));
+    }
+
+    /// The regression this key change exists for: two tenants each defining a
+    /// policy of the same name must not see each other's rules. Before the
+    /// snapshot was tenant-scoped, the second `upsert` overwrote the first and
+    /// tenant B's principals were evaluated against tenant A's `admin` rules.
+    #[test]
+    fn identically_named_policies_do_not_leak_across_tenants() {
+        let mut compiled = CompiledPolicies::new();
+        compiled.upsert(
+            "tenant-a".to_string(),
+            "admin".to_string(),
+            vec![rule(&["secret/**"], &[Capability::Read, Capability::Write])],
+        );
+        compiled.upsert(
+            "tenant-b".to_string(),
+            "admin".to_string(),
+            vec![rule(&["secret/public/**"], &[Capability::Read])],
+        );
+
+        let names = vec!["admin".to_string()];
+
+        // Tenant A keeps its own broad grant.
+        assert!(matches!(
+            evaluate(&compiled, "tenant-a", &names, "read", "secret/db/prod"),
+            PolicyDecision::Allow
+        ));
+
+        // Tenant B's `admin` must NOT inherit tenant A's paths.
+        assert!(matches!(
+            evaluate(&compiled, "tenant-b", &names, "read", "secret/db/prod"),
+            PolicyDecision::Deny { .. }
+        ));
+
+        // ...but tenant B's own rule still works.
+        assert!(matches!(
+            evaluate(&compiled, "tenant-b", &names, "read", "secret/public/motd"),
+            PolicyDecision::Allow
+        ));
+    }
+
+    /// A tenant that owns no policy of that name matches nothing, rather than
+    /// falling through to some other tenant's definition.
+    #[test]
+    fn unknown_tenant_matches_no_policy() {
+        let compiled = make_compiled(vec![(
+            "reader",
+            vec![rule(&["secret/**"], &[Capability::Read])],
+        )]);
+        assert!(matches!(
+            evaluate(
+                &compiled,
+                "some-other-tenant",
+                &["reader".to_string()],
+                "read",
+                "secret/db"
+            ),
+            PolicyDecision::Deny { .. }
+        ));
     }
 }

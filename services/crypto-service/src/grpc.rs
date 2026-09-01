@@ -117,13 +117,15 @@ impl CryptoService for CryptoServiceImpl {
             return Err(Status::invalid_argument("plaintext must not be empty"));
         }
 
-        // Generate a new DEK for this encryption operation.
-        // Using a per-encrypt DEK with a unique context derived from the operation
-        // provides forward secrecy: compromise of one DEK only exposes one ciphertext.
-        let context = format!("encrypt:{tenant_id}:{}", uuid::Uuid::now_v7());
+        // Use the tenant's current DEK, rolling it once it has served enough
+        // operations. This used to mint a brand-new DEK per call, on the stated
+        // grounds of forward secrecy — which it did not provide, because every
+        // one of those DEKs is wrapped under the same tenant KEK. What it did
+        // provide was a key table and an in-memory map that grew with every
+        // write ever made.
         let key_id = self
             .kek_store
-            .generate_and_store_dek(tenant_id, &context)
+            .current_dek_for_encrypt(tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 
@@ -181,14 +183,35 @@ impl CryptoService for CryptoServiceImpl {
             "base64 ciphertext (embedded in ciphertext_b64)",
         )?;
 
-        let dek = self
+        // Try the current key first, then each superseded version. A DEK that
+        // has been rotated still has to decrypt everything written before the
+        // rotation; AES-GCM's tag makes a wrong key a clean miss, so walking
+        // the chain is unambiguous.
+        let chain = self
             .kek_store
-            .get_dek(dek_id, tenant_id)
+            .get_dek_chain(dek_id, tenant_id)
             .await
             .map_err(vault_error_to_status)?;
 
-        let plaintext =
-            decrypt_with_dek(&dek, ciphertext_b64, &req.aad).map_err(vault_error_to_status)?;
+        let mut plaintext = None;
+        for (offset, dek) in chain.iter().enumerate() {
+            if let Ok(pt) = decrypt_with_dek(dek, ciphertext_b64, &req.aad) {
+                if offset > 0 {
+                    debug!(
+                        tenant_id,
+                        dek_id,
+                        versions_back = offset,
+                        "Decrypted under a superseded DEK version"
+                    );
+                }
+                plaintext = Some(pt);
+                break;
+            }
+        }
+
+        let plaintext = plaintext.ok_or_else(|| {
+            vault_error_to_status(wslvault_core::error::VaultError::DecryptionFailed)
+        })?;
 
         info!(tenant_id, dek_id, "Decrypt completed");
 

@@ -62,8 +62,16 @@ fn vault_err_to_status(err: VaultError) -> Status {
 pub struct IdentityServiceImpl {
     token_manager: TokenManager,
     store: PrincipalStore,
-    /// In-memory revocation set: stores raw token strings that have been
-    /// explicitly revoked before their natural expiry.
+    /// Durable revocation list. `Some` whenever `DATABASE_URL` is configured.
+    ///
+    /// Revocations used to be an in-process `HashSet<String>` of raw tokens,
+    /// which meant revoking on one replica left the token live on the other,
+    /// a restart un-revoked everything, and the set grew without bound. It is
+    /// now a Postgres table keyed by SHA-256 of the token.
+    revocation_pool: Option<wslvault_storage::pool::DbPool>,
+    /// Fallback used only when no database is configured (local dev). Retained
+    /// so single-process development still behaves, but it carries all the
+    /// original caveats and the service warns about it at startup.
     revoked_tokens: Arc<RwLock<HashSet<String>>>,
     /// Optional OIDC manager.  Present only when `VAULT_OIDC_PROVIDERS` is
     /// configured at startup; `None` causes OIDC auth attempts to return
@@ -87,10 +95,18 @@ impl IdentityServiceImpl {
         mtls_manager: Option<Arc<MtlsManager>>,
         aws_iam_manager: Option<Arc<AwsIamManager>>,
         azure_workload_manager: Option<Arc<AzureWorkloadManager>>,
+        revocation_pool: Option<wslvault_storage::pool::DbPool>,
     ) -> Self {
+        if revocation_pool.is_none() {
+            warn!(
+                "token revocation: DATABASE_URL not set, falling back to an in-process set. \
+                 Revocations will NOT survive a restart and will NOT reach other replicas."
+            );
+        }
         Self {
             token_manager,
             store,
+            revocation_pool,
             revoked_tokens: Arc::new(RwLock::new(HashSet::new())),
             oidc_manager,
             mtls_manager,
@@ -99,14 +115,31 @@ impl IdentityServiceImpl {
         }
     }
 
-    /// Returns `true` when the raw token string has been explicitly revoked.
-    fn is_revoked(&self, token: &str) -> bool {
-        self.revoked_tokens
-            .read()
-            // Treat a poisoned lock as "not revoked" to avoid cascading
-            // failures; the worst outcome is accepting a revoked token once.
-            .map(|set| set.contains(token))
-            .unwrap_or(false)
+    /// Whether the token has been explicitly revoked before its natural expiry.
+    ///
+    /// **Fails closed.** If the revocation list cannot be consulted — the
+    /// database is unreachable, or the in-memory lock is poisoned — this
+    /// reports the token as revoked. The previous implementation did the
+    /// opposite and treated an unreadable list as "not revoked", so the one
+    /// moment revocation mattered most was the moment it stopped working.
+    async fn is_revoked(&self, token: &str) -> bool {
+        if let Some(pool) = &self.revocation_pool {
+            return match wslvault_storage::revocation_store::is_revoked(pool, token).await {
+                Ok(revoked) => revoked,
+                Err(e) => {
+                    error!(error = %e, "revocation lookup failed — denying (fail-closed)");
+                    true
+                }
+            };
+        }
+
+        match self.revoked_tokens.read() {
+            Ok(set) => set.contains(token),
+            Err(e) => {
+                error!(error = %e, "revocation set lock poisoned — denying (fail-closed)");
+                true
+            }
+        }
     }
 }
 
@@ -136,7 +169,7 @@ impl IdentityService for IdentityServiceImpl {
         // Resolve (principal_id, policies) from the supplied auth method.
         let (principal_id, policies): (String, Vec<String>) = match method {
             Method::Token(token_auth) => {
-                if self.is_revoked(&token_auth.token) {
+                if self.is_revoked(&token_auth.token).await {
                     return Err(Status::unauthenticated("token has been revoked"));
                 }
 
@@ -450,7 +483,7 @@ impl IdentityService for IdentityServiceImpl {
         }
 
         // A revoked token is invalid regardless of its cryptographic validity.
-        if self.is_revoked(&req.token) {
+        if self.is_revoked(&req.token).await {
             return Ok(Response::new(ValidateTokenResponse {
                 valid: false,
                 principal_id: String::new(),
@@ -476,11 +509,17 @@ impl IdentityService for IdentityServiceImpl {
         }
     }
 
-    /// Adds a token to the in-memory revocation set.
+    /// Revoke a token before its natural expiry.
     ///
-    /// Once revoked the token will be rejected by both `authenticate` and
-    /// `validate_token` for the lifetime of this process.  Revocations are
-    /// not persisted across restarts in this initial implementation.
+    /// Persisted to `system.revoked_tokens` when a database is configured, so
+    /// the revocation survives restarts and is seen by every replica. Only the
+    /// SHA-256 of the token is stored, never the token itself.
+    ///
+    /// The token's own `exp` claim bounds how long the record is kept: past
+    /// that instant the JWT validator rejects it anyway, so the row is reaped.
+    /// A token that cannot be decoded is still revoked — it is retained for a
+    /// nominal hour so a malformed-but-live credential cannot be laundered by
+    /// mangling it.
     async fn revoke_token(
         &self,
         request: Request<RevokeTokenRequest>,
@@ -491,15 +530,47 @@ impl IdentityService for IdentityServiceImpl {
             return Err(Status::invalid_argument("token must not be empty"));
         }
 
-        let mut set = self.revoked_tokens.write().map_err(|e| {
-            error!(error = %e, "revocation set lock poisoned");
-            Status::internal("internal lock error")
-        })?;
+        // Decode without verifying: we want the exp/sub/tenant of a token we
+        // are about to reject, and refusing to revoke an already-expired or
+        // otherwise unverifiable token would be the wrong way round.
+        let (tenant_id, principal_id, expires_at) =
+            match self.token_manager.validate_token(&req.token) {
+                Ok(c) => (c.tenant_id, c.sub, c.exp),
+                Err(_) => (
+                    String::new(),
+                    String::new(),
+                    chrono::Utc::now().timestamp() + 3600,
+                ),
+            };
 
-        set.insert(req.token.clone());
+        if let Some(pool) = &self.revocation_pool {
+            wslvault_storage::revocation_store::revoke(
+                pool,
+                &req.token,
+                &tenant_id,
+                &principal_id,
+                expires_at,
+            )
+            .await
+            .map_err(|e| {
+                // Report the failure rather than swallowing it. A caller that
+                // believes a token is revoked when it is not is worse off than
+                // one that knows the revocation did not land and can retry.
+                error!(error = %e, "failed to persist token revocation");
+                Status::internal("could not persist revocation")
+            })?;
+        } else {
+            let mut set = self.revoked_tokens.write().map_err(|e| {
+                error!(error = %e, "revocation set lock poisoned");
+                Status::internal("internal lock error")
+            })?;
+            set.insert(req.token.clone());
+        }
 
         info!(
-            token_prefix = &req.token[..req.token.len().min(20)],
+            tenant_id = %tenant_id,
+            principal_id = %principal_id,
+            durable = self.revocation_pool.is_some(),
             "token revoked"
         );
 

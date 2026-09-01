@@ -38,7 +38,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     middleware::Next,
     response::IntoResponse,
-    routing::{delete, post},
+    routing::{delete, get, post},
     Extension, Json, Router,
 };
 use chrono::{DateTime, Utc};
@@ -46,7 +46,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use wslvault_storage::{api_key_store, pool::DbPool};
@@ -76,6 +76,7 @@ const API_KEY_JWT_TTL_SECONDS: i64 = 3600;
 // Error type
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Errors that can be returned by [`ApiKeyManager`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ApiKeyError {
@@ -91,10 +92,20 @@ pub enum ApiKeyError {
     #[error("an api key with name '{0}' already exists for this tenant")]
     DuplicateName(String),
 
-    #[error("api key format is invalid; expected '{RAW_KEY_PREFIX}<base64url>'")]
+    /// The message names what a valid key looks like *and* the most common
+    /// thing supplied instead. Deployment secrets — `VAULT_ADMIN_TOKEN` above
+    /// all — are the same shape as an API key to the eye and sit next to each
+    /// other in a local `.env`, so "invalid format" alone leaves someone
+    /// re-checking a value that was never the right kind of credential.
+    #[error(
+        "api key format is invalid; expected '{RAW_KEY_PREFIX}<base64url>'. \
+         This must be an API key from POST /v1/api-keys — not VAULT_ADMIN_TOKEN \
+         or another deployment secret"
+    )]
     InvalidKeyFormat,
 
     #[error("rate limit exceeded")]
+    #[allow(dead_code)]
     RateLimitExceeded,
 
     /// Wraps internal JWT-issuance failures surfaced from [`TokenManager`].
@@ -190,6 +201,10 @@ pub struct ApiKeyRecord {
     /// `None` means the key never expires.
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Cross-tenant access. See [`ApiKeyCreateRequest::is_superuser`].
+    pub is_superuser: bool,
+    /// Whether a TOTP code is required to exchange this key.
+    pub mfa_required: bool,
     /// `None` means the key is active; `Some(_)` means it has been revoked.
     pub revoked_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
@@ -228,16 +243,37 @@ pub struct ApiKeyCreateRequest {
     pub expires_in_seconds: Option<i64>,
     /// Maximum requests per minute; defaults to 60.
     pub rate_limit_per_minute: Option<i32>,
+    /// Grant cross-tenant access.
+    ///
+    /// A superuser is a deliberate hole in the isolation this system otherwise
+    /// enforces, so it is narrow and loud: MFA is forced on (the schema
+    /// enforces that too), tokens are signed by the system key rather than any
+    /// tenant's, and every use is audited with the acting tenant recorded.
+    #[serde(default)]
+    pub is_superuser: bool,
+    /// Require a TOTP code when exchanging this key for a token.
+    ///
+    /// Default false so machine keys — the External Secrets Operator, CI, the
+    /// SDKs — keep working; a service account cannot read an authenticator app.
+    /// Forced true for superuser keys.
+    #[serde(default)]
+    pub mfa_required: bool,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Successful result of validating a raw API key.
 #[derive(Debug)]
 pub struct ApiKeyValidationResult {
     pub key_id: Uuid,
     pub tenant_id: String,
     pub policies: Vec<String>,
+    #[allow(dead_code)]
     pub path_prefixes: Vec<String>,
     pub rate_limit_per_minute: i32,
+    /// Whether this key grants cross-tenant access.
+    pub is_superuser: bool,
+    /// Whether a TOTP code is required before a token is issued.
+    pub mfa_required: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +431,10 @@ impl ApiKeyManager {
             last_used_at: None,
             revoked_at: None,
             rate_limit_per_minute: req.rate_limit_per_minute.unwrap_or(60),
+            is_superuser: req.is_superuser,
+            // Superuser implies MFA. Enforced here and in the schema, so
+            // neither a caller nor a future code path can skip it by omission.
+            mfa_required: req.mfa_required || req.is_superuser,
         };
 
         (raw_key, record)
@@ -448,6 +488,8 @@ impl ApiKeyManager {
                     path_prefixes: req.path_prefixes.clone(),
                     expires_in_seconds: req.expires_in_seconds,
                     rate_limit_per_minute: req.rate_limit_per_minute,
+                    is_superuser: req.is_superuser,
+                    mfa_required: req.mfa_required,
                 };
                 let (raw_key, record) = Self::mint(&canonical, &name, created_by);
 
@@ -465,6 +507,8 @@ impl ApiKeyManager {
                     last_used_at: None,
                     revoked_at: None,
                     rate_limit_per_minute: record.rate_limit_per_minute,
+                    is_superuser: record.is_superuser,
+                    mfa_required: record.mfa_required,
                 };
 
                 api_key_store::insert(pool, &row)
@@ -587,6 +631,8 @@ impl ApiKeyManager {
                     policies: row.policies,
                     path_prefixes: row.path_prefixes,
                     rate_limit_per_minute: row.rate_limit_per_minute,
+                    is_superuser: row.is_superuser,
+                    mfa_required: row.mfa_required,
                 })
             }
 
@@ -623,6 +669,8 @@ impl ApiKeyManager {
                     policies: record.policies.clone(),
                     path_prefixes: record.path_prefixes.clone(),
                     rate_limit_per_minute: record.rate_limit_per_minute,
+                    is_superuser: record.is_superuser,
+                    mfa_required: record.mfa_required,
                 })
             }
         }
@@ -744,55 +792,66 @@ impl ApiKeyManager {
         tenant_id: &str,
     ) -> Result<ApiKeyCreateResponse, ApiKeyError> {
         // Capture the old record's configuration before revoking it.
-        let (old_name, old_policies, old_path_prefixes, old_rate_limit, old_created_by) =
-            match &self.backend {
-                Backend::Database(pool) => {
-                    let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
-                        .await
-                        .map_err(store_err)?;
+        let (
+            old_name,
+            old_policies,
+            old_path_prefixes,
+            old_rate_limit,
+            old_created_by,
+            old_is_superuser,
+            old_mfa_required,
+        ) = match &self.backend {
+            Backend::Database(pool) => {
+                let tenant_uuid = api_key_store::resolve_tenant_id(pool, tenant_id)
+                    .await
+                    .map_err(store_err)?;
 
-                    let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
-                        .await
-                        .map_err(store_err)?
-                        .ok_or(ApiKeyError::KeyNotFound)?;
+                let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                    .await
+                    .map_err(store_err)?
+                    .ok_or(ApiKeyError::KeyNotFound)?;
 
-                    (
-                        row.name,
-                        row.policies,
-                        row.path_prefixes,
-                        row.rate_limit_per_minute,
-                        row.created_by,
-                    )
+                (
+                    row.name,
+                    row.policies,
+                    row.path_prefixes,
+                    row.rate_limit_per_minute,
+                    row.created_by,
+                    row.is_superuser,
+                    row.mfa_required,
+                )
+            }
+
+            Backend::Memory {
+                by_hash,
+                id_to_hash,
+            } => {
+                let hash = {
+                    let id_to_hash = id_to_hash.read().await;
+                    id_to_hash
+                        .get(&key_id)
+                        .ok_or(ApiKeyError::KeyNotFound)?
+                        .clone()
+                };
+
+                let by_hash = by_hash.read().await;
+                let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
+
+                if record.tenant_id != tenant_id {
+                    return Err(ApiKeyError::KeyNotFound);
                 }
 
-                Backend::Memory {
-                    by_hash,
-                    id_to_hash,
-                } => {
-                    let hash = {
-                        let id_to_hash = id_to_hash.read().await;
-                        id_to_hash
-                            .get(&key_id)
-                            .ok_or(ApiKeyError::KeyNotFound)?
-                            .clone()
-                    };
-
-                    let by_hash = by_hash.read().await;
-                    let record = by_hash.get(&hash).ok_or(ApiKeyError::KeyNotFound)?;
-
-                    if record.tenant_id != tenant_id {
-                        return Err(ApiKeyError::KeyNotFound);
-                    }
-
-                    (
-                        record.name.clone(),
-                        record.policies.clone(),
-                        record.path_prefixes.clone(),
-                        record.rate_limit_per_minute,
-                        record.created_by.clone(),
-                    )
-                }
-            };
+                (
+                    record.name.clone(),
+                    record.policies.clone(),
+                    record.path_prefixes.clone(),
+                    record.rate_limit_per_minute,
+                    record.created_by.clone(),
+                    record.is_superuser,
+                    record.mfa_required,
+                )
+            }
+        };
 
         // Revoke the old key first so the name frees up for the replacement.
         self.revoke_key(key_id, tenant_id).await?;
@@ -808,6 +867,11 @@ impl ApiKeyManager {
             // The new key inherits no expiry from the old one; callers that
             // want expiry should set it on the create request directly.
             expires_in_seconds: None,
+            // Rotation replaces a key, it does not re-grade it. Dropping these
+            // would silently demote a superuser key — or worse, quietly turn
+            // MFA off — on what an operator thinks is a routine rotation.
+            is_superuser: old_is_superuser,
+            mfa_required: old_mfa_required,
         };
 
         let response = self.create_key(new_req, &old_created_by).await?;
@@ -839,6 +903,8 @@ fn record_from_row(row: api_key_store::ApiKeyRow) -> ApiKeyRecord {
         policies: row.policies,
         created_by: row.created_by,
         created_at: row.created_at,
+        is_superuser: row.is_superuser,
+        mfa_required: row.mfa_required,
         expires_at: row.expires_at,
         last_used_at: row.last_used_at,
         revoked_at: row.revoked_at,
@@ -861,6 +927,16 @@ impl Default for ApiKeyManager {
 pub struct ApiKeyState {
     pub manager: ApiKeyManager,
     pub token_manager: TokenManager,
+    /// Per-tenant Ed25519 signing keys. `None` falls back to the shared HS256
+    /// secret, which is the legacy posture — see `signing_keys`.
+    pub signing_keys: Option<crate::signing_keys::SigningKeys>,
+    /// Database pool for MFA enrolments. `None` disables the second factor.
+    pub mfa_pool: Option<wslvault_storage::pool::DbPool>,
+    /// Wraps TOTP secrets, so they sit under the root KEK like every other
+    /// piece of key material here.
+    pub crypto: Option<crate::crypto_client::CryptoClient>,
+    /// Logins that have passed the key check and are waiting on a code.
+    pub challenges: crate::mfa::ChallengeStore,
 }
 
 // ---------------------------------------------------------------------------
@@ -874,7 +950,18 @@ pub const ADMIN_TOKEN_ENV: &str = "VAULT_ADMIN_TOKEN";
 pub const ADMIN_POLICY_ENV: &str = "VAULT_ADMIN_POLICY";
 
 /// Policy required of a JWT caller when `VAULT_ADMIN_POLICY` is unset.
-const DEFAULT_ADMIN_POLICY: &str = "admin";
+///
+/// Namespaced deliberately. This used to be `"admin"` — which is the single
+/// most likely name a tenant gives its own administrator policy, and there is
+/// nothing tenant-scoped about the check: carrying the policy grants
+/// PLATFORM administration, including listing and deleting every tenant in the
+/// deployment.
+///
+/// So any tenant that created a policy called `admin` for its own users was
+/// silently handing them authority over every other tenant. A tenant
+/// administrator and a platform administrator are different things, and the
+/// default name now says which one it means.
+const DEFAULT_ADMIN_POLICY: &str = "wslvault:platform-admin";
 
 /// Header carrying the bootstrap administrator token.
 pub const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
@@ -914,8 +1001,10 @@ pub struct AdminAuth {
     bootstrap_token: Option<Arc<Vec<u8>>>,
     /// Policy a JWT must carry to be treated as an administrator.
     required_policy: Arc<String>,
-    /// Verifies presented JWTs. Shares the deployment's signing secret.
+    /// Verifies legacy HS256 JWTs under the shared secret.
     token_manager: TokenManager,
+    /// Verifies per-tenant EdDSA JWTs. `None` leaves only the legacy path.
+    signing_keys: Option<crate::signing_keys::SigningKeys>,
 }
 
 impl AdminAuth {
@@ -923,6 +1012,15 @@ impl AdminAuth {
     ///
     /// Logs at startup which credentials are live so an operator can tell,
     /// from the logs alone, whether bootstrap is possible.
+    /// Attach per-tenant signing keys so EdDSA tokens can be verified.
+    ///
+    /// Without them the gate falls back to HS256 only, which rejects every
+    /// token issued under per-tenant keys.
+    pub fn with_signing_keys(mut self, keys: Option<crate::signing_keys::SigningKeys>) -> Self {
+        self.signing_keys = keys;
+        self
+    }
+
     pub fn from_env(token_manager: TokenManager) -> Self {
         let bootstrap_token = std::env::var(ADMIN_TOKEN_ENV)
             .ok()
@@ -945,6 +1043,7 @@ impl AdminAuth {
             bootstrap_token,
             required_policy: Arc::new(required_policy),
             token_manager,
+            signing_keys: None,
         }
     }
 
@@ -959,13 +1058,14 @@ impl AdminAuth {
             bootstrap_token: bootstrap_token.map(Arc::new),
             required_policy: Arc::new(required_policy.into()),
             token_manager,
+            signing_keys: None,
         }
     }
 
     /// Authenticates one request, returning the caller's identity.
     ///
     /// Returns `None` when no acceptable credential is present.
-    fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
+    async fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
         // 1. Bootstrap token, compared in constant time.
         if let Some(expected) = &self.bootstrap_token {
             if let Some(provided) = headers.get(ADMIN_TOKEN_HEADER).map(|v| v.as_bytes()) {
@@ -986,7 +1086,30 @@ impl AdminAuth {
             .map(str::trim)
             .filter(|t| !t.is_empty())?;
 
-        let claims = self.token_manager.validate_token(bearer).ok()?;
+        // Try the per-tenant EdDSA path first, then the legacy shared HS256.
+        //
+        // This used to be HS256 only, which broke every Bearer-authorised admin
+        // operation the moment issuance moved to per-tenant keys: the token was
+        // valid, the policy was right, and it could not be decoded. Found by
+        // logging into the UI and watching API-key management fail.
+        let claims = match &self.signing_keys {
+            Some(keys) => match keys.verify(bearer).await {
+                Ok(c) => c,
+                Err(_) => self.token_manager.validate_token(bearer).ok()?,
+            },
+            None => self.token_manager.validate_token(bearer).ok()?,
+        };
+
+        // A superuser is an administrator by definition: the claim already
+        // grants cross-tenant access, so requiring a separate policy on top
+        // would only mean a superuser could not administer the platform it has
+        // authority over.
+        if claims.superuser {
+            return Some(AdminIdentity {
+                principal_id: claims.sub,
+                tenant_id: Some(claims.tenant_id),
+            });
+        }
 
         if !claims
             .policies
@@ -1017,7 +1140,7 @@ pub async fn require_admin(
     mut request: Request,
     next: Next,
 ) -> axum::response::Response {
-    match auth.authenticate(request.headers()) {
+    match auth.authenticate(request.headers()).await {
         Some(identity) => {
             request.extensions_mut().insert(identity);
             next.run(request).await
@@ -1310,6 +1433,73 @@ pub async fn handle_rotate_api_key(
     }
 }
 
+/// Whether this key has a confirmed authenticator enrolled.
+async fn mfa_enrolment_active(state: &ApiKeyState, api_key_id: Uuid) -> Result<bool, String> {
+    let Some(pool) = state.mfa_pool.as_ref() else {
+        return Ok(false);
+    };
+    Ok(wslvault_storage::mfa_store::find(pool, api_key_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|e| e.is_active())
+        .unwrap_or(false))
+}
+
+/// Mint a token signed with the tenant's own key, falling back to the shared
+/// HS256 secret only where per-tenant keys are not configured.
+///
+/// The fallback exists so an upgrade does not require the crypto-service to be
+/// reachable before anyone can log in. It warns, because a shared symmetric
+/// secret means any service that can verify a token can also forge one.
+pub(crate) async fn issue_for_tenant(
+    state: &ApiKeyState,
+    subject: &str,
+    tenant_id: &str,
+    policies: Vec<String>,
+    superuser: bool,
+) -> Result<(String, chrono::DateTime<chrono::Utc>), String> {
+    let Some(signing_keys) = state.signing_keys.as_ref() else {
+        if superuser {
+            // A superuser token authorises across every tenant. Minting one
+            // under a secret every service already holds would mean any of them
+            // could forge cross-tenant authority.
+            return Err(
+                "per-tenant signing keys are required to issue a superuser token".to_string(),
+            );
+        }
+        warn!(
+            "issuing a legacy HS256 token: per-tenant signing keys are not configured, \
+             so any service holding VAULT_JWT_SECRET can forge this token"
+        );
+        return state
+            .token_manager
+            .issue_token(subject, tenant_id, policies, API_KEY_JWT_TTL_SECONDS)
+            .map_err(|e| e.to_string());
+    };
+
+    // Superuser tokens are signed by the system key rather than any tenant's,
+    // so no tenant key can mint cross-tenant authority.
+    let key_tenant = if superuser {
+        None
+    } else {
+        Some(Uuid::parse_str(tenant_id).map_err(|e| format!("tenant_id is not a UUID: {e}"))?)
+    };
+
+    let signer = signing_keys.signer_for(key_tenant.as_ref()).await?;
+    state
+        .token_manager
+        .issue_token_with_key(
+            subject,
+            tenant_id,
+            policies,
+            API_KEY_JWT_TTL_SECONDS,
+            &signer.encoding,
+            crate::signing_keys::SigningKeys::header(&signer.kid),
+            superuser,
+        )
+        .map_err(|e| e.to_string())
+}
+
 /// `POST /v1/auth/api-key` — exchange a raw API key for a short-lived JWT.
 ///
 /// Accepts `{ "api_key": "wslv_..." }` and returns a JWT token that downstream
@@ -1340,25 +1530,90 @@ pub async fn handle_auth_api_key(
         }
     };
 
+    // A key marked `mfa_required` gets a challenge, not a token. The check is
+    // per key so machine clients — ESO, CI, the SDKs — keep the one-step
+    // exchange; a service account cannot read an authenticator app.
+    if validation_result.mfa_required {
+        match mfa_enrolment_active(&state, validation_result.key_id).await {
+            Ok(true) => {
+                let challenge = state
+                    .challenges
+                    .issue(crate::mfa::PendingChallenge {
+                        api_key_id: validation_result.key_id,
+                        tenant_id: validation_result.tenant_id.clone(),
+                        policies: validation_result.policies.clone(),
+                        superuser: validation_result.is_superuser,
+                        expires_at: crate::mfa::challenge_expiry(),
+                    })
+                    .await;
+                info!(
+                    key_id = %validation_result.key_id,
+                    "api key accepted; awaiting authenticator code"
+                );
+                return crate::mfa::challenge_response(challenge);
+            }
+            Ok(false) => {
+                // The key demands a second factor and none is enrolled. Fail
+                // closed: issuing a token here would silently make the
+                // requirement optional, which is the same as not having it.
+                warn!(
+                    key_id = %validation_result.key_id,
+                    "key requires MFA but has no confirmed authenticator; refusing"
+                );
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "message": "this key requires an authenticator; \
+                                    enrol one via /v1/auth/mfa/totp/enroll"
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                error!(error = %e, "could not check MFA enrolment");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "message": "could not verify the second factor" })),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     // Issue a short-lived JWT using the key's UUID as the subject so that
     // downstream services can correlate the token back to the originating key.
     let subject = validation_result.key_id.to_string();
-    let (token, expires_at) = match state.token_manager.issue_token(
+    let (token, expires_at) = match issue_for_tenant(
+        &state,
         &subject,
         &validation_result.tenant_id,
         validation_result.policies.clone(),
-        API_KEY_JWT_TTL_SECONDS,
-    ) {
+        validation_result.is_superuser,
+    )
+    .await
+    {
         Ok(pair) => pair,
         Err(err) => {
-            let api_err = ApiKeyError::TokenIssuance(err.to_string());
+            let api_err = ApiKeyError::TokenIssuance(err);
             return api_err.into_response();
         }
     };
 
+    if validation_result.is_superuser {
+        // A superuser token authorises across every tenant. It is the
+        // highest-value credential in the system, so its issuance is never a
+        // routine log line.
+        warn!(
+            key_id = %validation_result.key_id,
+            home_tenant = %validation_result.tenant_id,
+            "SUPERUSER token issued — this credential grants cross-tenant access"
+        );
+    }
+
     info!(
         key_id = %validation_result.key_id,
         tenant_id = %validation_result.tenant_id,
+        superuser = validation_result.is_superuser,
         "api key exchanged for jwt"
     );
 
@@ -1377,6 +1632,416 @@ pub async fn handle_auth_api_key(
 // ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
+
+/// `GET /v1/identity/.well-known/jwks.json` — public keys for token verification.
+///
+/// Serves every key a live token might carry, including ones rotating out, so a
+/// rotation does not invalidate tokens already in flight.
+pub async fn handle_jwks(State(state): State<ApiKeyState>) -> impl IntoResponse {
+    let Some(signing_keys) = state.signing_keys.as_ref() else {
+        // Empty rather than an error: a deployment still on the legacy shared
+        // secret has no per-tenant public keys, and that is a valid state.
+        return (StatusCode::OK, Json(serde_json::json!({ "keys": [] }))).into_response();
+    };
+
+    match signing_keys.jwks().await {
+        Ok(jwks) => (StatusCode::OK, Json(jwks)).into_response(),
+        Err(e) => {
+            warn!(error = %e, "could not build the JWKS document");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "signing keys are unavailable" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// `POST /v1/auth/mfa/totp` — complete a login with an authenticator code.
+///
+/// Accepts either a six-digit TOTP code or a single-use recovery code, so a
+/// lost phone is a nuisance rather than a lockout.
+pub async fn handle_mfa_verify(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<crate::mfa::VerifyRequest>,
+) -> impl IntoResponse {
+    // Taking the challenge removes it, so it cannot be replayed even inside its
+    // TTL. A failed code therefore costs a fresh login rather than allowing
+    // unlimited guesses against one challenge — which is the rate limit.
+    let Some(pending) = state.challenges.take(&req.challenge).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "challenge is unknown or expired" })),
+        )
+            .into_response();
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(pool, pending.api_key_id).await {
+        Ok(Some(e)) if e.is_active() => e,
+        Ok(_) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "message": "no confirmed authenticator for this key" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not verify the second factor" })),
+            )
+                .into_response();
+        }
+    };
+
+    let accepted = match verify_second_factor(pool, crypto, &enrolment, &pending, &req.code).await {
+        Ok(v) => v,
+        Err(e) => {
+            error!(error = %e, "second factor verification failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not verify the second factor" })),
+            )
+                .into_response();
+        }
+    };
+
+    if !accepted {
+        warn!(
+            key_id = %pending.api_key_id,
+            tenant_id = %pending.tenant_id,
+            "authenticator code rejected"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "invalid or already-used code" })),
+        )
+            .into_response();
+    }
+
+    let (token, expires_at) = match issue_for_tenant(
+        &state,
+        &pending.api_key_id.to_string(),
+        &pending.tenant_id,
+        pending.policies.clone(),
+        pending.superuser,
+    )
+    .await
+    {
+        Ok(pair) => pair,
+        Err(err) => return ApiKeyError::TokenIssuance(err).into_response(),
+    };
+
+    if pending.superuser {
+        warn!(
+            key_id = %pending.api_key_id,
+            "SUPERUSER token issued after MFA — grants cross-tenant access"
+        );
+    }
+    info!(key_id = %pending.api_key_id, "MFA accepted; token issued");
+
+    (
+        StatusCode::OK,
+        Json(ApiKeyAuthResponse {
+            token,
+            expires_at,
+            tenant_id: pending.tenant_id.clone(),
+            policies: pending.policies.clone(),
+        }),
+    )
+        .into_response()
+}
+
+/// Check a TOTP code, falling back to a recovery code.
+///
+/// TOTP first: a recovery code is the expensive path and burns a code, so it
+/// should only be reached when the normal factor genuinely was not supplied.
+async fn verify_second_factor(
+    pool: &wslvault_storage::pool::DbPool,
+    crypto: &crate::crypto_client::CryptoClient,
+    enrolment: &wslvault_storage::mfa_store::TotpEnrolment,
+    pending: &crate::mfa::PendingChallenge,
+    code: &str,
+) -> Result<bool, String> {
+    let secret_bytes = crypto
+        .unwrap(
+            enrolment.tenant_id.to_string(),
+            &enrolment.wrapped_secret,
+            totp_aad(pending.api_key_id),
+        )
+        .await?;
+    let secret = String::from_utf8(secret_bytes)
+        .map_err(|_| "stored TOTP secret is not valid UTF-8".to_string())?;
+
+    let now = chrono::Utc::now().timestamp();
+    if let Some(step) = crate::mfa::verify_code(&secret, code, now) {
+        // Replay defence lives in the UPDATE, not here: two requests presenting
+        // the same code would otherwise both pass this check before either
+        // wrote. See `try_consume_step`.
+        return wslvault_storage::mfa_store::try_consume_step(pool, pending.api_key_id, step)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
+    let hash = crate::mfa::hash_recovery_code(code);
+    wslvault_storage::mfa_store::consume_recovery_code(pool, pending.api_key_id, &hash)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// AAD binding a wrapped TOTP secret to the key it protects.
+fn totp_aad(api_key_id: Uuid) -> Vec<u8> {
+    format!("wslvault:mfa:totp:{api_key_id}").into_bytes()
+}
+
+/// Request body for enrolment and confirmation.
+#[derive(Debug, Deserialize)]
+pub struct MfaEnrollRequest {
+    /// The API key being enrolled. Proving possession of it is what authorises
+    /// enrolment — the same credential the second factor will protect.
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MfaConfirmRequest {
+    pub api_key: String,
+    /// A code generated from the secret just issued, proving the authenticator
+    /// was set up correctly before it becomes required.
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MfaEnrollResponse {
+    /// Base32 secret, for manual entry.
+    pub secret: String,
+    /// `otpauth://` URI to render as a QR code.
+    pub otpauth_uri: String,
+    /// Single-use fallbacks. Shown once; only hashes are stored.
+    pub recovery_codes: Vec<String>,
+    pub warning: String,
+}
+
+/// `POST /v1/auth/mfa/totp/enroll` — begin enrolment for an API key.
+///
+/// Authorised by presenting the key itself. Enrolment does not take effect
+/// until confirmed, so a half-finished attempt cannot lock anyone out.
+pub async fn handle_mfa_enroll(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<MfaEnrollRequest>,
+) -> impl IntoResponse {
+    let validated = match state.manager.validate_key(&req.api_key).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let tenant_uuid = match Uuid::parse_str(&validated.tenant_id) {
+        Ok(u) => u,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "message": format!("tenant is not a UUID: {e}") })),
+            )
+                .into_response()
+        }
+    };
+
+    let secret = match crate::mfa::generate_secret() {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "TOTP secret generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "could not generate a secret" })),
+            )
+                .into_response();
+        }
+    };
+
+    // Wrapped before storage, so the second factor sits under the root KEK like
+    // every other piece of key material and a database dump does not yield it.
+    let wrapped = match crypto
+        .wrap(
+            validated.tenant_id.clone(),
+            secret.as_bytes(),
+            totp_aad(validated.key_id),
+        )
+        .await
+    {
+        Ok(w) => w,
+        Err(e) => {
+            error!(error = %e, "could not wrap the TOTP secret");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": format!("could not store the secret: {e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) =
+        wslvault_storage::mfa_store::upsert_pending(pool, validated.key_id, tenant_uuid, &wrapped)
+            .await
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "message": e.to_string() })),
+        )
+            .into_response();
+    }
+
+    let codes = match crate::mfa::generate_recovery_codes(8) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "recovery code generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "could not generate recovery codes" })),
+            )
+                .into_response();
+        }
+    };
+    let hashes: Vec<String> = codes.iter().map(|(_, h)| h.clone()).collect();
+    if let Err(e) = wslvault_storage::mfa_store::replace_recovery_codes(
+        pool,
+        validated.key_id,
+        tenant_uuid,
+        &hashes,
+    )
+    .await
+    {
+        error!(error = %e, "could not store recovery codes");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not store recovery codes" })),
+        )
+            .into_response();
+    }
+
+    info!(key_id = %validated.key_id, "TOTP enrolment started; awaiting confirmation");
+
+    (
+        StatusCode::OK,
+        Json(MfaEnrollResponse {
+            otpauth_uri: crate::mfa::otpauth_uri(
+                &secret,
+                &validated.key_id.to_string(),
+                "WSLVault",
+            ),
+            secret,
+            recovery_codes: codes.into_iter().map(|(c, _)| c).collect(),
+            warning: "Scan the QR code, then confirm with a generated code. Recovery codes are \
+                      shown once and stored only as hashes: keep them somewhere you can reach \
+                      without this vault."
+                .to_string(),
+        }),
+    )
+        .into_response()
+}
+
+/// `POST /v1/auth/mfa/totp/confirm` — prove the authenticator works.
+///
+/// Until this succeeds the enrolment is inert: it neither satisfies a login
+/// challenge nor blocks one.
+pub async fn handle_mfa_confirm(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<MfaConfirmRequest>,
+) -> impl IntoResponse {
+    let validated = match state.manager.validate_key(&req.api_key).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(pool, validated.key_id).await {
+        Ok(Some(e)) => e,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "message": "no enrolment in progress" })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment" })),
+            )
+                .into_response();
+        }
+    };
+
+    let secret = match crypto
+        .unwrap(
+            enrolment.tenant_id.to_string(),
+            &enrolment.wrapped_secret,
+            totp_aad(validated.key_id),
+        )
+        .await
+        .map(String::from_utf8)
+    {
+        Ok(Ok(s)) => s,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment secret" })),
+            )
+                .into_response()
+        }
+    };
+
+    let now = chrono::Utc::now().timestamp();
+    let Some(step) = crate::mfa::verify_code(&secret, &req.code, now) else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "message": "that code does not match the enrolment" })),
+        )
+            .into_response();
+    };
+
+    if let Err(e) = wslvault_storage::mfa_store::confirm(pool, validated.key_id, step).await {
+        error!(error = %e, "could not confirm the enrolment");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not confirm the enrolment" })),
+        )
+            .into_response();
+    }
+
+    info!(key_id = %validated.key_id, "TOTP enrolment confirmed");
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "confirmed": true,
+            "message": "authenticator confirmed; it is now required for this key"
+        })),
+    )
+        .into_response()
+}
 
 /// Builds an [`axum::Router`] containing all API-key routes.
 ///
@@ -1406,6 +2071,15 @@ pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
 
     let exchange = Router::new()
         .route("/v1/auth/api-key", post(handle_auth_api_key))
+        // Public on purpose: it serves public keys. Verifiers need it without
+        // holding a credential, and a public key confers no ability to sign.
+        .route("/v1/identity/.well-known/jwks.json", get(handle_jwks))
+        // Second-factor routes. Not token-authenticated on purpose: possession
+        // of the API key authorises them, and the whole point is that a token
+        // has not been issued yet.
+        .route("/v1/auth/mfa/totp", post(handle_mfa_verify))
+        .route("/v1/auth/mfa/totp/enroll", post(handle_mfa_enroll))
+        .route("/v1/auth/mfa/totp/confirm", post(handle_mfa_confirm))
         .with_state(state);
 
     management.merge(exchange)
@@ -1430,6 +2104,10 @@ mod tests {
 
     fn make_state() -> ApiKeyState {
         ApiKeyState {
+            signing_keys: None,
+            mfa_pool: None,
+            crypto: None,
+            challenges: crate::mfa::ChallengeStore::new(),
             manager: ApiKeyManager::new(),
             token_manager: make_token_manager(),
         }
@@ -1514,6 +2192,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let response = mgr.create_key(req, "operator").await.unwrap();
 
@@ -1534,6 +2214,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         mgr.create_key(make_req(), "op").await.unwrap();
         let err = mgr.create_key(make_req(), "op").await.unwrap_err();
@@ -1550,6 +2232,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let req2 = ApiKeyCreateRequest {
             name: "deploy-key".into(),
@@ -1558,6 +2242,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         assert!(mgr.create_key(req1, "op").await.is_ok());
         assert!(mgr.create_key(req2, "op").await.is_ok());
@@ -1577,6 +2263,8 @@ mod tests {
             path_prefixes: Some(vec!["secret/data/".into()]),
             expires_in_seconds: None,
             rate_limit_per_minute: Some(120),
+            is_superuser: false,
+            mfa_required: false,
         };
         let create_resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1607,6 +2295,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
         mgr.revoke_key(resp.id, "tenant-r").await.unwrap();
@@ -1626,6 +2316,8 @@ mod tests {
             // Negative TTL: the key is created already-expired.
             expires_in_seconds: Some(-1),
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1654,6 +2346,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp = mgr.create_key(req, "op").await.unwrap();
 
@@ -1682,6 +2376,8 @@ mod tests {
                 path_prefixes: None,
                 expires_in_seconds: None,
                 rate_limit_per_minute: None,
+                is_superuser: false,
+                mfa_required: false,
             };
             mgr.create_key(req, "op").await.unwrap();
         }
@@ -1692,6 +2388,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let resp_b = mgr.create_key(req_b, "op").await.unwrap();
 
@@ -1721,6 +2419,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         mgr.create_key(req, "op").await.unwrap();
 
@@ -1746,6 +2446,8 @@ mod tests {
             path_prefixes: Some(vec!["secret/".into()]),
             expires_in_seconds: None,
             rate_limit_per_minute: Some(30),
+            is_superuser: false,
+            mfa_required: false,
         };
         let old_resp = mgr.create_key(req, "op").await.unwrap();
         let old_id = old_resp.id;
@@ -1817,6 +2519,8 @@ mod tests {
             path_prefixes: None,
             expires_in_seconds: None,
             rate_limit_per_minute: None,
+            is_superuser: false,
+            mfa_required: false,
         };
         let create_resp = state.manager.create_key(req, "op").await.unwrap();
 
@@ -2080,6 +2784,8 @@ mod tests {
                     path_prefixes: None,
                     expires_in_seconds: None,
                     rate_limit_per_minute: None,
+                    is_superuser: false,
+                    mfa_required: false,
                 },
                 "op",
             )
@@ -2131,5 +2837,57 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         // KeyNotFound maps to 404, which is intentionally opaque to attackers.
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A tenant administrator is not a platform administrator.
+    ///
+    /// The default required policy used to be `"admin"` — the single most
+    /// likely name a tenant gives its own admin policy — and carrying it grants
+    /// authority over every tenant in the deployment. Any tenant that created
+    /// an `admin` policy for its own users was silently handing them the estate.
+    #[tokio::test]
+    async fn a_tenants_own_admin_policy_is_not_platform_administration() {
+        let tm = TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!");
+        let auth = AdminAuth::new(tm.clone(), None, DEFAULT_ADMIN_POLICY);
+
+        // A perfectly ordinary tenant user whose policy happens to be "admin".
+        let (token, _) = tm
+            .issue_token("user-1", "some-tenant", vec!["admin".into()], 3600)
+            .expect("issue");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+
+        assert!(
+            auth.authenticate(&headers).await.is_none(),
+            "a tenant-scoped 'admin' policy must not confer platform administration"
+        );
+    }
+
+    /// The namespaced policy does confer it.
+    #[tokio::test]
+    async fn the_platform_admin_policy_is_accepted() {
+        let tm = TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!");
+        let auth = AdminAuth::new(tm.clone(), None, DEFAULT_ADMIN_POLICY);
+
+        let (token, _) = tm
+            .issue_token(
+                "ops-1",
+                "some-tenant",
+                vec![DEFAULT_ADMIN_POLICY.to_string()],
+                3600,
+            )
+            .expect("issue");
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().unwrap(),
+        );
+
+        assert!(auth.authenticate(&headers).await.is_some());
     }
 }

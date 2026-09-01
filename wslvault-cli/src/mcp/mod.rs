@@ -44,6 +44,9 @@ pub struct CallToolResponse {
 #[derive(Debug, Deserialize)]
 pub struct ToolContent {
     #[serde(rename = "type")]
+    /// Part of the MCP wire contract: deserialised from the server's reply
+    /// and re-serialised, but never read by the CLI itself.
+    #[allow(dead_code)]
     pub content_type: String,
     pub text: String,
 }

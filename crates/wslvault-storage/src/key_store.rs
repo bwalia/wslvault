@@ -141,10 +141,25 @@ pub async fn insert_key_descriptor(
     wrapped_key: &str,
     parent_key_id: Option<&Uuid>,
 ) -> Result<(), VaultError> {
+    insert_named_key_descriptor(pool, desc, wrapped_key, parent_key_id, None).await
+}
+
+/// Insert a descriptor for a key addressed by NAME rather than by id.
+///
+/// Transit keys are looked up as `/v1/transit/keys/:name`, so the name has to
+/// be persisted or the key cannot be found again after a restart. DEKs and
+/// KEKs pass `None` and keep being addressed by id.
+pub async fn insert_named_key_descriptor(
+    pool: &DbPool,
+    desc: &KeyDescriptor,
+    wrapped_key: &str,
+    parent_key_id: Option<&Uuid>,
+    key_name: Option<&str>,
+) -> Result<(), VaultError> {
     sqlx::query(
         "INSERT INTO system.key_descriptors
-         (id, version, algorithm, purpose, state, tenant_id, wrapped_key, parent_key_id, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         (id, version, algorithm, purpose, state, tenant_id, wrapped_key, parent_key_id, expires_at, key_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(desc.id.0)
     .bind(desc.version as i32)
@@ -159,6 +174,7 @@ pub async fn insert_key_descriptor(
     .bind(wrapped_key)
     .bind(parent_key_id)
     .bind(desc.expires_at)
+    .bind(key_name)
     .execute(pool.inner())
     .await
     .map_err(|e| VaultError::Database {
@@ -182,6 +198,78 @@ pub struct PersistedKeyEntry {
     pub version: u32,
     /// The wrapped (encrypted) key material stored as a base64 envelope.
     pub wrapped_key: String,
+    /// Caller-facing name, for keys addressed by name (transit). `None` for
+    /// DEKs and KEKs.
+    pub key_name: Option<String>,
+}
+
+/// Fetch one key's wrapped material by id.
+///
+/// Supports lazy loading: the crypto-service warm-loads a bounded set at boot
+/// and reaches for anything else on demand, rather than pulling every key ever
+/// created into memory before it can serve a request.
+pub async fn get_key_with_wrapped_key(
+    pool: &DbPool,
+    key_id: &Uuid,
+) -> Result<Option<PersistedKeyEntry>, VaultError> {
+    let row = sqlx::query(
+        "SELECT id, tenant_id, version, wrapped_key, key_name
+         FROM system.key_descriptors
+         WHERE id = $1 AND state IN ('active', 'rotating_out')
+         ORDER BY version DESC
+         LIMIT 1",
+    )
+    .bind(key_id)
+    .fetch_optional(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(row.map(|row| PersistedKeyEntry {
+        key_name: row.get::<Option<String>, _>("key_name"),
+        key_id: row.get::<Uuid, _>("id").to_string(),
+        tenant_id: row
+            .get::<Option<Uuid>, _>("tenant_id")
+            .map(|u| u.to_string()),
+        version: row.get::<i32, _>("version") as u32,
+        wrapped_key: row.get("wrapped_key"),
+    }))
+}
+
+/// Every stored version of one key id, oldest first.
+///
+/// The decrypt path needs the whole chain: a ciphertext written before a
+/// rotation is still valid and still has to be readable.
+pub async fn get_key_versions_with_wrapped_key(
+    pool: &DbPool,
+    key_id: &Uuid,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    let rows = sqlx::query(
+        "SELECT id, tenant_id, version, wrapped_key, key_name
+         FROM system.key_descriptors
+         WHERE id = $1 AND state IN ('active', 'rotating_out')
+         ORDER BY version ASC",
+    )
+    .bind(key_id)
+    .fetch_all(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| PersistedKeyEntry {
+            key_name: row.get::<Option<String>, _>("key_name"),
+            key_id: row.get::<Uuid, _>("id").to_string(),
+            tenant_id: row
+                .get::<Option<Uuid>, _>("tenant_id")
+                .map(|u| u.to_string()),
+            version: row.get::<i32, _>("version") as u32,
+            wrapped_key: row.get("wrapped_key"),
+        })
+        .collect())
 }
 
 /// Load all active keys of the given purpose from the database, returning
@@ -193,13 +281,51 @@ pub async fn list_active_keys_with_wrapped_key(
     pool: &DbPool,
     purpose: &KeyPurpose,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    list_loadable_keys_with_wrapped_key(pool, purpose).await
+}
+
+/// Every key version the service must be able to *decrypt* with, not merely
+/// the current one.
+///
+/// `rotating_out` is included deliberately. Loading only `active` rows was one
+/// half of the reason a DEK rotation destroyed data: `rotate_dek` overwrote the
+/// in-memory key and the superseded version — still present in the database,
+/// still needed by every ciphertext written before the rotation — was never
+/// read back. Ordering is version ASC so callers can build a newest-last chain.
+///
+/// `retired` and `destroyed` are excluded: those states are the deliberate
+/// end of a key's life, and an operator who set them meant it.
+pub async fn list_loadable_keys_with_wrapped_key(
+    pool: &DbPool,
+    purpose: &KeyPurpose,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
+    list_recent_loadable_keys(pool, purpose, i64::MAX).await
+}
+
+/// The most recently created `limit` keys of a purpose, oldest-version-first
+/// within each key.
+///
+/// Warm-load used to be unbounded: every crypto-service pod read EVERY key ever
+/// created and AES-decrypted each one before it could answer a health check, so
+/// startup time and resident memory grew with total write history. With lazy
+/// hydration available for anything older, boot only needs what is actually hot.
+pub async fn list_recent_loadable_keys(
+    pool: &DbPool,
+    purpose: &KeyPurpose,
+    limit: i64,
+) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key
-         FROM system.key_descriptors
-         WHERE purpose = $1 AND state = 'active'
+        "SELECT id, tenant_id, version, wrapped_key, key_name FROM (
+             SELECT id, tenant_id, version, wrapped_key, key_name, created_at
+             FROM system.key_descriptors
+             WHERE purpose = $1 AND state IN ('active', 'rotating_out')
+             ORDER BY created_at DESC
+             LIMIT $2
+         ) recent
          ORDER BY version ASC",
     )
     .bind(purpose_str(purpose))
+    .bind(limit)
     .fetch_all(pool.inner())
     .await
     .map_err(|e| VaultError::Database {
@@ -209,6 +335,7 @@ pub async fn list_active_keys_with_wrapped_key(
     let entries = rows
         .into_iter()
         .map(|row| PersistedKeyEntry {
+            key_name: row.get::<Option<String>, _>("key_name"),
             key_id: row.get::<Uuid, _>("id").to_string(),
             tenant_id: row
                 .get::<Option<Uuid>, _>("tenant_id")

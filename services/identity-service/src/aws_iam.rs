@@ -74,6 +74,7 @@ pub struct AwsIamValidationResult {
     /// Full IAM ARN (e.g. `arn:aws:iam::123456789012:role/my-role`).
     pub arn: String,
     /// STS UserId field (role session name for assumed roles).
+    #[allow(dead_code)]
     pub user_id: String,
     /// Resolved wslvault tenant_id.
     pub tenant_id: String,
@@ -83,6 +84,7 @@ pub struct AwsIamValidationResult {
     pub display_name: String,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// Errors from AWS IAM authentication.
 #[derive(Debug, thiserror::Error)]
 pub enum AwsIamError {
@@ -99,6 +101,7 @@ pub enum AwsIamError {
     UnboundRole { arn: String },
 
     #[error("cannot resolve tenant for AWS account '{account_id}'")]
+    #[allow(dead_code)]
     UnmappedAccount { account_id: String },
 
     #[error("missing required header: {0}")]

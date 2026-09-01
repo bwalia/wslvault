@@ -1,24 +1,55 @@
 'use client'
 import { useState } from 'react'
-import { Lock, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { Lock, Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
 
 export default function LoginPage() {
-  const { login } = useAuth()
+  const { login, verifyMfa } = useAuth()
   const [apiKey, setApiKey] = useState('')
   const [show, setShow] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  /** Set once the key is accepted and an authenticator code is outstanding. */
+  const [challenge, setChallenge] = useState<string | null>(null)
+  const [code, setCode] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     setLoading(true)
     try {
-      await login(apiKey)
+      const pending = await login(apiKey)
+      if (pending) {
+        // The key was right; the login just is not finished. Move to the code
+        // step rather than reporting anything as an error.
+        setChallenge(pending.challenge)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed. Check the key and try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!challenge) return
+    setError('')
+    setLoading(true)
+    try {
+      await verifyMfa(challenge, code)
+    } catch (err) {
+      // A challenge is single-use, so a wrong code invalidates it. Send the
+      // user back to the key rather than letting them retype into a challenge
+      // the server has already discarded.
+      setChallenge(null)
+      setCode('')
+      setError(
+        err instanceof Error
+          ? `${err.message} Enter your API key again to retry.`
+          : 'That code was not accepted. Enter your API key again to retry.',
+      )
     } finally {
       setLoading(false)
     }
@@ -70,9 +101,13 @@ export default function LoginPage() {
             </span>
           </div>
 
-          <h2 className="text-2xl font-semibold tracking-tight text-ink">Sign in</h2>
+          <h2 className="text-2xl font-semibold tracking-tight text-ink">
+            {challenge ? 'Two-factor authentication' : 'Sign in'}
+          </h2>
           <p className="text-sm text-ink-muted mt-1 mb-6">
-            Use an API key issued by your vault operator.
+            {challenge
+              ? 'Enter the 6-digit code from your authenticator app.'
+              : 'Use an API key issued by your vault operator.'}
           </p>
 
           {error && (
@@ -85,6 +120,55 @@ export default function LoginPage() {
             </div>
           )}
 
+          {challenge ? (
+            <form onSubmit={handleVerify} className="space-y-4">
+              <div>
+                <label htmlFor="mfa-code" className="block text-sm font-medium text-ink mb-1.5">
+                  Authenticator code
+                </label>
+                <div className="relative">
+                  <ShieldCheck
+                    className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
+                    aria-hidden="true"
+                  />
+                  <input
+                    id="mfa-code"
+                    // `text` with a numeric inputMode: `number` would render
+                    // spinners and strip a leading zero, and codes can start with one.
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                    value={code}
+                    onChange={e => setCode(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
+                    placeholder="123456"
+                    // eslint-disable-next-line jsx-a11y/no-autofocus -- the only
+                    // field on this step; not autofocusing costs every user a click.
+                    autoFocus
+                    spellCheck={false}
+                    className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-line-strong bg-surface text-ink font-mono text-base tracking-[0.3em] placeholder:tracking-normal placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                    required
+                  />
+                </div>
+                <p className="mt-1.5 text-xs text-ink-faint">
+                  Lost your device? Enter one of your recovery codes instead.
+                </p>
+              </div>
+              <Button type="submit" className="w-full" size="lg" loading={loading}>
+                Verify
+              </Button>
+              <button
+                type="button"
+                onClick={() => {
+                  setChallenge(null)
+                  setCode('')
+                  setError('')
+                }}
+                className="w-full text-sm text-ink-muted hover:text-ink focus-ring rounded py-1"
+              >
+                Back
+              </button>
+            </form>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label htmlFor="api-key" className="block text-sm font-medium text-ink mb-1.5">
@@ -119,6 +203,7 @@ export default function LoginPage() {
               Sign in
             </Button>
           </form>
+          )}
         </div>
       </div>
     </div>

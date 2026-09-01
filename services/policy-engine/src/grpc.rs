@@ -167,8 +167,15 @@ impl PolicyService for PolicyServiceImpl {
         }
 
         let compiled_guard = self.compiled.read().await;
-        let decision =
-            evaluator::evaluate(&compiled_guard, &req.policies, &req.action, &req.resource);
+        // req.tenant_id was previously validated as non-empty and then never
+        // used, which is what let policy names collide across tenants.
+        let decision = evaluator::evaluate(
+            &compiled_guard,
+            &req.tenant_id,
+            &req.policies,
+            &req.action,
+            &req.resource,
+        );
 
         debug!(
             tenant_id = %req.tenant_id,
@@ -226,7 +233,11 @@ impl PolicyService for PolicyServiceImpl {
         // compilation cycle (which may be skipped when not the leader).
         {
             let mut guard = self.compiled.write().await;
-            guard.upsert(domain_doc.name.clone(), domain_doc.rules);
+            guard.upsert(
+                req.tenant_id.clone(),
+                domain_doc.name.clone(),
+                domain_doc.rules,
+            );
         }
 
         Ok(Response::new(PutPolicyResponse { policy_id }))
@@ -275,6 +286,14 @@ impl PolicyService for PolicyServiceImpl {
         }
 
         self.store.delete_policy(&req.tenant_id, &req.name).await;
+
+        // Evict eagerly, mirroring the eager upsert above. Without this a
+        // deleted policy keeps granting access until the next background
+        // compilation tick — and on a follower that tick may not come.
+        {
+            let mut guard = self.compiled.write().await;
+            guard.remove(&req.tenant_id, &req.name);
+        }
 
         Ok(Response::new(DeletePolicyResponse {}))
     }

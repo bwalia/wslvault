@@ -45,19 +45,9 @@
 //!
 //! # Authentication
 //!
-//! [`resolve_identity`] accepts, in order:
-//!
-//! 1. `X-Tenant-Id` (+ `X-Principal-Id`, `X-Policies`) — the existing internal
-//!    contract used by the native handlers.
-//! 2. `X-Vault-Tenant-ID` (+ `X-Vault-Principal-ID`, `X-Vault-Policies`) — what
-//!    `gateway/lua/auth/token_auth.lua` actually injects on a token-cache hit.
-//! 3. `X-Vault-Token` (or `Authorization: Bearer …`) — a wslvault JWT, verified
-//!    here with HS256 against the shared `VAULT_JWT_SECRET`. This is what Vault
-//!    clients such as ESO send.
-//!
-//! Tier 3 **fails closed**: if `VAULT_JWT_SECRET` is not configured the token is
-//! rejected rather than trusted, because accepting unverified claims would let
-//! any caller that can reach this service assert an arbitrary tenant.
+//! Delegated wholesale to [`wslvault_core::auth::resolve_identity`], which is the
+//! single authentication path shared with the native `/v1/secret/*` handlers.
+//! See that module for the precedence order and the fail-closed guarantees.
 
 use std::collections::HashMap;
 
@@ -69,7 +59,6 @@ use axum::{
     Json, Router,
 };
 use base64::Engine as _;
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tracing::{error, info, instrument};
@@ -77,36 +66,7 @@ use tracing::{error, info, instrument};
 use crate::grpc::crypto_proto;
 use crate::http::AppState;
 use crate::path::normalize_and_validate;
-
-/// Environment variable holding the shared HS256 signing secret. Must match the
-/// value identity-service issues tokens with, or token auth cannot be verified.
-const JWT_SECRET_ENV: &str = "VAULT_JWT_SECRET";
-
-/// Opt-in for the pre-authenticated gateway header contract (tiers 1 and 2 in
-/// [`resolve_identity`]).
-///
-/// Those headers assert a tenant and its policies with no proof whatsoever.
-/// They are only safe when EVERY path to this service passes through a trusted
-/// proxy that authenticates the caller and overwrites them. That was true when
-/// the OpenResty gateway fronted the service; it is not true with
-/// `gateway.enabled=false`, where Traefik forwards client headers untouched and
-/// this port is reachable from the public edge.
-///
-/// Defaults to DISABLED. Set to "true"/"1"/"yes" only when a header-scrubbing
-/// proxy is genuinely in front of every listener.
-const TRUST_GATEWAY_HEADERS_ENV: &str = "VAULT_TRUST_GATEWAY_HEADERS";
-
-/// Whether the unauthenticated tenant headers may be honoured.
-fn gateway_headers_trusted() -> bool {
-    matches!(
-        std::env::var(TRUST_GATEWAY_HEADERS_ENV)
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "true" | "1" | "yes"
-    )
-}
+use wslvault_core::auth::Identity;
 
 // ─── Vault-shaped errors ─────────────────────────────────────────────────────
 
@@ -129,144 +89,18 @@ fn vault_error(status: StatusCode, message: impl Into<String>) -> Response {
 
 // ─── Identity ────────────────────────────────────────────────────────────────
 
-/// The caller, resolved from headers or a verified token.
-#[derive(Debug, Clone)]
-pub struct Identity {
-    pub tenant_id: String,
-    pub principal_id: String,
-    pub policies: Vec<String>,
-    /// Unix expiry when the caller authenticated with a token. `None` for the
-    /// gateway header paths, which carry no token lifetime of their own.
-    pub expires_at: Option<i64>,
-}
-
-/// Claims issued by identity-service (`services/identity-service/src/token.rs`).
-/// Unknown fields (`iss`, `iat`, …) are ignored by serde.
-#[derive(Debug, Deserialize)]
-struct TokenClaims {
-    sub: String,
-    tenant_id: String,
-    #[serde(default)]
-    policies: Vec<String>,
-    /// Unix expiry. Surfaced by lookup-self as `expire_time`/`ttl`, which
-    /// Vault clients require — ESO rejects a store with "no expiration time
-    /// found in response" when it is missing.
-    exp: i64,
-}
-
-fn header_value<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())
-}
-
-fn split_csv(raw: Option<&str>) -> Vec<String> {
-    raw.map(|s| {
-        s.split(',')
-            .map(|p| p.trim().to_string())
-            .filter(|p| !p.is_empty())
-            .collect()
-    })
-    .unwrap_or_default()
-}
-
-/// Extract a token from `X-Vault-Token` (what Vault clients send) or an
-/// `Authorization: Bearer` header.
-fn extract_token(headers: &HeaderMap) -> Option<String> {
-    if let Some(t) = header_value(headers, "x-vault-token") {
-        return Some(t.to_string());
-    }
-    header_value(headers, "authorization")
-        .and_then(|a| {
-            a.strip_prefix("Bearer ")
-                .or_else(|| a.strip_prefix("bearer "))
-        })
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-}
-
-/// Verify a wslvault JWT (HS256, shared `VAULT_JWT_SECRET`) and return its claims.
-fn verify_token(token: &str) -> Result<TokenClaims, String> {
-    let secret = std::env::var(JWT_SECRET_ENV).map_err(|_| {
-        format!("{JWT_SECRET_ENV} is not configured; token authentication is unavailable")
-    })?;
-    if secret.is_empty() {
-        return Err(format!(
-            "{JWT_SECRET_ENV} is empty; token authentication is unavailable"
-        ));
-    }
-    // Defaults already require and validate `exp`; issuer/audience are not
-    // enforced so tokens from any configured identity provider are accepted.
-    let validation = Validation::new(Algorithm::HS256);
-    decode::<TokenClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map(|data| data.claims)
-    .map_err(|e| format!("invalid token: {e}"))
-}
-
-/// Resolve the calling identity. See the module docs for the precedence order.
+/// Resolve the caller, rendering failures in Vault's `{"errors":[…]}` shape.
+///
+/// The decision itself lives in [`wslvault_core::auth::resolve_identity`]; this is
+/// only the error-shape adapter for this mount.
 ///
 /// The `Err` variant is an already-rendered `Response` so callers can return it
-/// verbatim; `axum::Response` is inherently large, hence the allow (the same
-/// convention the gRPC handlers in this workspace use).
+/// verbatim; `axum::Response` is inherently large, hence the allow.
 #[allow(clippy::result_large_err)]
-pub fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
-    // Tiers 1 and 2 are UNAUTHENTICATED: they take the caller's word for which
-    // tenant they are. Only honour them when an operator has explicitly asserted
-    // that a trusted, header-scrubbing proxy fronts every listener.
-    let trust_headers = gateway_headers_trusted();
-
-    // 1. Native internal contract.
-    if trust_headers {
-        if let Some(tenant) = header_value(headers, "x-tenant-id") {
-            return Ok(Identity {
-                tenant_id: tenant.to_string(),
-                principal_id: header_value(headers, "x-principal-id")
-                    .unwrap_or("anonymous")
-                    .to_string(),
-                policies: split_csv(header_value(headers, "x-policies")),
-                expires_at: None,
-            });
-        }
-    }
-
-    // 2. Headers the gateway injects on a token-cache hit. The gateway writes
-    //    the `X-Vault-*` spelling while the native handlers read `x-tenant-id`,
-    //    so honouring both keeps gateway-authenticated requests working.
-    if trust_headers {
-        if let Some(tenant) = header_value(headers, "x-vault-tenant-id") {
-            return Ok(Identity {
-                tenant_id: tenant.to_string(),
-                principal_id: header_value(headers, "x-vault-principal-id")
-                    .unwrap_or("anonymous")
-                    .to_string(),
-                policies: split_csv(header_value(headers, "x-vault-policies")),
-                expires_at: None,
-            });
-        }
-    }
-
-    // 3. A raw token — the path Vault clients (and ESO) take.
-    if let Some(token) = extract_token(headers) {
-        return match verify_token(&token) {
-            Ok(claims) => Ok(Identity {
-                tenant_id: claims.tenant_id,
-                principal_id: claims.sub,
-                policies: claims.policies,
-                expires_at: Some(claims.exp),
-            }),
-            Err(e) => Err(vault_error(StatusCode::FORBIDDEN, e)),
-        };
-    }
-
-    Err(vault_error(
-        StatusCode::FORBIDDEN,
-        "missing authentication: supply X-Vault-Token, or X-Tenant-Id when behind the gateway",
-    ))
+pub async fn resolve_identity(headers: &HeaderMap) -> Result<Identity, Response> {
+    wslvault_core::auth::resolve_identity(headers)
+        .await
+        .map_err(|e| vault_error(StatusCode::FORBIDDEN, e.to_string()))
 }
 
 // ─── KV v2 wire types ────────────────────────────────────────────────────────
@@ -348,17 +182,8 @@ async fn decrypt(
     ciphertext: &str,
 ) -> Result<Vec<u8>, Response> {
     let aad = format!("{}:{}", tenant_id, path).into_bytes();
-    let mut client = crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    .map_err(|e| {
-        error!(error = %e, "crypto-service connect failed");
-        vault_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("crypto-service unavailable: {e}"),
-        )
-    })?;
+    let mut client =
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone());
 
     // The crypto-service expects "<dek_id>:<ciphertext_b64>".
     let combined = format!("{}:{}", dek_id, ciphertext);
@@ -386,17 +211,8 @@ async fn encrypt(
     plaintext: Vec<u8>,
 ) -> Result<(String, String), Response> {
     let aad = format!("{}:{}", tenant_id, path).into_bytes();
-    let mut client = crypto_proto::crypto_service_client::CryptoServiceClient::connect(
-        state.crypto_endpoint.clone(),
-    )
-    .await
-    .map_err(|e| {
-        error!(error = %e, "crypto-service connect failed");
-        vault_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("crypto-service unavailable: {e}"),
-        )
-    })?;
+    let mut client =
+        crypto_proto::crypto_service_client::CryptoServiceClient::new(state.crypto_channel.clone());
 
     let resp = client
         .encrypt(crypto_proto::EncryptRequest {
@@ -416,6 +232,48 @@ async fn encrypt(
     Ok((resp.ciphertext_b64, resp.dek_id))
 }
 
+// ─── Audit ───────────────────────────────────────────────────────────────────
+
+/// Emit an audit event for a KV v2 operation.
+///
+/// This mount previously emitted NONE. `http.rs` referenced `audit_client` 36
+/// times; `kv2.rs` referenced it zero times — so every read, write, delete and
+/// destroy through `/v1/kv/data/*` left no record at all. That is the mount the
+/// External Secrets Operator, the `vault` CLI and the Terraform provider all
+/// use, i.e. very plausibly the highest-volume path in a real deployment.
+///
+/// The action strings deliberately match the native handlers (`secret.read`,
+/// `secret.write`) so a query for "who read this path" returns both mounts.
+#[allow(clippy::too_many_arguments)]
+async fn audit(
+    state: &AppState,
+    identity: &Identity,
+    action: &str,
+    path: &str,
+    outcome: &str,
+    detail: &str,
+    headers: &HeaderMap,
+) {
+    let client_ip = headers
+        .get("x-client-ip")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    state
+        .audit_client
+        .emit(
+            &identity.tenant_id,
+            &identity.principal_id,
+            action,
+            path,
+            outcome,
+            detail,
+            r#"{"mount":"kv2"}"#,
+            client_ip,
+        )
+        .await;
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────────
 
 /// `GET /v1/kv/data/*path` — KV v2 read.
@@ -426,7 +284,7 @@ async fn read(
     Path(path): Path<String>,
     Query(query): Query<ReadQuery>,
 ) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -453,6 +311,16 @@ async fn read(
         )
         .await
     {
+        audit(
+            &state,
+            &identity,
+            "secret.read",
+            &normalized,
+            "failure",
+            &e.to_string(),
+            &headers,
+        )
+        .await;
         return vault_error(StatusCode::FORBIDDEN, e.to_string());
     }
 
@@ -464,6 +332,16 @@ async fn read(
         Ok(v) => v,
         // Vault answers 404 for a missing secret; ESO relies on that.
         Err(e) => {
+            audit(
+                &state,
+                &identity,
+                "secret.read",
+                &normalized,
+                "failure",
+                &e.to_string(),
+                &headers,
+            )
+            .await;
             let status =
                 StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             return vault_error(status, e.to_string());
@@ -482,6 +360,17 @@ async fn read(
         Ok(p) => p,
         Err(r) => return r,
     };
+
+    audit(
+        &state,
+        &identity,
+        "secret.read",
+        &normalized,
+        "success",
+        "",
+        &headers,
+    )
+    .await;
 
     let custom_metadata = if entry.custom_metadata.is_empty() {
         None
@@ -515,7 +404,7 @@ async fn write(
     Path(path): Path<String>,
     Json(body): Json<Kv2WriteRequest>,
 ) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -544,6 +433,16 @@ async fn write(
         )
         .await
     {
+        audit(
+            &state,
+            &identity,
+            "secret.write",
+            &normalized,
+            "failure",
+            &e.to_string(),
+            &headers,
+        )
+        .await;
         return vault_error(StatusCode::FORBIDDEN, e.to_string());
     }
 
@@ -579,11 +478,32 @@ async fn write(
     {
         Ok(v) => v,
         Err(e) => {
+            audit(
+                &state,
+                &identity,
+                "secret.write",
+                &normalized,
+                "failure",
+                &e.to_string(),
+                &headers,
+            )
+            .await;
             let status =
                 StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             return vault_error(status, e.to_string());
         }
     };
+
+    audit(
+        &state,
+        &identity,
+        "secret.write",
+        &normalized,
+        "success",
+        "",
+        &headers,
+    )
+    .await;
 
     (
         StatusCode::OK,
@@ -603,7 +523,7 @@ async fn write(
 /// `GET /v1/auth/token/lookup-self` — Vault clients probe this to validate a
 /// token before use. Returns the tenant and policies the token carries.
 async fn lookup_self(headers: HeaderMap) -> Response {
-    let identity = match resolve_identity(&headers) {
+    let identity = match resolve_identity(&headers).await {
         Ok(i) => i,
         Err(r) => return r,
     };
@@ -688,103 +608,9 @@ pub fn routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests {
-
-    /// The header tiers assert a tenant with no proof. Reachable from the public
-    /// edge with `gateway.enabled=false`, they allowed ANY internet caller to
-    /// read ANY tenant's secrets by sending `X-Tenant-Id` — verified live against
-    /// production before the fix (HTTP 200 with plaintext, no credential).
-    ///
-    /// These tests pin the default closed. Serialised, because they mutate a
-    /// process-global env var.
-    /// Serialises every test that toggles VAULT_TRUST_GATEWAY_HEADERS, since it
-    /// is process-global and the harness runs tests in parallel.
-    pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Enable the gateway header contract for the duration of a test.
-    pub(super) struct TrustHeaders(std::sync::MutexGuard<'static, ()>);
-
-    impl TrustHeaders {
-        pub(super) fn on() -> Self {
-            let g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "true");
-            Self(g)
-        }
-    }
-
-    impl Drop for TrustHeaders {
-        fn drop(&mut self) {
-            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
-        }
-    }
-
-    mod gateway_header_trust {
-        use super::*;
-
-        fn tenant_headers() -> HeaderMap {
-            let mut h = HeaderMap::new();
-            h.insert("x-tenant-id", "victim-tenant".parse().unwrap());
-            h.insert("x-policies", "root,admin".parse().unwrap());
-            h
-        }
-
-        #[test]
-        fn headers_are_rejected_by_default() {
-            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
-            assert!(
-                resolve_identity(&tenant_headers()).is_err(),
-                "X-Tenant-Id must NOT authenticate when the flag is unset"
-            );
-        }
-
-        #[test]
-        fn vault_spelling_is_rejected_by_default() {
-            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
-            let mut h = HeaderMap::new();
-            h.insert("x-vault-tenant-id", "victim-tenant".parse().unwrap());
-            h.insert("x-vault-policies", "root".parse().unwrap());
-            assert!(
-                resolve_identity(&h).is_err(),
-                "X-Vault-Tenant-ID must NOT authenticate when the flag is unset"
-            );
-        }
-
-        #[test]
-        fn explicitly_disabled_still_rejects() {
-            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "false");
-            let got = resolve_identity(&tenant_headers());
-            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
-            assert!(got.is_err());
-        }
-
-        #[test]
-        fn honoured_only_when_explicitly_enabled() {
-            let _g = super::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            std::env::set_var(TRUST_GATEWAY_HEADERS_ENV, "true");
-            let got = resolve_identity(&tenant_headers());
-            std::env::remove_var(TRUST_GATEWAY_HEADERS_ENV);
-            let id = got.expect("flag on: the gateway contract should still work");
-            assert_eq!(id.tenant_id, "victim-tenant");
-            assert_eq!(id.expires_at, None, "header identities carry no expiry");
-        }
-    }
+    //! Data-model bridge only. The authentication tests live beside the code
+    //! they exercise, in `wslvault_core::auth`.
     use super::*;
-    use axum::http::{HeaderName, HeaderValue};
-
-    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        for (k, v) in pairs {
-            // Build an owned HeaderName: the &str keys here are not 'static,
-            // which `HeaderMap::insert` would otherwise require.
-            h.insert(
-                HeaderName::from_bytes(k.as_bytes()).unwrap(),
-                HeaderValue::from_str(v).unwrap(),
-            );
-        }
-        h
-    }
 
     #[test]
     fn json_object_blob_round_trips_as_a_map() {
@@ -811,58 +637,5 @@ mod tests {
         // Only a JSON *object* is a KV v2 map; an array is an opaque value.
         let map = plaintext_to_map(b"[1,2,3]");
         assert_eq!(map.get("value").unwrap(), "[1,2,3]");
-    }
-
-    #[test]
-    fn internal_headers_take_precedence() {
-        // The header contract is opt-in now; this test exercises it deliberately.
-        let _trust = TrustHeaders::on();
-        let id = resolve_identity(&headers(&[
-            ("x-tenant-id", "acme"),
-            ("x-principal-id", "svc"),
-            ("x-policies", "read-db, write-db"),
-        ]))
-        .expect("should resolve");
-        assert_eq!(id.tenant_id, "acme");
-        assert_eq!(id.principal_id, "svc");
-        assert_eq!(id.policies, vec!["read-db", "write-db"]);
-    }
-
-    #[test]
-    fn gateway_injected_headers_are_honoured() {
-        // The gateway writes the X-Vault-* spelling; it must work too.
-        let _trust = TrustHeaders::on();
-        let id = resolve_identity(&headers(&[
-            ("x-vault-tenant-id", "acme"),
-            ("x-vault-principal-id", "svc"),
-        ]))
-        .expect("should resolve");
-        assert_eq!(id.tenant_id, "acme");
-        assert_eq!(id.principal_id, "svc");
-    }
-
-    #[test]
-    fn missing_auth_is_rejected() {
-        assert!(resolve_identity(&HeaderMap::new()).is_err());
-    }
-
-    #[test]
-    fn token_without_configured_secret_is_rejected_not_trusted() {
-        // Fail closed: an unverifiable token must never be believed.
-        std::env::remove_var(JWT_SECRET_ENV);
-        assert!(verify_token("any.token.here").is_err());
-    }
-
-    #[test]
-    fn extracts_token_from_either_header() {
-        assert_eq!(
-            extract_token(&headers(&[("x-vault-token", "abc")])).as_deref(),
-            Some("abc")
-        );
-        assert_eq!(
-            extract_token(&headers(&[("authorization", "Bearer xyz")])).as_deref(),
-            Some("xyz")
-        );
-        assert_eq!(extract_token(&HeaderMap::new()), None);
     }
 }

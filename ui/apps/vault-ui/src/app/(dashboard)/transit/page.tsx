@@ -84,7 +84,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
 }
 
 export default function TransitPage() {
-  const { token, tenantId } = useAuth()
+  const { token } = useAuth()
   const fetcher = useFetcher()
 
   const { data: keysData, isLoading } = useSWR<TransitKeyResponse>(TRANSIT_KEY, fetcher)
@@ -108,7 +108,7 @@ export default function TransitPage() {
     setCreating(true)
     setCreateError('')
     try {
-      await mutate(TRANSIT_KEY, 'POST', values, token, tenantId)
+      await mutate(TRANSIT_KEY, 'POST', values, token)
       await swrMutate(TRANSIT_KEY)
       setCreateOpen(false)
       reset()
@@ -128,7 +128,7 @@ export default function TransitPage() {
       const cfg = opConfig[activeOp]
       const body: Record<string, string> = { [cfg.bodyField]: opInput }
       if (activeOp === 'verify' && sigInput) body.signature = sigInput
-      const result = await mutate(cfg.endpoint(selectedKey.name), 'POST', body, token, tenantId) as TransitResult
+      const result = await mutate(cfg.endpoint(selectedKey.name), 'POST', body, token) as TransitResult
       setOpResult(result)
     } catch (err) {
       setOpError(err instanceof Error ? err.message : 'Operation failed')

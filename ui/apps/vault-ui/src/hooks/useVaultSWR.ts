@@ -8,17 +8,17 @@ import { createFetcher, mutate as rawMutate, ApiError } from '@/lib/fetcher'
 /**
  * Credential-bound data hooks.
  *
- * Every page previously called `createFetcher(token, tenantId)` inline during
- * render. That allocates a new function on every render, and SWR keys part of
- * its dedup/revalidation behaviour off fetcher identity — so the "cache" was
- * doing far less than it appeared to. Memoizing on `[token, tenantId]` gives
- * SWR a stable fetcher that only changes when the credentials actually do.
+ * Every page previously called `createFetcher(...)` inline during render. That
+ * allocates a new function on every render, and SWR keys part of its
+ * dedup/revalidation behaviour off fetcher identity — so the "cache" was doing
+ * far less than it appeared to. Memoizing on `[token]` gives SWR a stable
+ * fetcher that only changes when the credential actually does.
  */
 
 /** A fetcher bound to the current session, stable across renders. */
 export function useFetcher() {
-  const { token, tenantId } = useAuth()
-  return useMemo(() => createFetcher(token, tenantId), [token, tenantId])
+  const { token } = useAuth()
+  return useMemo(() => createFetcher(token), [token])
 }
 
 /**
@@ -42,10 +42,10 @@ export function useVaultSWR<T = unknown>(
  * work done in the body rather than the status code.
  */
 export function useVaultMutate() {
-  const { token, tenantId } = useAuth()
+  const { token } = useAuth()
   return useCallback(
     <T = unknown>(url: string, method: 'POST' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown) =>
-      rawMutate<T>(url, method, body ?? null, token, tenantId),
-    [token, tenantId],
+      rawMutate<T>(url, method, body ?? null, token),
+    [token],
   )
 }

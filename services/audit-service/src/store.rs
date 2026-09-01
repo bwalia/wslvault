@@ -34,9 +34,20 @@ pub struct AuditRecord {
     pub details: JsonValue,
     /// IP address of the originating client, if known.
     pub client_ip: String,
-    /// HMAC-SHA256 signature covering all other fields.
+    /// HMAC-SHA256 signature covering all other fields and the chain position.
     pub signature: String,
     pub timestamp: DateTime<Utc>,
+    /// Per-tenant monotonic position in the hash chain. Assigned on append.
+    pub seq: i64,
+    /// Signature of the preceding record in this tenant's chain; empty for the
+    /// genesis record.
+    pub prev_hash: String,
+    /// Whether this record's signature verified when it was read back.
+    ///
+    /// `None` on records that have not been through a verifying read — the
+    /// append path, and the in-memory backend. Never serialised into the
+    /// signature; it is a property of the read, not of the record.
+    pub verified: Option<bool>,
 }
 
 /// Abstraction over audit storage so that in-memory and PostgreSQL backends
@@ -44,13 +55,23 @@ pub struct AuditRecord {
 #[async_trait]
 pub trait AuditStoreBackend: Send + Sync {
     /// Append a single audit record to the store.
-    async fn insert_record(&self, record: AuditRecord);
+    ///
+    /// This returned `()` — the trait was infallible by design — so a failed
+    /// insert was logged and the audited operation succeeded anyway. Vault
+    /// guarantees the opposite: if the event cannot be recorded, the operation
+    /// does not happen. Returning `Result` puts that decision back with the
+    /// caller instead of hiding it here.
+    async fn insert_record(&self, record: AuditRecord) -> Result<(), String>;
 
     /// Query records with optional filters.
     ///
     /// Returns `(page, total_count)` where `total_count` is the number of
     /// matching records before applying `limit`/`offset`.  `limit == 0`
     /// means "return all".
+    ///
+    /// Fallible for the same reason: returning an empty page on a database
+    /// error told an operator investigating an incident that nothing had
+    /// happened.
     #[allow(clippy::too_many_arguments)]
     async fn query_events(
         &self,
@@ -61,7 +82,13 @@ pub trait AuditStoreBackend: Send + Sync {
         principal_filter: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> (Vec<AuditRecord>, usize);
+    ) -> Result<(Vec<AuditRecord>, usize), String>;
+
+    /// Structural breaks in a tenant's chain: sequence gaps, or a record whose
+    /// `prev_hash` does not match its predecessor. Empty means intact.
+    async fn chain_breaks(&self, _tenant_id: &str) -> Result<Vec<(i64, String)>, String> {
+        Ok(Vec::new())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +123,17 @@ impl Default for InMemoryAuditStore {
 
 #[async_trait]
 impl AuditStoreBackend for InMemoryAuditStore {
-    async fn insert_record(&self, record: AuditRecord) {
+    async fn insert_record(&self, mut record: AuditRecord) -> Result<(), String> {
         let mut guard = self.inner.write().await;
+        // Keep the in-memory backend chain-shaped so behaviour matches the
+        // Postgres one; the signature is still computed by the caller.
+        record.seq = guard.len() as i64 + 1;
+        record.prev_hash = guard
+            .last()
+            .map(|r| r.signature.clone())
+            .unwrap_or_default();
         guard.push(record);
+        Ok(())
     }
 
     async fn query_events(
@@ -110,7 +145,7 @@ impl AuditStoreBackend for InMemoryAuditStore {
         principal_filter: Option<&str>,
         limit: usize,
         offset: usize,
-    ) -> (Vec<AuditRecord>, usize) {
+    ) -> Result<(Vec<AuditRecord>, usize), String> {
         let guard = self.inner.read().await;
 
         let matching: Vec<&AuditRecord> = guard
@@ -139,6 +174,6 @@ impl AuditStoreBackend for InMemoryAuditStore {
             .cloned()
             .collect();
 
-        (page, total)
+        Ok((page, total))
     }
 }

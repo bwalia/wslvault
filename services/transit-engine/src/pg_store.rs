@@ -13,33 +13,44 @@
 //!   PG by calling `load_from_pg`.  On create/rotate the cache is updated
 //!   atomically after a successful PG write.
 //!
-//! # Key wrapping (TODO)
+//! # Key wrapping
 //!
-//! Currently the raw key material is held only in process memory and is NOT
-//! wrapped before being written to PG.  A future iteration should:
+//! Key material is wrapped under the root KEK (`VAULT_ROOT_KEY`, the same key
+//! crypto-service uses — deliberately not a fourth independent root secret)
+//! with AES-256-GCM before it reaches the database, and unwrapped on warm-load.
 //!
-//! 1. Load a root wrapping key from an environment-provided secret (e.g.
-//!    `TRANSIT_ROOT_WRAPPING_KEY`).
-//! 2. Wrap each `KeyVersion.material` under that root key using AES-256-GCM
-//!    before inserting the `wrapped_key` column in `system.key_descriptors`.
-//! 3. On cache load, unwrap each `wrapped_key` back to raw bytes.
+//! The AAD binds each blob to `tenant:name:version`, so a wrapped key cannot be
+//! transplanted onto a different key, a different version, or another tenant's
+//! row even by someone with write access to the table.
 //!
-//! Until that work is done, this backend provides metadata persistence only;
-//! key material still lives exclusively in memory.
+//! This used to write the literal string `"TODO:wrap_key_material"` into the
+//! `wrapped_key` column and keep the real material in process memory only.
+//! Every ciphertext a transit key had ever produced became undecryptable the
+//! first time its pod restarted, and with more than one replica encrypt and
+//! decrypt routed to different pods did not agree in the first place.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use chrono::Utc;
+use sqlx::Row;
 use tokio::sync::RwLock;
+use tracing::{info, warn};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
+use wslvault_core::crypto::envelope::{decrypt_with_dek, encrypt_with_dek};
 use wslvault_core::types::key::{
     KeyAlgorithm as CoreKeyAlgorithm, KeyDescriptor, KeyId, KeyPurpose, KeyState,
 };
 use wslvault_core::VaultError;
-use wslvault_storage::key_store::{get_active_key, insert_key_descriptor, update_key_state};
+use wslvault_storage::key_store::{
+    insert_named_key_descriptor, list_loadable_keys_with_wrapped_key, update_key_state,
+    PersistedKeyEntry,
+};
 use wslvault_storage::pool::DbPool;
 
 use crate::key_store::{
@@ -75,6 +86,105 @@ fn tenant_id_to_uuid(tenant_id: &str) -> Uuid {
     })
 }
 
+/// Environment variable holding the base64 32-byte root KEK.
+///
+/// Shared with crypto-service on purpose. Custody of key material is already
+/// split across `VAULT_ROOT_KEY`, `PKI_ROOT_KEY` and `VAULT_JWT_SECRET`; adding
+/// a fourth would make the eventual seal harder, not safer.
+const ROOT_KEY_ENV: &str = "VAULT_ROOT_KEY";
+
+/// Load the 32-byte root KEK used to wrap transit key material.
+fn load_root_key() -> Result<Zeroizing<[u8; 32]>, VaultError> {
+    let encoded = std::env::var(ROOT_KEY_ENV).map_err(|_| VaultError::Internal {
+        reason: format!(
+            "{ROOT_KEY_ENV} is required by the PostgreSQL transit backend: \
+             key material cannot be persisted without a key to wrap it under"
+        ),
+    })?;
+    let raw = BASE64
+        .decode(encoded.trim())
+        .map_err(|e| VaultError::Internal {
+            reason: format!("{ROOT_KEY_ENV} is not valid base64: {e}"),
+        })?;
+    if raw.len() != 32 {
+        return Err(VaultError::Internal {
+            reason: format!("{ROOT_KEY_ENV} must decode to 32 bytes, got {}", raw.len()),
+        });
+    }
+    let mut key = Zeroizing::new([0u8; 32]);
+    key.copy_from_slice(&raw);
+    Ok(key)
+}
+
+/// AAD binding a wrapped blob to exactly one key version of one tenant's key.
+fn wrap_aad(tenant_id: &str, key_name: &str, version: u32) -> Vec<u8> {
+    format!("transit:{tenant_id}:{key_name}:v{version}").into_bytes()
+}
+
+/// Wrap 32 bytes of key material for storage.
+fn wrap_material(
+    root: &[u8; 32],
+    tenant_id: &str,
+    key_name: &str,
+    version: u32,
+    material: &[u8; 32],
+) -> Result<String, VaultError> {
+    let aad = wrap_aad(tenant_id, key_name, version);
+    Ok(encrypt_with_dek(root, material, &aad)?.ciphertext_b64)
+}
+
+/// Reverse of [`wrap_material`].
+fn unwrap_material(
+    root: &[u8; 32],
+    tenant_id: &str,
+    key_name: &str,
+    version: u32,
+    wrapped: &str,
+) -> Result<[u8; 32], VaultError> {
+    let aad = wrap_aad(tenant_id, key_name, version);
+    let plaintext = decrypt_with_dek(root, wrapped, &aad)?;
+    if plaintext.len() != 32 {
+        return Err(VaultError::Internal {
+            reason: format!(
+                "unwrapped transit key is {} bytes, expected 32",
+                plaintext.len()
+            ),
+        });
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&plaintext);
+    Ok(out)
+}
+
+/// The id of the currently-active descriptor for one named transit key.
+///
+/// Scoped to (tenant, name) so rotation cannot retire a different key's row.
+async fn active_descriptor_id_for(
+    pool: &DbPool,
+    tenant_uuid: &Uuid,
+    key_name: &str,
+) -> Result<KeyId, VaultError> {
+    let row = sqlx::query(
+        "SELECT id FROM system.key_descriptors
+         WHERE tenant_id = $1 AND key_name = $2
+           AND purpose = 'transit' AND state = 'active'
+         ORDER BY version DESC
+         LIMIT 1",
+    )
+    .bind(tenant_uuid)
+    .bind(key_name)
+    .fetch_optional(pool.inner())
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: format!("failed to locate active transit descriptor: {e}"),
+    })?
+    .ok_or_else(|| VaultError::KeyNotFound {
+        key_id: format!("{tenant_uuid}/{key_name}"),
+    })?;
+
+    Ok(KeyId(row.get::<Uuid, _>("id")))
+}
+
 /// Hybrid PostgreSQL + in-memory-cache backend.
 ///
 /// Key metadata (name, version, algorithm, tenant) is persisted in
@@ -87,6 +197,8 @@ fn tenant_id_to_uuid(tenant_id: &str) -> Uuid {
 /// so the struct itself is `Send + Sync` and cheap to clone via `Arc`.
 pub struct PgTransitKeyBackend {
     pool: DbPool,
+    /// Root KEK that wraps every persisted key version.
+    root_key: Zeroizing<[u8; 32]>,
     /// In-process cache mapping `(tenant_id, key_name) → TransitKey`.
     ///
     /// The cache is the authoritative source for raw key material.  It is
@@ -108,10 +220,90 @@ impl PgTransitKeyBackend {
     /// Returns `VaultError::Database` if the PG connection cannot be
     /// established or the initial load query fails.
     pub async fn new(pool: DbPool) -> Result<Self, VaultError> {
+        let root_key = load_root_key()?;
         let cache = Arc::new(RwLock::new(HashMap::new()));
-        // TODO: warm-load wrapped key descriptors from PG and unwrap them
-        // into `cache` once root-key wrapping is implemented.
-        Ok(Self { pool, cache })
+        let backend = Self {
+            pool,
+            root_key,
+            cache,
+        };
+        backend.load_from_pg().await?;
+        Ok(backend)
+    }
+
+    /// Rehydrate every persisted transit key into the in-memory cache.
+    ///
+    /// Rows arrive version-ASC, so versions accumulate in order and
+    /// `current_version` ends up on the highest. `rotating_out` rows are
+    /// included: a rotated key still has to decrypt everything written under
+    /// its earlier versions.
+    ///
+    /// A row that fails to unwrap is skipped with a WARN rather than aborting
+    /// the load, so one damaged descriptor cannot stop the service from
+    /// starting — but it is loud, because that is a corruption or a wrong root
+    /// key and an operator needs to know.
+    async fn load_from_pg(&self) -> Result<(), VaultError> {
+        let rows: Vec<PersistedKeyEntry> =
+            list_loadable_keys_with_wrapped_key(&self.pool, &KeyPurpose::Transit).await?;
+
+        let mut cache = self.cache.write().await;
+        let mut loaded = 0usize;
+        let mut skipped = 0usize;
+
+        for row in rows {
+            let (Some(tenant_id), Some(key_name)) = (row.tenant_id.clone(), row.key_name.clone())
+            else {
+                // Pre-021 rows carry no name and cannot be addressed. They are
+                // the "TODO:wrap_key_material" generation and hold nothing.
+                skipped += 1;
+                continue;
+            };
+
+            let material = match unwrap_material(
+                &self.root_key,
+                &tenant_id,
+                &key_name,
+                row.version,
+                &row.wrapped_key,
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    warn!(
+                        key_id = %row.key_id,
+                        key_name = %key_name,
+                        version = row.version,
+                        error = %e,
+                        "failed to unwrap transit key — skipping (investigate immediately)"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            };
+
+            let entry = cache
+                .entry((tenant_id, key_name.clone()))
+                .or_insert_with(|| TransitKey {
+                    name: key_name,
+                    versions: Vec::new(),
+                    current_version: 0,
+                    algorithm: KeyAlgorithm::Aes256Gcm,
+                    created_at: Utc::now(),
+                });
+            entry.versions.push(KeyVersion {
+                version: row.version,
+                material,
+            });
+            entry.current_version = entry.current_version.max(row.version);
+            loaded += 1;
+        }
+
+        info!(
+            keys = cache.len(),
+            versions = loaded,
+            skipped,
+            "transit keys rehydrated from PostgreSQL"
+        );
+        Ok(())
     }
 }
 
@@ -172,10 +364,9 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
             expires_at: None,
         };
 
-        // TODO: wrap `initial_material` under the root wrapping key and pass
-        // the ciphertext as `wrapped_key` here instead of the placeholder.
-        // For now we store an empty placeholder so the metadata row exists.
-        insert_key_descriptor(&self.pool, &descriptor, "TODO:wrap_key_material", None).await?;
+        let wrapped = wrap_material(&self.root_key, tenant_id, key_name, 1, &initial_material)?;
+        insert_named_key_descriptor(&self.pool, &descriptor, &wrapped, None, Some(key_name))
+            .await?;
 
         // Only update the cache after the PG write has committed, so that the
         // in-memory state is always a subset of (never ahead of) PG.
@@ -235,14 +426,14 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
 
         let tenant_uuid = tenant_id_to_uuid(tenant_id);
 
-        // Locate the existing active descriptor in PG to transition it.
-        // We use get_active_key which returns the latest active row for this
-        // tenant + Transit purpose.
-        let active_descriptor =
-            get_active_key(&self.pool, &tenant_uuid, &KeyPurpose::Transit).await?;
-
-        // Mark the current version as rotating out.
-        update_key_state(&self.pool, &active_descriptor.id, &KeyState::RotatingOut).await?;
+        // Retire the outgoing version of THIS key.
+        //
+        // This used to call `get_active_key(pool, tenant, Transit)`, which
+        // returns the tenant's latest active transit descriptor regardless of
+        // which key it belongs to — so with two transit keys, rotating B
+        // transitioned A's descriptor. The lookup is now by (tenant, name).
+        let outgoing_id = active_descriptor_id_for(&self.pool, &tenant_uuid, key_name).await?;
+        update_key_state(&self.pool, &outgoing_id, &KeyState::RotatingOut).await?;
 
         // Insert the new version descriptor.
         let new_descriptor = KeyDescriptor {
@@ -257,9 +448,15 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
             expires_at: None,
         };
 
-        // TODO: wrap `new_material` under the root wrapping key before
-        // storing.  For now use a placeholder.
-        insert_key_descriptor(&self.pool, &new_descriptor, "TODO:wrap_key_material", None).await?;
+        let wrapped = wrap_material(
+            &self.root_key,
+            tenant_id,
+            key_name,
+            new_version,
+            &new_material,
+        )?;
+        insert_named_key_descriptor(&self.pool, &new_descriptor, &wrapped, None, Some(key_name))
+            .await?;
 
         // Both PG writes succeeded — update the in-memory cache.
         {
@@ -278,5 +475,83 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
         }
 
         Ok(new_version)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Wrapping round-trip and AAD binding. The PostgreSQL paths need a live
+    //! database and are covered by the migration/integration checks instead;
+    //! what is pinned here is the part that made restarts destroy data — that
+    //! key material is genuinely wrapped, and that a wrapped blob is bound to
+    //! exactly one tenant, key and version.
+
+    use super::*;
+
+    fn root() -> [u8; 32] {
+        std::array::from_fn(|i| (i as u8).wrapping_mul(7))
+    }
+
+    fn material() -> [u8; 32] {
+        std::array::from_fn(|i| (i as u8).wrapping_add(3))
+    }
+
+    #[test]
+    fn wrap_unwrap_round_trips() {
+        let wrapped = wrap_material(&root(), "tenant-a", "billing", 1, &material()).unwrap();
+        let got = unwrap_material(&root(), "tenant-a", "billing", 1, &wrapped).unwrap();
+        assert_eq!(got, material());
+    }
+
+    #[test]
+    fn wrapped_material_is_not_the_plaintext() {
+        let wrapped = wrap_material(&root(), "t", "k", 1, &material()).unwrap();
+        let raw = BASE64.decode(&wrapped).unwrap();
+        assert!(
+            !raw.windows(32).any(|w| w == material()),
+            "key material must not appear in the stored blob"
+        );
+        assert_ne!(wrapped, "TODO:wrap_key_material");
+    }
+
+    #[test]
+    fn a_wrapped_key_cannot_be_transplanted() {
+        let wrapped = wrap_material(&root(), "tenant-a", "billing", 1, &material()).unwrap();
+
+        // Another tenant's row, another key's row, another version's row.
+        for (tenant, name, version) in [
+            ("tenant-b", "billing", 1),
+            ("tenant-a", "payroll", 1),
+            ("tenant-a", "billing", 2),
+        ] {
+            assert!(
+                unwrap_material(&root(), tenant, name, version, &wrapped).is_err(),
+                "AAD must bind the blob to {tenant}/{name}/v{version}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_different_root_key_cannot_unwrap() {
+        let wrapped = wrap_material(&root(), "t", "k", 1, &material()).unwrap();
+        assert!(unwrap_material(&[0xFF; 32], "t", "k", 1, &wrapped).is_err());
+    }
+
+    #[test]
+    fn root_key_must_be_present_and_well_formed() {
+        // The backend refuses to start rather than silently persisting
+        // placeholders, which is what the old code did.
+        std::env::remove_var(ROOT_KEY_ENV);
+        assert!(load_root_key().is_err(), "missing root key must fail");
+
+        std::env::set_var(ROOT_KEY_ENV, "not!base64!");
+        assert!(load_root_key().is_err(), "malformed root key must fail");
+
+        std::env::set_var(ROOT_KEY_ENV, BASE64.encode([0u8; 16]));
+        assert!(load_root_key().is_err(), "short root key must fail");
+
+        std::env::set_var(ROOT_KEY_ENV, BASE64.encode(root()));
+        assert_eq!(*load_root_key().unwrap(), root());
+        std::env::remove_var(ROOT_KEY_ENV);
     }
 }

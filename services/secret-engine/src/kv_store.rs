@@ -33,6 +33,7 @@ pub struct VersionMeta {
 
 /// Rotation record returned from the active-rotation query.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Two-phase rotation is exposed on the Postgres backend only.
 pub struct RotationInfo {
     pub rotation_id: String,
     pub secret_id: String,
@@ -136,6 +137,7 @@ pub trait SecretStoreBackend: Send + Sync + std::fmt::Debug {
     ) -> Result<Vec<VersionMeta>, VaultError>;
 
     /// Return the active rotation record for a path, if any.
+    #[allow(dead_code)]
     async fn get_active_rotation(
         &self,
         tenant_id: &str,
@@ -174,11 +176,13 @@ pub struct VersionEntry {
     pub custom_metadata: HashMap<String, String>,
 }
 
+#[allow(dead_code)] // wire/DTO type: fields exist for serde and validation, not direct reads
 /// All state associated with a single secret path.
 #[derive(Debug, Clone)]
 pub struct SecretEntry {
     /// Stable UUID for this path; does not change across versions.
     pub secret_id: String,
+    #[allow(dead_code)]
     pub tenant_id: String,
     pub path: String,
     /// Maximum number of non-destroyed versions to retain.

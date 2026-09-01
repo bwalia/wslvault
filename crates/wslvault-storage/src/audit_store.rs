@@ -33,12 +33,130 @@ pub struct StoredAuditEvent {
     pub client_ip: String,
     pub signature: String,
     pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Per-tenant monotonic position in the hash chain. Assigned by
+    /// [`insert_event_chained`]; 0 on records that have not been appended yet.
+    pub seq: i64,
+    /// Signature of the preceding record in this tenant's chain. Empty for the
+    /// genesis record.
+    pub prev_hash: String,
 }
 
 /// Append a single audit event to the append-only `shared.audit_events` table.
 ///
 /// `tenant_id` must be a valid UUID string – it is parsed before binding to
 /// match the `UUID NOT NULL` column type in the database.
+/// Append an event, linking it to the tenant's chain.
+///
+/// The caller supplies `sign`, which is handed the position this record will
+/// occupy and the signature of the record before it, and returns the signature
+/// to store. That keeps the HMAC key in the service — the storage layer never
+/// sees it — while the chain's ordering is decided here, where it can be made
+/// atomic.
+///
+/// A transaction-scoped advisory lock keyed on the tenant serialises appends
+/// for that tenant, so two concurrent writers cannot read the same tip and
+/// fork the chain. Different tenants do not contend.
+///
+/// Returns the assigned `(seq, prev_hash)`.
+pub async fn insert_event_chained<F>(
+    pool: &DbPool,
+    event: &StoredAuditEvent,
+    sign: F,
+) -> Result<(i64, String), VaultError>
+where
+    F: FnOnce(i64, &str) -> String,
+{
+    let tenant_uuid =
+        Uuid::parse_str(&event.tenant_id).map_err(|e| VaultError::ValidationError {
+            field: "tenant_id".into(),
+            reason: format!("invalid UUID: {}", e),
+        })?;
+
+    let mut tx = pool
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: format!("could not begin audit transaction: {e}"),
+        })?;
+
+    // Serialise this tenant's appends for the life of the transaction.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text))")
+        .bind(tenant_uuid)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: format!("could not lock the audit chain: {e}"),
+        })?;
+
+    let tip: Option<(i64, String)> =
+        sqlx::query_as("SELECT tip_seq, tip_signature FROM shared.audit_chain_tip($1)")
+            .bind(tenant_uuid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| VaultError::Database {
+                reason: format!("could not read the audit chain tip: {e}"),
+            })?;
+
+    let (prev_seq, prev_hash) = tip.unwrap_or((0, String::new()));
+    let seq = prev_seq + 1;
+    let signature = sign(seq, &prev_hash);
+
+    sqlx::query(
+        "INSERT INTO shared.audit_events
+             (id, tenant_id, principal_id, action, resource, outcome,
+              outcome_detail, details, client_ip, signature, timestamp, seq, prev_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::inet, $10, $11, $12, $13)",
+    )
+    .bind(event.id)
+    .bind(tenant_uuid)
+    .bind(&event.principal_id)
+    .bind(&event.action)
+    .bind(&event.resource)
+    .bind(&event.outcome)
+    .bind(&event.outcome_detail)
+    .bind(&event.details)
+    .bind(&event.client_ip)
+    .bind(&signature)
+    .bind(event.timestamp)
+    .bind(seq)
+    .bind(&prev_hash)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
+
+    tx.commit().await.map_err(|e| VaultError::Database {
+        reason: format!("could not commit the audit record: {e}"),
+    })?;
+
+    Ok((seq, prev_hash))
+}
+
+/// Structural breaks in a tenant's chain: sequence gaps, or a record whose
+/// `prev_hash` does not match its predecessor.
+///
+/// Finds deletions, truncations and reordering without needing the HMAC key.
+/// Verifying the signatures themselves needs the key and happens in the service.
+pub async fn audit_chain_breaks(
+    pool: &DbPool,
+    tenant_id: &str,
+) -> Result<Vec<(i64, String)>, VaultError> {
+    let tenant_uuid = Uuid::parse_str(tenant_id).map_err(|e| VaultError::ValidationError {
+        field: "tenant_id".into(),
+        reason: format!("invalid UUID: {}", e),
+    })?;
+
+    sqlx::query_as("SELECT at_seq, reason FROM shared.audit_chain_breaks($1)")
+        .bind(tenant_uuid)
+        .fetch_all(pool.inner())
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: format!("chain verification query failed: {e}"),
+        })
+}
+
 pub async fn insert_event(pool: &DbPool, event: &StoredAuditEvent) -> Result<(), VaultError> {
     // Parse the string tenant_id into a Uuid so we bind the correct Postgres
     // type.  The audit-service is responsible for providing a well-formed UUID.
@@ -143,7 +261,8 @@ pub async fn query_events(
         "SELECT id, tenant_id, principal_id, action, resource, outcome,
                 COALESCE(outcome_detail, '') AS outcome_detail,
                 details, COALESCE(client_ip::text, '') AS client_ip,
-                COALESCE(signature, '') AS signature, timestamp
+                COALESCE(signature, '') AS signature, timestamp,
+                COALESCE(seq, 0) AS seq, COALESCE(prev_hash, '') AS prev_hash
          FROM shared.audit_events
          WHERE ($1::uuid  IS NULL OR tenant_id    = $1)
            AND ($2::timestamptz IS NULL OR timestamp    >= $2)
@@ -180,6 +299,8 @@ pub async fn query_events(
             details: row.get("details"),
             client_ip: row.get("client_ip"),
             signature: row.get("signature"),
+            seq: row.get::<i64, _>("seq"),
+            prev_hash: row.get("prev_hash"),
             timestamp: row.get("timestamp"),
         })
         .collect();

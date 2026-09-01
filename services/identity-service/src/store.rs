@@ -116,7 +116,12 @@ impl PrincipalStore {
     ///
     /// This is a full replacement — callers that want additive updates must
     /// read the current policies first, merge them, and pass the merged list.
-    #[cfg(test)]
+    ///
+    /// This was `#[cfg(test)]` until SCIM needed it, which meant there was no
+    /// production code path to change a principal's policies after creation at
+    /// all. SCIM group sync logged what it "would" have done and mutated
+    /// nothing, so an IdP removing a user from a group reported success while
+    /// the user kept their access.
     pub fn update_policies(
         &self,
         tenant_id: &str,

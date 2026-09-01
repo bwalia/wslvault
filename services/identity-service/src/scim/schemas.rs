@@ -24,6 +24,7 @@ pub const SCHEMA_LIST_RESPONSE: &str = "urn:ietf:params:scim:api:messages:2.0:Li
 pub const SCHEMA_ERROR: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
 
 /// Patch operation message URN (RFC 7644 §3.5.2).
+#[allow(dead_code)]
 pub const SCHEMA_PATCH_OP: &str = "urn:ietf:params:scim:api:messages:2.0:PatchOp";
 
 // ---------------------------------------------------------------------------
@@ -168,6 +169,7 @@ pub struct ScimUser {
 
 impl ScimUser {
     /// Creates a minimal `ScimUser` with the required `schemas` URN.
+    #[allow(dead_code)]
     pub fn new(user_name: impl Into<String>) -> Self {
         Self {
             schemas: vec![SCHEMA_USER.to_string()],
@@ -213,6 +215,7 @@ pub struct ScimGroup {
 
 impl ScimGroup {
     /// Creates a minimal `ScimGroup` with the required `schemas` URN.
+    #[allow(dead_code)]
     pub fn new(display_name: impl Into<String>) -> Self {
         Self {
             schemas: vec![SCHEMA_GROUP.to_string()],

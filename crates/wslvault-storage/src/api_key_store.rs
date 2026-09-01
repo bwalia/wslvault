@@ -48,12 +48,18 @@ pub struct ApiKeyRow {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
     pub rate_limit_per_minute: i32,
+    /// Grants cross-tenant access. Always paired with `mfa_required` — the
+    /// schema enforces that, so a future code path cannot mint a superuser key
+    /// without MFA by simply forgetting to set it.
+    pub is_superuser: bool,
+    /// Whether exchanging this key for a token requires a TOTP code.
+    pub mfa_required: bool,
 }
 
 /// Column list shared by every SELECT so the `FromRow` derive always matches.
 const COLUMNS: &str = "id, tenant_id, name, key_hash, key_prefix, path_prefixes, \
                        policies, created_by, created_at, expires_at, last_used_at, \
-                       revoked_at, rate_limit_per_minute";
+                       revoked_at, rate_limit_per_minute, is_superuser, mfa_required";
 
 /// Wraps a sqlx error in the crate-wide error type with operation context.
 fn db_err(op: &str, e: sqlx::Error) -> VaultError {
@@ -186,8 +192,9 @@ pub async fn insert(pool: &DbPool, row: &ApiKeyRow) -> Result<(), VaultError> {
     let result = sqlx::query(
         "INSERT INTO shared.api_keys
              (id, tenant_id, name, key_hash, key_prefix, path_prefixes, policies,
-              created_by, created_at, expires_at, rate_limit_per_minute)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+              created_by, created_at, expires_at, rate_limit_per_minute,
+              is_superuser, mfa_required)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)",
     )
     .bind(row.id)
     .bind(row.tenant_id)
@@ -200,6 +207,10 @@ pub async fn insert(pool: &DbPool, row: &ApiKeyRow) -> Result<(), VaultError> {
     .bind(row.created_at)
     .bind(row.expires_at)
     .bind(row.rate_limit_per_minute)
+    .bind(row.is_superuser)
+    // Superuser keys always require MFA; the schema enforces it too, so a
+    // caller that forgets gets a constraint violation rather than a hole.
+    .bind(row.mfa_required || row.is_superuser)
     .execute(pool.inner())
     .await;
 

@@ -83,6 +83,7 @@ impl RootKek {
 
     /// Construct directly from raw bytes (useful in tests).
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn new_for_test(raw_bytes: [u8; 32]) -> Self {
         Self {
             raw: Zeroizing::new(raw_bytes),

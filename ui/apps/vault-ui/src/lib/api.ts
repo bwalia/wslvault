@@ -49,6 +49,8 @@ export const api = {
     apiKey: (id: string) => `/api/identity/v1/api-keys/${encodeURIComponent(id)}`,
     rotateApiKey: (id: string) => `/api/identity/v1/api-keys/${encodeURIComponent(id)}/rotate`,
     authApiKey: () => '/api/identity/v1/auth/api-key',
+    /** Completes a login that returned an MFA challenge. */
+    mfaTotp: () => '/api/identity/v1/auth/mfa/totp',
   },
   policy: {
     list: () => '/api/policy/v1/policies',

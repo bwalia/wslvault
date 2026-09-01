@@ -41,6 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("starting audit-service");
 
+    // Per-tenant signing keys, derived from one master secret. The service
+    // refuses to start without it: the previous hardcoded fallback produced a
+    // log that looked signed and could be forged by anyone with the source.
+    let signer = integrity::AuditSigner::from_env().map_err(|e| anyhow::anyhow!(e))?;
+
     // Select the storage backend based on whether DATABASE_URL is configured.
     let audit_store: Arc<dyn AuditStoreBackend> =
         if let Ok(database_url) = std::env::var("DATABASE_URL") {
@@ -53,14 +58,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let pool = wslvault_storage::pool::DbPool::connect(&config).await?;
             info!("PostgreSQL connection pool established; using PgAuditBackend");
-            Arc::new(pg_store::PgAuditBackend::new(pool))
+            Arc::new(pg_store::PgAuditBackend::new(pool, signer.clone()))
         } else {
             info!("DATABASE_URL not set – using in-memory audit store");
             Arc::new(store::InMemoryAuditStore::new())
         };
 
     // Build the gRPC service.
-    let audit_service = AuditServiceImpl::new(audit_store);
+    let audit_service = AuditServiceImpl::new(audit_store, signer);
     let grpc_addr = "0.0.0.0:50056".parse()?;
 
     // Start metrics server.
