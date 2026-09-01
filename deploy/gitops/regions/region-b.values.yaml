@@ -153,7 +153,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: 578d391f-r2
 
 secrets:
   existingSecret: wslvault-mesh-keys
@@ -163,7 +163,7 @@ secrets:
 cryptoService:
   replicaCount: 1
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: 578d391f-r2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Image pins, matched to region A.
