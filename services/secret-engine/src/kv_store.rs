@@ -114,8 +114,13 @@ pub trait SecretStoreBackend: Send + Sync + std::fmt::Debug {
 
     /// Confirm a pending rotation by rotation_id. Returns (old_version, new_version,
     /// grace_ends_at).
+    ///
+    /// `tenant_id` is required even though a rotation id is globally unique:
+    /// without it the backend has no way to check that the rotation belongs to
+    /// the caller, and confirming another tenant's rotation was possible.
     async fn confirm_rotation(
         &self,
+        tenant_id: &str,
         rotation_id: &str,
         confirmed_by: &str,
     ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError>;
@@ -598,6 +603,7 @@ impl SecretStoreBackend for KvStore {
 
     async fn confirm_rotation(
         &self,
+        _tenant_id: &str,
         _rotation_id: &str,
         _confirmed_by: &str,
     ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError> {

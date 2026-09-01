@@ -1,11 +1,20 @@
 //! Secret and secret version CRUD operations.
+//!
+//! These take a `&mut PgConnection` rather than a `&DbPool` so that every call
+//! runs inside a caller-opened [`crate::tenant_scope::ScopedTx`]. The scope
+//! sets `app.current_tenant_id`, which is what the row-level security policies
+//! on `shared.secrets` and `shared.secret_versions` resolve against.
+//!
+//! Taking a pool would have made that impossible to guarantee: each query would
+//! borrow an arbitrary pooled connection, so the session variable set for one
+//! statement need not apply to the next. Requiring a connection means the
+//! tenant scope and the query cannot come apart.
 
 use std::collections::HashMap;
 
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-use crate::pool::DbPool;
 use wslvault_core::types::secret::{
     RotationPolicy, RotationRecord, SecretEngine, SecretMetadata, SecretType, SecretVersion,
     VersionStatus,
@@ -41,7 +50,7 @@ fn engine_str(e: &SecretEngine) -> &'static str {
 
 /// Retrieve secret metadata by tenant + path.
 pub async fn get_secret_metadata(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
 ) -> Result<SecretMetadata, VaultError> {
@@ -58,7 +67,7 @@ pub async fn get_secret_metadata(
     )
     .bind(tenant_id.as_uuid())
     .bind(path)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
@@ -125,7 +134,7 @@ pub async fn get_secret_metadata(
 /// This is the SQL equivalent of `SecretEntry::current_version_number()` in the
 /// in-memory backend, and the two must agree.
 pub async fn latest_live_version(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     secret_id: &wslvault_core::SecretId,
 ) -> Result<u32, VaultError> {
     let row = sqlx::query(
@@ -136,7 +145,7 @@ pub async fn latest_live_version(
            AND destroyed = false",
     )
     .bind(secret_id.0)
-    .fetch_one(pool.inner())
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
@@ -146,7 +155,7 @@ pub async fn latest_live_version(
 }
 
 pub async fn get_secret_version(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     secret_id: &wslvault_core::SecretId,
     version: u32,
 ) -> Result<SecretVersion, VaultError> {
@@ -159,7 +168,7 @@ pub async fn get_secret_version(
     )
     .bind(secret_id.0)
     .bind(version as i32)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
@@ -200,7 +209,7 @@ pub async fn get_secret_version(
 
 /// List secret paths under a prefix for a given tenant.
 pub async fn list_secret_paths(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     prefix: &str,
 ) -> Result<Vec<String>, VaultError> {
@@ -212,7 +221,7 @@ pub async fn list_secret_paths(
     )
     .bind(tenant_id.as_uuid())
     .bind(&pattern)
-    .fetch_all(pool.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
@@ -224,7 +233,7 @@ pub async fn list_secret_paths(
 /// Write a new secret version using the atomic upsert function.
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_secret_version(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
     engine: &SecretEngine,
@@ -244,7 +253,7 @@ pub async fn upsert_secret_version(
             .bind(cas_version.map(|v| v as i32))
             .bind(max_versions as i32)
             .bind(cas_required)
-            .fetch_one(pool.inner())
+            .fetch_one(&mut *conn)
             .await
             .map_err(|e| {
                 let msg = e.to_string();
@@ -266,7 +275,7 @@ pub async fn upsert_secret_version(
 
 /// Soft-delete secret versions.
 pub async fn soft_delete_versions(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     secret_id: &wslvault_core::SecretId,
     versions: &[u32],
 ) -> Result<u32, VaultError> {
@@ -274,7 +283,7 @@ pub async fn soft_delete_versions(
     let row = sqlx::query("SELECT shared.vault_soft_delete_versions($1, $2) AS count")
         .bind(secret_id.0)
         .bind(&versions_i32)
-        .fetch_one(pool.inner())
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: e.to_string(),
@@ -285,7 +294,7 @@ pub async fn soft_delete_versions(
 
 /// Permanently destroy secret versions (irreversible).
 pub async fn destroy_versions(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     secret_id: &wslvault_core::SecretId,
     versions: &[u32],
 ) -> Result<u32, VaultError> {
@@ -293,7 +302,7 @@ pub async fn destroy_versions(
     let row = sqlx::query("SELECT shared.vault_destroy_versions($1, $2) AS count")
         .bind(secret_id.0)
         .bind(&versions_i32)
-        .fetch_one(pool.inner())
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: e.to_string(),
@@ -304,7 +313,7 @@ pub async fn destroy_versions(
 
 /// Initiate a two-phase rotation for a secret. Returns (rotation_id, new_version).
 pub async fn initiate_rotation(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
     ciphertext: &str,
@@ -324,7 +333,7 @@ pub async fn initiate_rotation(
     .bind(initiated_by)
     .bind(webhook_url)
     .bind(timeout_secs)
-    .fetch_one(pool.inner())
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| {
         let msg = e.to_string();
@@ -349,8 +358,19 @@ pub async fn initiate_rotation(
 
 /// Confirm a pending rotation — activates the new version and deprecates the old.
 /// Returns (old_version, new_version, grace_ends_at).
+/// Confirm a pending rotation.
+///
+/// `tenant_id` is not decoration. `shared.vault_confirm_rotation` resolves the
+/// rotation by id alone (`010_secret_lifecycle.sql`), and the HTTP handler
+/// authorised the caller against their own tenant and then passed the bare
+/// rotation id through — so a caller holding any valid rotation UUID could
+/// confirm another tenant's rotation. The ownership check below closes that
+/// directly, rather than waiting for row-level security to be enforced; when it
+/// is, the RLS policy on `shared.secret_rotations` becomes a second barrier
+/// behind this one.
 pub async fn confirm_rotation(
-    pool: &DbPool,
+    conn: &mut PgConnection,
+    tenant_id: &TenantId,
     rotation_id: &str,
     confirmed_by: &str,
 ) -> Result<(u32, u32, chrono::DateTime<chrono::Utc>), VaultError> {
@@ -360,13 +380,34 @@ pub async fn confirm_rotation(
             reason: format!("invalid rotation_id: {rotation_id}"),
         })?;
 
+    // Deliberately reports "not found" rather than "forbidden" for a rotation
+    // belonging to someone else: the caller learning that a given UUID exists
+    // under another tenant is itself a cross-tenant disclosure.
+    let owner: Option<(uuid::Uuid,)> =
+        sqlx::query_as("SELECT tenant_id FROM shared.secret_rotations WHERE id = $1")
+            .bind(rid)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| VaultError::Database {
+                reason: e.to_string(),
+            })?;
+
+    match owner {
+        Some((owner_tenant,)) if owner_tenant == *tenant_id.as_uuid() => {}
+        _ => {
+            return Err(VaultError::InvalidOperation {
+                reason: format!("rotation {rotation_id} not found or expired"),
+            })
+        }
+    }
+
     let row = sqlx::query(
         "SELECT old_version, new_version, grace_ends_at
          FROM shared.vault_confirm_rotation($1, $2)",
     )
     .bind(rid)
     .bind(confirmed_by)
-    .fetch_one(pool.inner())
+    .fetch_one(&mut *conn)
     .await
     .map_err(|e| {
         let msg = e.to_string();
@@ -387,7 +428,7 @@ pub async fn confirm_rotation(
 
 /// Rollback to a previous version (creates a new version row with the same ciphertext).
 pub async fn rollback_secret(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
     target_version: u32,
@@ -398,7 +439,7 @@ pub async fn rollback_secret(
         .bind(path)
         .bind(target_version as i32)
         .bind(rolled_back_by)
-        .fetch_one(pool.inner())
+        .fetch_one(&mut *conn)
         .await
         .map_err(|e| {
             let msg = e.to_string();
@@ -422,7 +463,7 @@ pub async fn rollback_secret(
 
 /// List all versions with lifecycle metadata for a secret (no ciphertext).
 pub async fn list_version_history(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
 ) -> Result<Vec<wslvault_core::types::secret::VersionMeta>, VaultError> {
@@ -433,7 +474,7 @@ pub async fn list_version_history(
     )
     .bind(tenant_id.as_uuid())
     .bind(path)
-    .fetch_all(pool.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
@@ -464,7 +505,7 @@ pub async fn list_version_history(
 
 /// Retrieve the active (pending_activation) rotation record for a secret path.
 pub async fn get_active_rotation(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: &TenantId,
     path: &str,
 ) -> Result<Option<RotationRecord>, VaultError> {
@@ -481,7 +522,7 @@ pub async fn get_active_rotation(
     )
     .bind(tenant_id.as_uuid())
     .bind(path)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),

@@ -66,7 +66,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "wslvault.dbCredentialsSecretName" . }}
-                  key: {{ include "wslvault.dbPasswordSecretKey" . }}
+                  key: {{ include "wslvault.dbAppPasswordSecretKey" . }}
                   optional: false
             # Shared HS256 signing secret, the SAME one identity-service issues
             # tokens with. The KV v2 compatibility mount
@@ -87,7 +87,7 @@ spec:
               value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
             - name: DATABASE_URL
               value: {{ printf "postgresql://%s:$(DB_PASSWORD)@%s:%s/%s"
-                          .Values.postgresql.auth.username
+                          (include "wslvault.dbAppUser" .)
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}

@@ -725,6 +725,32 @@ postgresql:
       limits:
         cpu: "1000m"
         memory: "1Gi"
+  # -- Least-privilege role the SERVICES connect as, so that row-level security
+  # actually applies to them.
+  #
+  # Leave username empty (the default) and every service connects as
+  # postgresql.auth.username — the role that OWNS the schema. PostgreSQL exempts
+  # a table's owner from its own RLS policies, which is why the policies added in
+  # migration 004 and corrected in 018/029 have never constrained anything.
+  #
+  # To turn enforcement on:
+  #   1. Create the role once per region, as a superuser:
+  #        psql -U postgres -d wslvault \
+  #             -v app_password="$(openssl rand -base64 32)" \
+  #             -f deploy/helm/wslvault/files/bootstrap/rls_app_role.sql
+  #   2. Put that password in the DB credentials secret under `passwordKey`.
+  #   3. Set username below and redeploy.
+  #
+  # Do NOT do step 3 before the services are running a build that opens tenant
+  # scopes (wslvault_storage::tenant_scope) — the policies fail closed, so an
+  # unscoped service sees zero rows rather than erroring, which looks like an
+  # empty vault rather than a misconfiguration.
+  appRole:
+    # -- e.g. "wslvault_app". Empty means "connect as the schema owner".
+    username: ""
+    # -- Key in the DB credentials secret holding this role's password.
+    passwordKey: "app-password"
+
   # -- Used to build the DATABASE_URL for all services when postgresql.enabled=true
   # Override this if connecting to an external database
   external:

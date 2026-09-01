@@ -83,8 +83,13 @@ pub async fn get_quota(pool: &DbPool, tenant_id: Uuid) -> Result<TenantQuotaRow,
 /// would be exceeded.  This does NOT lock the row — the count trigger on
 /// `shared.secrets` is the source of truth.  The check here is advisory to
 /// reject obviously over-quota writes before they hit the DB.
+/// Takes a connection rather than the pool so it runs inside the caller's
+/// tenant scope. `shared.tenant_quotas` is row-level secured, and this function
+/// treats a missing row as "no quota configured, allow the write" — so running
+/// it outside a scope would return zero rows and turn every quota check into a
+/// silent pass. The type makes that mistake unrepresentable.
 pub async fn check_write_quota(
-    pool: &DbPool,
+    conn: &mut sqlx::PgConnection,
     tenant_id: Uuid,
     plaintext_size: usize,
 ) -> Result<(), QuotaStoreError> {
@@ -93,7 +98,7 @@ pub async fn check_write_quota(
          FROM shared.tenant_quotas WHERE tenant_id = $1",
     )
     .bind(tenant_id)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await?;
 
     // If no quota row exists, allow the write (the trigger will create one).

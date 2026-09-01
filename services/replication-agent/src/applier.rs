@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use sqlx::PgConnection;
 use tracing::{debug, info, warn};
 use wslvault_storage::pool::DbPool;
 
@@ -14,6 +15,42 @@ use crate::consumer::ReplicationEvent;
 /// already has a version of the affected secret.
 pub async fn apply_event(
     pool: &DbPool,
+    event: &ReplicationEvent,
+    conflict_strategy: &str,
+    local_region: &str,
+) -> anyhow::Result<()> {
+    // The applier is cross-tenant by nature: a peer region's event stream
+    // carries every tenant's writes, and this process has no caller whose
+    // tenant it could adopt. It says so once, here, rather than each query
+    // quietly relying on the connecting role being exempt from RLS.
+    //
+    // The transaction is also why an event now applies atomically. Several of
+    // the handlers below read the local row, decide a conflict outcome, then
+    // write — steps that were previously separate statements on separate pooled
+    // connections, so a failure between them left the event half-applied and a
+    // concurrent write could land in the gap.
+    let mut scope = pool
+        .begin_cross_tenant("replication applier: peer events span all tenants")
+        .await?;
+
+    let result = apply_event_inner(scope.conn(), event, conflict_strategy, local_region).await;
+
+    match result {
+        Ok(()) => {
+            scope.commit().await?;
+            Ok(())
+        }
+        Err(e) => {
+            if let Err(rb) = scope.rollback().await {
+                warn!(error = %rb, "rollback failed after replication apply error");
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn apply_event_inner(
+    pool: &mut PgConnection,
     event: &ReplicationEvent,
     conflict_strategy: &str,
     local_region: &str,
@@ -53,7 +90,7 @@ pub async fn apply_event(
 /// crypto-service unwraps it through its root-key fallback on first use. The
 /// insert is idempotent — a DEK already present (native or previously
 /// replicated) is left untouched, so this never disturbs local key material.
-async fn apply_dek_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_dek_upsert(pool: &mut PgConnection, event: &ReplicationEvent) -> anyhow::Result<()> {
     let field = |k: &str| {
         event.payload[k]
             .as_str()
@@ -78,7 +115,7 @@ async fn apply_dek_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Re
     .bind(algorithm)
     .bind(tenant_id)
     .bind(dek_wrapped_root)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     debug!(key_id, tenant_id, "applied dek_upsert (peer DEK installed)");
@@ -86,7 +123,7 @@ async fn apply_dek_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Re
 }
 
 async fn apply_secret_upsert(
-    pool: &DbPool,
+    pool: &mut PgConnection,
     event: &ReplicationEvent,
     conflict_strategy: &str,
     local_region: &str,
@@ -118,7 +155,7 @@ async fn apply_secret_upsert(
     )
     .bind(tenant_id)
     .bind(path)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *pool)
     .await?;
 
     if let Some((local_ts, local_vc_json)) = local_meta {
@@ -178,7 +215,7 @@ async fn apply_secret_upsert(
     .bind(path)
     .bind(ciphertext)
     .bind(dek_id)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     // Update origin_region and vector_clock on the secret.
@@ -193,7 +230,7 @@ async fn apply_secret_upsert(
     .bind(&event.vector_clock)
     .bind(tenant_id)
     .bind(path)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     info!(
@@ -205,7 +242,10 @@ async fn apply_secret_upsert(
     Ok(())
 }
 
-async fn apply_secret_delete(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_secret_delete(
+    pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     let tenant_id = event.payload["tenant_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing tenant_id"))?;
@@ -221,7 +261,7 @@ async fn apply_secret_delete(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
         )
         .bind(tenant_id)
         .bind(path)
-        .fetch_optional(pool.inner())
+        .fetch_optional(&mut *pool)
         .await?;
 
         if let Some((sid,)) = secret_id {
@@ -229,7 +269,7 @@ async fn apply_secret_delete(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
             sqlx::query("SELECT shared.vault_soft_delete_versions($1, $2)")
                 .bind(sid)
                 .bind(&version_array)
-                .execute(pool.inner())
+                .execute(&mut *pool)
                 .await?;
         }
     }
@@ -242,7 +282,10 @@ async fn apply_secret_delete(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     Ok(())
 }
 
-async fn apply_secret_destroy(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_secret_destroy(
+    pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     let tenant_id = event.payload["tenant_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing tenant_id"))?;
@@ -258,14 +301,14 @@ async fn apply_secret_destroy(pool: &DbPool, event: &ReplicationEvent) -> anyhow
         )
         .bind(tenant_id)
         .bind(path)
-        .fetch_optional(pool.inner())
+        .fetch_optional(&mut *pool)
         .await?;
 
         if let Some((sid,)) = secret_id {
             sqlx::query("SELECT shared.vault_destroy_versions($1, $2)")
                 .bind(sid)
                 .bind(&versions)
-                .execute(pool.inner())
+                .execute(&mut *pool)
                 .await?;
         }
     }
@@ -300,7 +343,10 @@ async fn apply_secret_destroy(pool: &DbPool, event: &ReplicationEvent) -> anyhow
 /// Peer regions receive this warning so operators are aware that a rotation
 /// occurred in the originating region and can decide whether manual remediation
 /// is needed.
-async fn apply_key_rotate(_pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_key_rotate(
+    _pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     warn!(
         source_region = %event.source_region,
         key_id = ?event.payload.get("key_id"),
@@ -321,7 +367,10 @@ async fn apply_key_rotate(_pool: &DbPool, event: &ReplicationEvent) -> anyhow::R
 ///
 /// The replication applier bypasses RLS by operating as a cross-tenant
 /// service role; it does NOT set `app.current_tenant_id`.
-async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_policy_update(
+    pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     let tenant_id = event.payload["tenant_id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing tenant_id in policy_update payload"))?;
@@ -342,7 +391,7 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     )
     .bind(tenant_id)
     .bind(name)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *pool)
     .await?;
 
     if let Some((local_ts,)) = local_updated_at {
@@ -365,7 +414,7 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     // DB trigger (015_replication_event_triggers.sql) skips emitting a new
     // outbox event, preventing cross-region replication loops.
     sqlx::query("SET LOCAL app.replication_agent = 'true'")
-        .execute(pool.inner())
+        .execute(&mut *pool)
         .await?;
 
     // Upsert the policy.  We rely on the `(tenant_id, name)` unique constraint
@@ -385,7 +434,7 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     .bind(name)
     .bind(&document)
     .bind(remote_updated_at)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     info!(
@@ -420,7 +469,10 @@ async fn apply_policy_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
 /// `last_used_at` is deliberately not replicated: it is per-region telemetry,
 /// and feeding it into the conflict key would have two regions overwriting each
 /// other on every authentication.
-async fn apply_api_key_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_api_key_upsert(
+    pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     use base64::Engine as _;
 
     let field = |k: &str| -> anyhow::Result<String> {
@@ -454,7 +506,7 @@ async fn apply_api_key_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow
     // Stop the local trigger re-emitting this write as a fresh outbox event,
     // which would bounce the row between regions forever.
     sqlx::query("SET LOCAL app.replication_agent = 'true'")
-        .execute(pool.inner())
+        .execute(&mut *pool)
         .await?;
 
     // Revocation must never be undone by an older event arriving late, so a row
@@ -488,14 +540,17 @@ async fn apply_api_key_upsert(pool: &DbPool, event: &ReplicationEvent) -> anyhow
     .bind(expires_at)
     .bind(revoked_at)
     .bind(rate_limit)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     debug!(key_id = %id, key_prefix = %key_prefix, "replicated api key");
     Ok(())
 }
 
-async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow::Result<()> {
+async fn apply_tenant_update(
+    pool: &mut PgConnection,
+    event: &ReplicationEvent,
+) -> anyhow::Result<()> {
     let tenant_id = event.payload["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing id in tenant_update payload"))?;
@@ -520,7 +575,7 @@ async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     let local_updated_at: Option<(chrono::DateTime<chrono::Utc>,)> =
         sqlx::query_as("SELECT updated_at FROM system.tenants WHERE id = $1::uuid")
             .bind(tenant_id)
-            .fetch_optional(pool.inner())
+            .fetch_optional(&mut *pool)
             .await?;
 
     if let Some((local_ts,)) = local_updated_at {
@@ -536,7 +591,7 @@ async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     // Prevent the DB trigger from emitting a new outbox event for this
     // replication-originated write (see 015_replication_event_triggers.sql).
     sqlx::query("SET LOCAL app.replication_agent = 'true'")
-        .execute(pool.inner())
+        .execute(&mut *pool)
         .await?;
 
     // Upsert the tenant.  If the row already exists and the local `updated_at`
@@ -564,7 +619,7 @@ async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
     .bind(root_key_id)
     .bind(remote_updated_at)
     .bind(deleted_at)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     info!(
@@ -585,7 +640,7 @@ async fn apply_tenant_update(pool: &DbPool, event: &ReplicationEvent) -> anyhow:
 /// writes to the old primary.  The region-health poller will update their
 /// actual status based on subsequent health checks.
 async fn apply_region_promote(
-    pool: &DbPool,
+    pool: &mut PgConnection,
     event: &ReplicationEvent,
     local_region: &str,
 ) -> anyhow::Result<()> {
@@ -613,7 +668,7 @@ async fn apply_region_promote(
         "#,
     )
     .bind(target_region)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     // If this is the promoted region, also mark the initiating (old primary)
@@ -629,7 +684,7 @@ async fn apply_region_promote(
         )
         .bind(initiated_by)
         .bind(local_region)
-        .execute(pool.inner())
+        .execute(&mut *pool)
         .await?;
 
         info!(
@@ -661,7 +716,7 @@ async fn apply_region_promote(
     .bind(target_region)
     .bind(&audit_detail)
     .bind(local_region)
-    .execute(pool.inner())
+    .execute(&mut *pool)
     .await?;
 
     info!(

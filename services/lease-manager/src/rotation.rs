@@ -34,6 +34,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 use tracing::{debug, error, info, warn};
 use wslvault_cluster::leader::LeaderElector;
+use wslvault_storage::tenant_scope::ScopedTx;
 
 use crate::rotation_metrics::{
     ROTATIONS_TRIGGERED_TOTAL, ROTATION_SWEEP_RUNS_TOTAL, VERSIONS_REVOKED_TOTAL,
@@ -204,12 +205,50 @@ const DUE_SECRETS_QUERY: &str = r#"
           AND s.rotation_status = 'none'
 "#;
 
+/// Mark a secret's rotation as pending, in its own short cross-tenant scope.
+///
+/// Cross-tenant for the same reason the sweep query is: this runs on a timer,
+/// not on behalf of a tenant. Kept as its own transaction so the webhook call
+/// that precedes it never happens with a transaction open.
+async fn mark_rotation_pending(pool: &PgPool, secret_id: uuid::Uuid) -> anyhow::Result<()> {
+    let mut scope = ScopedTx::cross_tenant(pool, "rotation sweep: mark pending").await?;
+    sqlx::query("UPDATE shared.secrets SET rotation_status = 'pending' WHERE id = $1")
+        .bind(secret_id)
+        .execute(scope.conn())
+        .await?;
+    scope.commit().await?;
+    Ok(())
+}
+
 /// Execute one rotation sweep cycle: query due secrets and dispatch notifications
 /// or perform automatic rotation.
 async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config: &RotationConfig) {
-    let rows = sqlx::query_as::<_, DueSecret>(DUE_SECRETS_QUERY)
-        .fetch_all(pool)
-        .await;
+    // The sweep looks across every tenant by design — it is a scheduler, not a
+    // request, so there is no caller whose tenant it could inherit. Under
+    // row-level security an unscoped read would return nothing at all and the
+    // sweep would silently stop rotating anything, so the bypass is stated.
+    //
+    // Scoped tightly to the query: the loop below makes outbound webhook calls,
+    // and holding a transaction open across network I/O would pin a pooled
+    // connection for the length of a remote timeout.
+    let rows = match ScopedTx::cross_tenant(pool, "rotation sweep: scans all tenants").await {
+        Ok(mut scope) => {
+            let r = sqlx::query_as::<_, DueSecret>(DUE_SECRETS_QUERY)
+                .fetch_all(scope.conn())
+                .await;
+            // Read-only: commit and rollback are equivalent, but committing
+            // keeps the "scopes are committed" habit intact.
+            let _ = scope.commit().await;
+            r
+        }
+        Err(e) => {
+            error!(error = %e, "rotation sweep could not open a cross-tenant scope");
+            ROTATION_SWEEP_RUNS_TOTAL
+                .with_label_values(&["error"])
+                .inc();
+            return;
+        }
+    };
 
     let due_secrets = match rows {
         Ok(v) => v,
@@ -256,13 +295,7 @@ async fn run_rotation_sweep(pool: &PgPool, http_client: &reqwest::Client, config
                 // Mark rotation_status = 'pending' so we do not re-fire this
                 // cycle.  The calling app will POST to /v1/secret/rotate to
                 // officially initiate the two-phase protocol.
-                if let Err(e) = sqlx::query(
-                    "UPDATE shared.secrets SET rotation_status = 'pending' WHERE id = $1",
-                )
-                .bind(secret.id)
-                .execute(pool)
-                .await
-                {
+                if let Err(e) = mark_rotation_pending(pool, secret.id).await {
                     error!(
                         secret_id = %secret.id,
                         error = %e,
@@ -398,12 +431,29 @@ fn spawn_version_cleanup(
 /// size (100). The function returns the UUIDs of rotation records that were
 /// completed; we count them for metrics and audit logging.
 async fn run_version_cleanup(pool: &PgPool) {
+    // Cross-tenant: the cleanup sweeps deprecated versions for every tenant on a
+    // timer. shared.vault_revoke_deprecated_versions is SECURITY INVOKER, so it
+    // runs under the caller's RLS context and would find nothing without this.
+    let mut cleanup_scope =
+        match ScopedTx::cross_tenant(pool, "version cleanup: sweeps all tenants").await {
+            Ok(s) => s,
+            Err(e) => {
+                error!(error = %e, "version cleanup could not open a cross-tenant scope");
+                return;
+            }
+        };
+
     // vault_revoke_deprecated_versions returns SETOF UUID (the rotation record IDs
     // that were transitioned to 'completed').
     let result: Result<Vec<uuid::Uuid>, sqlx::Error> =
         sqlx::query_scalar("SELECT shared.vault_revoke_deprecated_versions(100)")
-            .fetch_all(pool)
+            .fetch_all(cleanup_scope.conn())
             .await;
+
+    if let Err(e) = cleanup_scope.commit().await {
+        error!(error = %e, "version cleanup commit failed");
+        return;
+    }
 
     match result {
         Ok(ids) => {
