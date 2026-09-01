@@ -3,6 +3,7 @@
 import { SWRConfig } from 'swr'
 import { useEffect, type ReactNode } from 'react'
 import { ApiError } from '@/lib/fetcher'
+import { useAuth } from '@/contexts/AuthContext'
 
 /**
  * Catch-all for promise rejections nobody handled.
@@ -40,6 +41,7 @@ function useGlobalRejectionHandler() {
  */
 export function Providers({ children }: { children: ReactNode }) {
   useGlobalRejectionHandler()
+  const { logout, isAuthenticated } = useAuth()
 
   return (
     <SWRConfig
@@ -61,10 +63,14 @@ export function Providers({ children }: { children: ReactNode }) {
           return true
         },
 
-        // A read that fails is never nothing — make sure it is at least visible
-        // in the console even on a page that forgets to render `error`.
         onError: (err: unknown, key: string) => {
           console.error(`[swr] ${key}:`, err)
+          // A dead token must dump the session. Otherwise the Leases page (and
+          // every other GET) shows a red error while the chrome still looks
+          // logged in — revoke/expire would look like a broken table.
+          if (isAuthenticated && err instanceof ApiError && err.isAuthError) {
+            logout()
+          }
         },
 
         // Show the previous page of data while a new key loads instead of

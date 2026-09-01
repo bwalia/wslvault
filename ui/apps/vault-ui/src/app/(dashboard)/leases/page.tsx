@@ -2,6 +2,7 @@
 import { useState, useCallback } from 'react'
 import { mutate as swrMutate } from 'swr'
 import { useVaultSWR, useVaultMutate } from '@/hooks/useVaultSWR'
+import { useAuth } from '@/contexts/AuthContext'
 import { useAsyncAction } from '@/hooks/useAsyncAction'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
@@ -56,6 +57,7 @@ function TTLBar({ expiresAt, ttlSeconds }: { expiresAt: string; ttlSeconds: numb
 }
 
 export default function LeasesPage() {
+  const { leaseId, logout } = useAuth()
   const vaultMutate = useVaultMutate()
   const [stateFilter, setStateFilter] = useState<StateFilter>('all')
 
@@ -92,14 +94,19 @@ export default function LeasesPage() {
     if (!revokeTarget) return
     // A swallowed failure here told the operator a credential was revoked when
     // it may still be live. That is the one outcome this page must never fake.
+    const self = leaseId !== null && revokeTarget.id === leaseId
     void revoke.run(
       async () => {
         await vaultMutate(`${LEASES_KEY}/${revokeTarget.id}/revoke`, 'POST', {})
+        if (self) {
+          logout()
+          return
+        }
         await swrMutate(query)
       },
       { fallback: 'Failed to revoke lease', onSuccess: () => setRevokeTarget(null) },
     )
-  }, [revoke, revokeTarget, vaultMutate, query])
+  }, [revoke, revokeTarget, vaultMutate, query, leaseId, logout])
 
   const columns: Column<Lease>[] = [
     {
@@ -107,6 +114,16 @@ export default function LeasesPage() {
       label: 'Target',
       sortable: true,
       mono: true,
+      render: row => (
+        <span className="font-mono text-[13px]">
+          {row.target_label}
+          {leaseId && row.id === leaseId && (
+            <span className="ml-2 text-[11px] font-sans font-medium text-primary-600 dark:text-primary-400">
+              this session
+            </span>
+          )}
+        </span>
+      ),
     },
     {
       field: 'target_type',
@@ -206,7 +223,11 @@ export default function LeasesPage() {
         <EmptyState
           icon={Key}
           title="No leases yet"
-          description="A lease is created when you log in. Token leases appear here; KV secret reads do not."
+          description={
+            leaseId
+              ? 'No leases match this filter. Token leases appear here; KV secret reads do not.'
+              : 'This login did not create a lease — identity could not reach lease-manager. Log out and in again once that service is up. KV secret reads never create a lease.'
+          }
         />
       ) : (
         <DataTable
@@ -223,7 +244,11 @@ export default function LeasesPage() {
         onClose={() => { setRevokeTarget(null); revoke.clearError() }}
         onConfirm={onRevoke}
         title="Revoke lease"
-        description={`Revoke lease "${revokeTarget?.target_label}"? The associated token will stop working immediately.`}
+        description={
+          leaseId && revokeTarget?.id === leaseId
+            ? `Revoke this session ("${revokeTarget?.target_label}")? You will be signed out immediately.`
+            : `Revoke lease "${revokeTarget?.target_label}"? The associated token will stop working immediately.`
+        }
         confirmLabel="Revoke"
         loading={revoke.pending}
         error={revoke.error}

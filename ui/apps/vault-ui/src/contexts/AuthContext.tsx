@@ -18,6 +18,8 @@ interface AuthState {
   tenantId: string | null
   policies: string[]
   expiresAt: number | null // timestamp ms
+  /** Lease created at login. Missing when lease-manager was down (degraded). */
+  leaseId: string | null
 }
 
 /** Returned when the key is right but a second factor is still needed. */
@@ -43,9 +45,21 @@ interface AuthContextType extends AuthState {
 
 const AuthContext = createContext<AuthContextType | null>(null)
 
-const STORAGE_KEYS = ['vault_token', 'vault_tenant_id', 'vault_policies', 'vault_expires_at'] as const
+const STORAGE_KEYS = [
+  'vault_token',
+  'vault_tenant_id',
+  'vault_policies',
+  'vault_expires_at',
+  'vault_lease_id',
+] as const
 
-const EMPTY_STATE: AuthState = { token: null, tenantId: null, policies: [], expiresAt: null }
+const EMPTY_STATE: AuthState = {
+  token: null,
+  tenantId: null,
+  policies: [],
+  expiresAt: null,
+  leaseId: null,
+}
 
 /** Remove every session key. Partial clears leave a half-session behind. */
 function clearStoredSession(): void {
@@ -73,6 +87,7 @@ function readStoredSession(): AuthState | null {
     tenantId: safeStorage.get('vault_tenant_id'),
     policies,
     expiresAt,
+    leaseId: safeStorage.get('vault_lease_id') || null,
   }
 }
 
@@ -81,6 +96,7 @@ interface AuthResponse {
   tenant_id: string
   policies: string[]
   expires_at: string
+  lease_id?: string
 }
 
 /** The body returned instead of a token when a second factor is required. */
@@ -135,16 +151,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       // A failed write is not fatal — the session works for this tab, it just
       // won't survive a reload. Better than blocking login outright.
+      const leaseId = data.lease_id?.trim() ? data.lease_id.trim() : null
       const persisted =
         safeStorage.set('vault_token', data.token) &&
         safeStorage.set('vault_tenant_id', data.tenant_id ?? '') &&
         safeStorage.set('vault_policies', JSON.stringify(policies)) &&
-        safeStorage.set('vault_expires_at', String(expiresAt))
+        safeStorage.set('vault_expires_at', String(expiresAt)) &&
+        (leaseId
+          ? safeStorage.set('vault_lease_id', leaseId)
+          : (safeStorage.remove('vault_lease_id'), true))
       if (!persisted) {
         console.warn('[auth] session could not be persisted; it will not survive a reload')
       }
 
-      setState({ token: data.token, tenantId: data.tenant_id ?? null, policies, expiresAt })
+      setState({
+        token: data.token,
+        tenantId: data.tenant_id ?? null,
+        policies,
+        expiresAt,
+        leaseId,
+      })
       router.push('/dashboard')
     },
     [router],
