@@ -63,6 +63,15 @@ spec:
               value: {{ .Values.auditService.httpPort | quote }}
             - name: GRPC_PORT
               value: {{ .Values.auditService.grpcPort | quote }}
+            # Master key for the per-tenant audit signing chain. Byte-identical
+            # across regions, like the rest of the mesh material: a record
+            # replicated from a peer verifies with the receiving region's key.
+            - name: AUDIT_SIGNING_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.auditSigningKeySecretName" . }}
+                  key: {{ include "wslvault.auditSigningKeySecretKey" . }}
+                  optional: false
             - name: DB_PASSWORD
               valueFrom:
                 secretKeyRef:

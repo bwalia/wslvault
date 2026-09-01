@@ -53,16 +53,17 @@ DRY_RUN=""
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-# The four keys the chart reads out of this Secret. Key names match
+# The keys the chart reads out of this Secret. Key names match
 # secrets.existingSecretKeys in values.yaml.
 apply_secret() {
-  local ns="$1" root="$2" jwt="$3" pki="$4" peer="$5"
+  local ns="$1" root="$2" jwt="$3" pki="$4" peer="$5" audit="$6"
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   kubectl -n "$ns" create secret generic "$SECRET_NAME" \
     --from-literal=root-key="$root" \
     --from-literal=jwt-secret="$jwt" \
     --from-literal=pki-root-key="$pki" \
     --from-literal=replication-peer-token="$peer" \
+    --from-literal=audit-signing-key="$audit" \
     --dry-run=client -o yaml | kubectl apply $DRY_RUN -f -
 }
 
@@ -94,8 +95,13 @@ cmd_adopt() {
   local peer
   peer="$(openssl rand -hex 32)"
 
+  # Same for the audit signing key, unless the region already carries one.
+  local audit
+  audit="$(kubectl -n "$ns" get secret "${release}-audit-signing-key" -o jsonpath='{.data.audit-signing-key}' 2>/dev/null | base64 -d || true)"
+  [ -n "$audit" ] || audit="$(openssl rand -base64 48 | tr -d '\n')"
+
   for target in $NAMESPACES; do
-    apply_secret "$target" "$root" "$jwt" "$pki" "$peer"
+    apply_secret "$target" "$root" "$jwt" "$pki" "$peer" "$audit"
     printf '  installed in %s\n' "$target"
   done
   note "done — the mesh now uses ${ns}'s existing keys, so its data stays readable"
@@ -113,15 +119,16 @@ cmd_create() {
 
   note "generating shared mesh key material"
   # 32 bytes for the AES-256 keys, 64 for the HS256 signing secret, 32 for the
-  # peer bearer token.
-  local root jwt pki peer
+  # peer bearer token, 48 for the audit signing chain master key.
+  local root jwt pki peer audit
   root="$(openssl rand -base64 32)"
   jwt="$(openssl rand -base64 64 | tr -d '\n')"
   pki="$(openssl rand -base64 32)"
   peer="$(openssl rand -hex 32)"
+  audit="$(openssl rand -base64 48 | tr -d '\n')"
 
   for ns in $NAMESPACES; do
-    apply_secret "$ns" "$root" "$jwt" "$pki" "$peer"
+    apply_secret "$ns" "$root" "$jwt" "$pki" "$peer" "$audit"
     printf '  installed in %s\n' "$ns"
   done
   note "done — every region now holds identical key material"
@@ -134,24 +141,31 @@ cmd_copy_from() {
     || die "$SECRET_NAME not found in namespace $src"
 
   note "copying $SECRET_NAME from $src"
-  local root jwt pki peer
+  local root jwt pki peer audit
   root="$(kubectl -n "$src" get secret "$SECRET_NAME" -o jsonpath='{.data.root-key}' | base64 -d)"
   jwt="$(kubectl -n "$src" get secret "$SECRET_NAME" -o jsonpath='{.data.jwt-secret}' | base64 -d)"
   pki="$(kubectl -n "$src" get secret "$SECRET_NAME" -o jsonpath='{.data.pki-root-key}' | base64 -d)"
   peer="$(kubectl -n "$src" get secret "$SECRET_NAME" -o jsonpath='{.data.replication-peer-token}' | base64 -d)"
+  audit="$(kubectl -n "$src" get secret "$SECRET_NAME" -o jsonpath='{.data.audit-signing-key}' | base64 -d)"
 
-  # A region joining a mesh whose source Secret predates the peer token would
-  # otherwise get an empty token and fail closed on every peer poll.
+  # A region joining a mesh whose source Secret predates the peer token or the
+  # audit key would otherwise get an empty value and fail closed.
+  local backfill=""
   if [ -z "$peer" ]; then
-    peer="$(openssl rand -hex 32)"
-    printf '  source has no replication-peer-token; generating one and\n'
+    peer="$(openssl rand -hex 32)"; backfill="replication-peer-token"
+  fi
+  if [ -z "$audit" ]; then
+    audit="$(openssl rand -base64 48 | tr -d '\n')"; backfill="${backfill:+$backfill and }audit-signing-key"
+  fi
+  if [ -n "$backfill" ]; then
+    printf '  source has no %s; generating and\n' "$backfill"
     printf '  writing it back to %s as well\n' "$src"
-    apply_secret "$src" "$root" "$jwt" "$pki" "$peer"
+    apply_secret "$src" "$root" "$jwt" "$pki" "$peer" "$audit"
   fi
 
   for ns in $NAMESPACES; do
     [ "$ns" = "$src" ] && continue
-    apply_secret "$ns" "$root" "$jwt" "$pki" "$peer"
+    apply_secret "$ns" "$root" "$jwt" "$pki" "$peer" "$audit"
     printf '  installed in %s\n' "$ns"
   done
   note "done"
@@ -213,7 +227,7 @@ cmd_verify() {
     # Fingerprint rather than print: the point is to compare, not to disclose.
     local fp
     fp="$(kubectl -n "$ns" get secret "$SECRET_NAME" \
-          -o jsonpath='{.data.root-key}{.data.jwt-secret}{.data.pki-root-key}{.data.replication-peer-token}' \
+          -o jsonpath='{.data.root-key}{.data.jwt-secret}{.data.pki-root-key}{.data.replication-peer-token}{.data.audit-signing-key}' \
           | shasum -a 256 | cut -c1-16)"
     if [ -z "$ref" ]; then
       ref="$fp"; refns="$ns"

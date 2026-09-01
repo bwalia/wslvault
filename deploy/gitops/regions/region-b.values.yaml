@@ -162,6 +162,8 @@ secrets:
 # and identity-service still keeps its principal store in a HashMap.
 cryptoService:
   replicaCount: 1
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Image pins, matched to region A.
@@ -181,16 +183,33 @@ cryptoService:
 # Failing the alias over to region B would have broken ESO cluster-wide.
 # scripts/validate-gitops.sh now fails on any such drift.
 # ─────────────────────────────────────────────────────────────────────────────
+# Everything that authenticates callers is pinned to 2713cf4e — the first
+# main build where identity comes from the signed token instead of
+# attacker-controlled X-Tenant-Id/X-Policies headers, matching the b6c8a85
+# vault-ui that no longer sends them. regionHealth stays at 9f724df
+# (unchanged since).
 identityService:
   replicaCount: 1
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
 regionHealth:
   image:
     tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
 secretEngine:
-  # Branch build from PR #12 (fix/lookup-self-token-type) — what region A has
-  # run in production for five weeks. Move BOTH regions to a main-built tag
-  # once that PR merges and CI publishes one.
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+policyEngine:
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+transitEngine:
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+auditService:
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+pkiEngine:
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+mcpServer:
+  image:
+    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af

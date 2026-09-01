@@ -273,6 +273,10 @@ secrets:
   jwtSecret: ""
   # -- PKI root key that envelope-encrypts tenant CA private keys (base64-encoded 32-byte key)
   pkiRootKey: ""
+  # -- Master key for the audit signing chain; per-tenant signing keys derive
+  # from it, and audit-service refuses to start without one. At least 32
+  # bytes. Generate with: openssl rand -base64 48
+  auditSigningKey: ""
   # -- Bootstrap administrator token for the API key management endpoints
   # (VAULT_ADMIN_TOKEN). Creating an API key grants whatever policies the
   # request asks for, so those endpoints authenticate callers themselves rather
@@ -294,6 +298,7 @@ secrets:
     jwtSecret: jwt-secret
     pkiRootKey: pki-root-key
     replicationPeerToken: replication-peer-token
+    auditSigningKey: audit-signing-key
     # Optional: absent from existingSecret means the bootstrap path stays off.
     adminToken: admin-token
 
