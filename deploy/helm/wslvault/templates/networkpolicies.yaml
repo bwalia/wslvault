@@ -5,10 +5,12 @@ service mesh.
 
 Traffic topology (allowed ingress paths):
   gateway           <- external clients (port 443)
-  identity-service  <- gateway (auth), mcp-server (session auth)
+  identity-service  <- gateway (auth), mcp-server (session auth),
+                       secret-engine + policy-engine (JWKS fetch)
   secret-engine     <- gateway, mcp-server
   policy-engine     <- secret-engine, transit-engine, gateway, identity-service
-  crypto-service    <- secret-engine, transit-engine, lease-manager
+  crypto-service    <- secret-engine, transit-engine, lease-manager,
+                       identity-service (token-signing key wrap)
   lease-manager     <- secret-engine (lease creation), gateway (renewal API)
   audit-service     <- all services (fire-and-forget audit events)
   transit-engine    <- gateway
@@ -142,7 +144,8 @@ spec:
 
 {{/*
 ────────────────────────────────────────────────────────────────────────────
-crypto-service: accept gRPC from secret-engine, transit-engine, lease-manager
+crypto-service: accept gRPC from secret-engine, transit-engine, lease-manager,
+                and identity-service (wraps per-tenant token-signing keys)
 ────────────────────────────────────────────────────────────────────────────
 */}}
 {{- if .Values.cryptoService.enabled }}
@@ -172,6 +175,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.cryptoService.grpcPort }}
           protocol: TCP
@@ -236,6 +242,14 @@ spec:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+    # Fetches the Ed25519 JWKS from identity-service to verify tokens
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
           protocol: TCP
     # Emits audit events
     - to:
@@ -304,11 +318,20 @@ spec:
       ports:
         - port: 5432
           protocol: TCP
+    # Fetches the Ed25519 JWKS from identity-service to verify tokens
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
 {{- end }}
 
 {{/*
 ────────────────────────────────────────────────────────────────────────────
-identity-service: accept HTTP/gRPC from gateway and mcp-server
+identity-service: accept HTTP/gRPC from gateway and mcp-server, plus JWKS
+fetches from the token-verifying services
 ────────────────────────────────────────────────────────────────────────────
 */}}
 {{- if .Values.identityService.enabled }}
@@ -340,6 +363,18 @@ spec:
           protocol: TCP
         - port: {{ .Values.identityService.grpcPort }}
           protocol: TCP
+    # Token verifiers fetch the Ed25519 JWKS
+    # (/v1/identity/.well-known/jwks.json, see VAULT_JWKS_URL).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
   egress:
     # Policy checks during token validation
     - to:
@@ -348,6 +383,16 @@ spec:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "policy-engine" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.policyEngine.grpcPort }}
+          protocol: TCP
+    # Wraps per-tenant token-signing keys via crypto-service; without this
+    # lane every login fails with "token issuance failed: crypto-service:
+    # tcp connect error".
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "crypto-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.cryptoService.grpcPort }}
           protocol: TCP
     - to:
         - podSelector:
