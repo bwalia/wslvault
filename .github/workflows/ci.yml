@@ -26,7 +26,7 @@ jobs:
   # both rather than forking a second tag line.
   compute-version:
     name: Compute Next Version
-    runs-on: [self-hosted, wslvault]
+    runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read # resolves a number; tagging happens after the build
@@ -173,13 +173,13 @@ jobs:
 
   build-images:
     name: Build & Push Docker Images
-    # Self-hosted (the wslvault-mac runner on hh193), because GitHub-hosted
-    # minutes are exhausted. That runner is macOS/arm64 while k3s1 is amd64, so
-    # it only ORCHESTRATES: the actual build runs on an in-cluster amd64
-    # BuildKit pod (see the buildx kubernetes driver step below). platforms is
-    # still pinned to linux/amd64 because the Dockerfiles choose their Rust musl
-    # target from `uname -m`.
-    runs-on: [self-hosted, wslvault]
+    # GitHub-hosted, native amd64. The repo is public, so hosted-runner minutes
+    # are free and unlimited — no reason for the old self-hosted-Mac + in-cluster
+    # BuildKit contraption, which depended on the runner's flaky LAN path to the
+    # k3s API/kubelet proxy and failed the whole matrix at once. ubuntu-latest is
+    # x86_64, so the Dockerfiles' `uname -m` musl target is amd64 with no
+    # emulation. Images push straight to Docker Hub.
+    runs-on: ubuntu-latest
     # Gated on check + test. These were decoupled (`needs: []`) back when lint
     # and audit were `continue-on-error`, so gating on them meant gating on
     # nothing. They block now — and with them decoupled, code that failed its
@@ -187,19 +187,10 @@ jobs:
     # compute-version feeds the release image tag; it only runs on main, same
     # as this job's own `if`.
     needs: [check, test, compute-version]
-    env:
-      # Native amd64 builds run on a buildkitd daemon on debian001, reached
-      # DIRECTLY over TCP+mTLS — not through the k3s API/kubelet exec-proxy,
-      # which is intermittently unstable and used to fail the whole matrix.
-      # See deploy/buildkit/README.md. Client certs live on the runner host.
-      BUILDKIT_REMOTE: tcp://192.168.1.140:1234
-      BUILDKIT_CERTS: /Users/balinderwalia/.wslvault-buildkit
     if: github.ref == 'refs/heads/main'
     strategy:
-      # One failing service must not cancel the other twelve. With a single
-      # self-hosted runner these jobs queue serially, so a fail-fast cancel
-      # wipes out everything still waiting — that is exactly how a
-      # replication-agent failure took the secret-engine image down with it.
+      # One failing service must not cancel the others; hosted runners build
+      # these in parallel.
       fail-fast: false
       matrix:
         service:
@@ -220,47 +211,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Build on an amd64 BuildKit pod INSIDE k3s1 rather than emulating amd64
-      # on this arm64 runner.
-      #
-      # History: these images used to build on ubuntu-latest (native amd64) in
-      # ~8 minutes. Moving to this arm64 self-hosted runner with QEMU took the
-      # secret-engine build from 8 minutes to SIX HOURS, where GitHub's job cap
-      # cancelled it — and before that it failed outright, because
-      # x86_64-linux-musl-gcc SIGSEGVs under QEMU while compiling ring's
-      # curve25519.c. Emulation is not merely slow here, it is unreliable.
-      #
-      # The kubernetes driver runs the real build on a k3s1 node (amd64), so
-      # compilation is native again while the runner just orchestrates.
-      - name: Connect to remote amd64 BuildKit (debian001)
-        run: |
-          set -euo pipefail
-
-          # Connect straight to the buildkitd daemon on debian001 over TCP+mTLS.
-          # This deliberately does NOT use the buildx kubernetes driver: that
-          # attaches through the k3s API server's kubelet proxy (:10250), which
-          # is intermittently unstable here (502 "while dialing <node>:10250")
-          # and used to fail every build job at once. The remote driver has no
-          # API server or kubelet in the path — just a LAN TCP connection.
-          for f in ca.pem client-cert.pem client-key.pem; do
-            [ -f "$BUILDKIT_CERTS/$f" ] || { echo "::error::missing $BUILDKIT_CERTS/$f on the runner (see deploy/buildkit/README.md)"; exit 1; }
-          done
-
-          docker buildx inspect k3s-remote >/dev/null 2>&1 || \
-            docker buildx create --name k3s-remote --driver remote \
-              --driver-opt "cacert=$BUILDKIT_CERTS/ca.pem,cert=$BUILDKIT_CERTS/client-cert.pem,key=$BUILDKIT_CERTS/client-key.pem" \
-              "$BUILDKIT_REMOTE"
-
-          # Short retry only covers a daemon restart (Recreate rollout); there is
-          # no flaky proxy to outlast any more.
-          booted= ; last_err=
-          for attempt in $(seq 1 10); do
-            if last_err=$(docker buildx inspect k3s-remote --bootstrap 2>&1 >/dev/null); then booted=1; break; fi
-            echo "remote buildkit not ready (attempt $attempt/10): $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-200)"
-            sleep 6
-          done
-          [ -n "$booted" ] || { echo "::error::remote buildkit $BUILDKIT_REMOTE not reachable: $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-300)"; exit 1; }
-          docker buildx inspect k3s-remote | grep -E "^Status|^Platforms" || true
+      # Native amd64 build on the hosted runner — no cluster, no LAN, no IPs.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
 
       # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
       - name: Log in to Docker Hub
@@ -272,14 +225,11 @@ jobs:
       - name: Build & push ${{ matrix.service }}
         uses: docker/build-push-action@v6
         with:
-          builder: k3s-remote
           context: .
           file: deploy/docker/${{ matrix.service }}/Dockerfile
           push: true
-          # Pinned, not inferred. The Dockerfile selects its Rust musl target
-          # from `uname -m`, so an unpinned build on the arm64 runner would
-          # silently produce an aarch64 binary that the amd64 cluster cannot
-          # execute — and the failure only surfaces at pod start.
+          # Native on the amd64 hosted runner (no emulation). Pinned so the
+          # Dockerfile's `uname -m` musl target is always amd64.
           platforms: linux/amd64
           # The vX.Y.Z line lands only when the version is new; empty entries
           # are dropped by the action's list parser.
@@ -293,10 +243,9 @@ jobs:
           build-args: |
             GIT_SHA=${{ github.sha }}
             APP_VERSION=${{ needs.compute-version.outputs.next_version }}
-          # GHA cache is unavailable on a self-hosted runner without the
-          # Actions cache service; use the local buildx cache instead.
-          cache-from: type=local,src=/tmp/.buildx-cache-${{ matrix.service }}
-          cache-to: type=local,dest=/tmp/.buildx-cache-${{ matrix.service }},mode=max
+          # GitHub Actions cache, scoped per service.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
   # ─── claim the version: push the tag + cut the release ──────────────
   # Runs only after EVERY image is in the registry: a failed build leaves no
@@ -307,7 +256,7 @@ jobs:
     name: Tag & Release
     needs: [compute-version, build-images]
     if: needs.compute-version.outputs.tag_is_new == 'true'
-    runs-on: [self-hosted, wslvault]
+    runs-on: ubuntu-latest
     permissions:
       contents: write # the only job that writes to the repo
     steps:
