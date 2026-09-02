@@ -284,32 +284,28 @@ jobs:
     permissions:
       contents: write # the only job that writes to the repo
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          # Tag exactly what was built, not HEAD of main (which may have
-          # advanced while the builds ran).
-          ref: ${{ github.sha }}
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - name: Create and push tag
+      # Create the tag via the GitHub API, NOT `git push`. A GITHUB_TOKEN push
+      # of a ref whose commit contains workflow files is rejected ("refusing to
+      # allow a GitHub App to create or update workflow ... without workflows
+      # permission"), and that token cannot be granted the workflows permission.
+      # The API creates the tag ref to an existing commit, which is not a
+      # workflow modification, so contents:write is enough.
+      - name: Create tag
         id: create_tag
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           NEXT_VERSION="${{ needs.compute-version.outputs.next_version }}"
           # compute-version checked collisions against its clone; re-check the
-          # REMOTE, because the race being guarded is a tag appearing there
-          # during the long builds.
-          if git ls-remote --exit-code --tags origin "refs/tags/$NEXT_VERSION" >/dev/null 2>&1; then
+          # remote, because the race being guarded is a tag appearing during the
+          # build.
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$NEXT_VERSION" >/dev/null 2>&1; then
             echo "::warning::Tag $NEXT_VERSION appeared during the build, skipping creation"
             echo "tag_created=false" >> "$GITHUB_OUTPUT"
           else
-            git tag -a "$NEXT_VERSION" -m "Release $NEXT_VERSION"
-            git push origin "$NEXT_VERSION"
+            gh api -X POST "repos/${{ github.repository }}/git/refs" \
+              -f ref="refs/tags/$NEXT_VERSION" -f sha="${{ github.sha }}" >/dev/null
             echo "tag_created=true" >> "$GITHUB_OUTPUT"
           fi
 
