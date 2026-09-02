@@ -188,9 +188,12 @@ jobs:
     # as this job's own `if`.
     needs: [check, test, compute-version]
     env:
-      # Kubeconfig for k3s1, used by the buildx kubernetes driver below so the
-      # actual compile runs on an amd64 node instead of under emulation here.
-      K3S_KUBECONFIG: /Users/balinderwalia/.kube/k3s1.yaml
+      # Native amd64 builds run on a buildkitd daemon on debian001, reached
+      # DIRECTLY over TCP+mTLS — not through the k3s API/kubelet exec-proxy,
+      # which is intermittently unstable and used to fail the whole matrix.
+      # See deploy/buildkit/README.md. Client certs live on the runner host.
+      BUILDKIT_REMOTE: tcp://192.168.1.140:1234
+      BUILDKIT_CERTS: /Users/balinderwalia/.wslvault-buildkit
     if: github.ref == 'refs/heads/main'
     strategy:
       # One failing service must not cancel the other twelve. With a single
@@ -229,48 +232,35 @@ jobs:
       #
       # The kubernetes driver runs the real build on a k3s1 node (amd64), so
       # compilation is native again while the runner just orchestrates.
-      - name: Use in-cluster amd64 BuildKit (k3s1)
-        env:
-          KUBECONFIG: ${{ env.K3S_KUBECONFIG }}
+      - name: Connect to remote amd64 BuildKit (debian001)
         run: |
           set -euo pipefail
 
-          # The buildx kubernetes driver reaches the in-cluster buildkit pod by
-          # attaching a stream through the API server's kubelet proxy (:10250).
-          # That proxy path in this cluster is intermittently unstable (502 "while
-          # dialing <node>:10250"), and when it is down for a stretch EVERY build
-          # job fails at bootstrap. So:
-          #   1. kubeconfig targets a control-plane node, not a worker (set on the
-          #      runner host; see the k3s API line below).
-          #   2. wait for the API to be up, then bootstrap with a patient retry
-          #      that rides out a multi-minute proxy outage — and prints the real
-          #      buildkit error each attempt rather than hiding it.
-          api=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
-          echo "k3s API: $api"
-          ready=
-          for attempt in $(seq 1 30); do
-            if curl -sk -o /dev/null --max-time 5 "$api/livez"; then ready=1; break; fi
-            echo "k3s API unreachable (attempt $attempt/30); retrying in 5s"
-            sleep 5
+          # Connect straight to the buildkitd daemon on debian001 over TCP+mTLS.
+          # This deliberately does NOT use the buildx kubernetes driver: that
+          # attaches through the k3s API server's kubelet proxy (:10250), which
+          # is intermittently unstable here (502 "while dialing <node>:10250")
+          # and used to fail every build job at once. The remote driver has no
+          # API server or kubelet in the path — just a LAN TCP connection.
+          for f in ca.pem client-cert.pem client-key.pem; do
+            [ -f "$BUILDKIT_CERTS/$f" ] || { echo "::error::missing $BUILDKIT_CERTS/$f on the runner (see deploy/buildkit/README.md)"; exit 1; }
           done
-          [ -n "$ready" ] || { echo "::error::k3s API $api not reachable after retries"; exit 1; }
 
-          docker buildx inspect k3s-amd64 >/dev/null 2>&1 || \
-            docker buildx create --name k3s-amd64 --driver kubernetes \
-              --driver-opt namespace=default,replicas=1,requests.cpu=4,requests.memory=8Gi \
-              --platform linux/amd64
+          docker buildx inspect k3s-remote >/dev/null 2>&1 || \
+            docker buildx create --name k3s-remote --driver remote \
+              --driver-opt "cacert=$BUILDKIT_CERTS/ca.pem,cert=$BUILDKIT_CERTS/client-cert.pem,key=$BUILDKIT_CERTS/client-key.pem" \
+              "$BUILDKIT_REMOTE"
 
-          # Bootstrap actually exercises the kubelet-proxy path, so it is also the
-          # readiness probe. Up to ~5 min of retry (20 x 15s) to outlast a proxy
-          # blip; the error is captured and printed so a real failure is diagnosable.
+          # Short retry only covers a daemon restart (Recreate rollout); there is
+          # no flaky proxy to outlast any more.
           booted= ; last_err=
-          for attempt in $(seq 1 20); do
-            if last_err=$(docker buildx inspect k3s-amd64 --bootstrap 2>&1 >/dev/null); then booted=1; break; fi
-            echo "buildkit bootstrap failed (attempt $attempt/20): $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-200)"
-            sleep 15
+          for attempt in $(seq 1 10); do
+            if last_err=$(docker buildx inspect k3s-remote --bootstrap 2>&1 >/dev/null); then booted=1; break; fi
+            echo "remote buildkit not ready (attempt $attempt/10): $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-200)"
+            sleep 6
           done
-          [ -n "$booted" ] || { echo "::error::BuildKit bootstrap failed after retries: $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-300)"; exit 1; }
-          docker buildx inspect k3s-amd64 | grep -E "^Status|^Platforms" || true
+          [ -n "$booted" ] || { echo "::error::remote buildkit $BUILDKIT_REMOTE not reachable: $(printf '%s' "$last_err" | tr '\n' ' ' | cut -c1-300)"; exit 1; }
+          docker buildx inspect k3s-remote | grep -E "^Status|^Platforms" || true
 
       # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
       - name: Log in to Docker Hub
@@ -281,10 +271,8 @@ jobs:
 
       - name: Build & push ${{ matrix.service }}
         uses: docker/build-push-action@v6
-        env:
-          KUBECONFIG: ${{ env.K3S_KUBECONFIG }}
         with:
-          builder: k3s-amd64
+          builder: k3s-remote
           context: .
           file: deploy/docker/${{ matrix.service }}/Dockerfile
           push: true

@@ -1,0 +1,78 @@
+# Native amd64 BuildKit daemon for CI image builds.
+#
+# WHY THIS EXISTS
+#   The self-hosted CI runner is arm64 macOS; the cluster is amd64. Builds used
+#   the buildx "kubernetes" driver, which attaches to an in-cluster buildkit pod
+#   by streaming through the k3s API server's kubelet proxy (:10250). That proxy
+#   path is intermittently unstable in this cluster (502 "while dialing
+#   <node>:10250"), and when it is down for a stretch EVERY build job fails at
+#   bootstrap — no amount of retry outlasts a multi-minute outage.
+#
+#   This daemon is reached DIRECTLY over TCP+mTLS from the runner (buildx
+#   "remote" driver), so no API server or kubelet is in the build path. It is
+#   pinned to one node and binds that node's hostPort, so the runner connects to
+#   a stable address (see BUILDKIT_REMOTE in .github/workflows/ci.yml).
+#
+# SETUP (one-time) — see README.md in this directory for the cert commands.
+#   The TLS material is NOT in git. It is delivered as the `buildkitd-tls`
+#   Secret (server cert/key + CA), and the matching client cert/key + CA live on
+#   the runner host at $BUILDKIT_CERTS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd-amd64
+  namespace: default
+  labels:
+    app: buildkitd-amd64
+spec:
+  replicas: 1
+  # Recreate, not RollingUpdate: the pod binds hostPort 1234, and two pods
+  # cannot hold the same hostPort on one node, so a rolling update deadlocks
+  # (new pod Pending forever). Recreate stops the old pod first.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: buildkitd-amd64
+  template:
+    metadata:
+      labels:
+        app: buildkitd-amd64
+    spec:
+      # Pinned so the hostPort is always on the IP baked into the server cert's
+      # SAN (192.168.1.140). Move both together if this changes.
+      nodeSelector:
+        kubernetes.io/hostname: debian001
+      containers:
+        - name: buildkitd
+          image: moby/buildkit:v0.31.2
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --tlscacert
+            - /certs/ca.pem
+            - --tlscert
+            - /certs/cert.pem
+            - --tlskey
+            - /certs/key.pem
+          ports:
+            - containerPort: 1234
+              hostPort: 1234
+          securityContext:
+            # buildkitd needs this to set up its own namespaces/mounts.
+            privileged: true
+          readinessProbe:
+            # buildctl can't reach the TLS TCP socket without client certs, so
+            # probe the port itself.
+            tcpSocket:
+              port: 1234
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: buildkitd-tls
