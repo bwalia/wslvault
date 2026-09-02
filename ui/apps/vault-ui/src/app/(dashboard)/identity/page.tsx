@@ -32,6 +32,7 @@ interface ApiKey {
   expires_at: string | null
   last_used_at: string | null
   rate_limit_per_minute: number | null
+  mfa_required?: boolean
 }
 
 interface ApiKeyCreateResponse extends ApiKey {
@@ -81,6 +82,7 @@ export default function IdentityPage() {
    *  can hand over the enrolment link alongside it. */
   const [newKeyNeedsEnrolment, setNewKeyNeedsEnrolment] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [enrolmentCopied, setEnrolmentCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
 
   const [rotateTarget, setRotateTarget] = useState<ApiKey | null>(null)
@@ -187,15 +189,20 @@ export default function IdentityPage() {
     )
   }, [remove, deleteTarget, vaultMutate])
 
-  const copyKey = useCallback(async (val: string) => {
+  const copyKey = useCallback(async (val: string, which: 'key' | 'enrolment' = 'key') => {
     // clipboard.writeText rejects on an insecure origin (plain HTTP) or a denied
     // permission. Unhandled, the user believes a one-time key is on their
     // clipboard when it is not — and it is not shown again.
     try {
       await navigator.clipboard.writeText(val)
-      setCopied(true)
       setCopyError('')
-      setTimeout(() => setCopied(false), 2000)
+      if (which === 'enrolment') {
+        setEnrolmentCopied(true)
+        setTimeout(() => setEnrolmentCopied(false), 2000)
+      } else {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
     } catch {
       setCopyError('Could not copy — select the key and copy it manually.')
     }
@@ -229,6 +236,16 @@ export default function IdentityPage() {
           }
         </div>
       ),
+    },
+    {
+      field: 'mfa_required',
+      label: 'MFA',
+      render: row =>
+        row.mfa_required ? (
+          <Badge variant="success" size="sm">Required</Badge>
+        ) : (
+          <span className="text-xs text-ink-faint">Off</span>
+        ),
     },
     {
       field: 'last_used_at',
@@ -403,6 +420,7 @@ export default function IdentityPage() {
         title="API key created"
         keyValue={newKeyValue}
         copied={copied}
+        enrolmentCopied={enrolmentCopied}
         copyError={copyError}
         onCopy={copyKey}
         onClose={() => setNewKeyValue(null)}
@@ -450,6 +468,7 @@ function KeyRevealModal({
   title,
   keyValue,
   copied,
+  enrolmentCopied = false,
   copyError,
   onCopy,
   onClose,
@@ -458,10 +477,13 @@ function KeyRevealModal({
   title: string
   keyValue: string | null
   copied: boolean
+  /** Independent of `copied` so copying the enrolment link does not flash
+   *  the checkmark on the key button. */
+  enrolmentCopied?: boolean
   /** Clipboard failure. Critical here: the key is shown exactly once, so a
    *  silent copy failure means the user walks away with nothing. */
   copyError?: string
-  onCopy: (val: string) => void
+  onCopy: (val: string, which?: 'key' | 'enrolment') => void
   onClose: () => void
   /** Show the hand-over instructions for a key that will demand an
    *  authenticator. Without them the operator has the key but no idea that the
@@ -498,7 +520,7 @@ function KeyRevealModal({
             {keyValue}
           </code>
           <button
-            onClick={() => keyValue && onCopy(keyValue)}
+            onClick={() => keyValue && onCopy(keyValue, 'key')}
             aria-label={copied ? 'Copied' : 'Copy key'}
             className="shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
           >
@@ -520,11 +542,15 @@ function KeyRevealModal({
                 {enrolmentUrl}
               </code>
               <button
-                onClick={() => onCopy(enrolmentUrl)}
-                aria-label="Copy enrolment link"
+                onClick={() => onCopy(enrolmentUrl, 'enrolment')}
+                aria-label={enrolmentCopied ? 'Copied enrolment link' : 'Copy enrolment link'}
                 className="shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
               >
-                <Copy className="w-4 h-4" />
+                {enrolmentCopied ? (
+                  <Check className="w-4 h-4 text-success-600" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
               </button>
             </div>
             <p className="text-xs text-ink-muted leading-relaxed">

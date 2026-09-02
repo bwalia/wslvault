@@ -122,7 +122,8 @@ function EnrollGuide({ tenant }: { tenant: string | null }) {
                 wslv_
               </code>
               . Copy it and paste it into the box at the bottom of this page, then
-              press <strong className="text-ink font-medium">Continue</strong>.
+              press{' '}
+              <strong className="text-ink font-medium">Set up authenticator</strong>.
             </p>
             <p>
               If you do not have a key yet, stop here and ask the person who sent you

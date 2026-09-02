@@ -175,7 +175,7 @@ export function TwoFactorSetup() {
               label="API key"
               type="password"
               autoComplete="off"
-              placeholder="wsv_..."
+              placeholder="wslv_…"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               hint="Enrolment is authorised by the key it protects, so it has to be entered here. It is never stored."

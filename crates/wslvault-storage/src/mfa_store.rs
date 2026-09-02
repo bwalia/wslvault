@@ -95,7 +95,6 @@ pub async fn upsert_pending(
     Ok(())
 }
 
-/// Mark an enrolment confirmed, recording the step that proved it.
 /// Mark an enrolment confirmed, and make the key actually demand it.
 ///
 /// Both updates commit together. `mfa_required` was previously only ever
@@ -109,14 +108,22 @@ pub async fn upsert_pending(
 /// required with nothing enrolled locks the holder out, enrolled without
 /// required silently leaves them unprotected while telling them otherwise.
 ///
+/// The enrolment row must exist. Setting `mfa_required` with no confirmed
+/// authenticator is the lock-out case above, so a missing row rolls the
+/// transaction back rather than flipping the flag alone.
+///
 /// Setting `mfa_required` true can never violate `superuser_requires_mfa`
 /// (025_superuser.sql) — that constraint only forbids the false case.
 pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), VaultError> {
-    let mut tx = pool.inner().begin().await.map_err(|e| VaultError::Database {
-        reason: format!("could not open transaction to confirm MFA enrolment: {e}"),
-    })?;
+    let mut tx = pool
+        .inner()
+        .begin()
+        .await
+        .map_err(|e| VaultError::Database {
+            reason: format!("could not open transaction to confirm MFA enrolment: {e}"),
+        })?;
 
-    sqlx::query(
+    let confirmed = sqlx::query(
         "UPDATE shared.mfa_totp
          SET confirmed_at = now(), last_used_step = $2
          WHERE api_key_id = $1",
@@ -128,6 +135,13 @@ pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), V
     .map_err(|e| VaultError::Database {
         reason: format!("could not confirm MFA enrolment: {e}"),
     })?;
+
+    if confirmed.rows_affected() == 0 {
+        return Err(VaultError::ValidationError {
+            field: "mfa".into(),
+            reason: "no enrolment to confirm".into(),
+        });
+    }
 
     sqlx::query("UPDATE shared.api_keys SET mfa_required = true WHERE id = $1")
         .bind(api_key_id)

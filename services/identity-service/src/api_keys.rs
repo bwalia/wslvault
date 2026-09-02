@@ -1198,6 +1198,8 @@ pub struct ApiKeyMetadataResponse {
     pub expires_at: Option<DateTime<Utc>>,
     pub last_used_at: Option<DateTime<Utc>>,
     pub rate_limit_per_minute: i32,
+    /// Whether exchanging this key for a token requires an authenticator code.
+    pub mfa_required: bool,
 }
 
 impl From<&ApiKeyRecord> for ApiKeyMetadataResponse {
@@ -1214,6 +1216,7 @@ impl From<&ApiKeyRecord> for ApiKeyMetadataResponse {
             expires_at: record.expires_at,
             last_used_at: record.last_used_at,
             rate_limit_per_minute: record.rate_limit_per_minute,
+            mfa_required: record.mfa_required,
         }
     }
 }

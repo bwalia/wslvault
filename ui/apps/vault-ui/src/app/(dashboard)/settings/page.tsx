@@ -7,11 +7,11 @@ import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { mutate } from '@/lib/fetcher'
-import { Sun, Moon, Monitor, Save, CheckCircle, Check, Copy } from 'lucide-react'
+import { Sun, Moon, Monitor, Save, CheckCircle, Check, Copy, Smartphone } from 'lucide-react'
 import { formatDateTime } from '@/lib/utils'
 import { cn } from '@/lib/utils'
 import { useForm } from 'react-hook-form'
-import { TwoFactorSetup } from '@/components/TwoFactorSetup'
+import Link from 'next/link'
 
 interface ServiceUrls {
   IDENTITY_URL: string
@@ -230,9 +230,26 @@ export default function SettingsPage() {
         </CardBody>
       </Card>
 
-      {/* Second factor. Sits next to Session because it is a property of the
-          credential you signed in with, not a deployment setting. */}
-      <TwoFactorSetup />
+      {/* MFA used to live here, several cards down. It has its own page now. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Authenticator app</CardTitle>
+        </CardHeader>
+        <CardBody>
+          <p className="text-sm text-ink-muted leading-relaxed">
+            Adding a second factor to a key lives on the{' '}
+            <Link
+              href="/mfa"
+              className="inline-flex items-center gap-1 font-medium text-primary-600 hover:underline focus-ring rounded"
+            >
+              <Smartphone className="w-3.5 h-3.5" aria-hidden="true" />
+              MFA page
+            </Link>
+            . Confirming an enrolment is what switches the requirement on for
+            that key.
+          </p>
+        </CardBody>
+      </Card>
 
       {/* Bootstrap */}
       <Card>
