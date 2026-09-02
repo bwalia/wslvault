@@ -24,6 +24,8 @@
 #   See docs/ha-two-region.md §5.0.
 # ═══════════════════════════════════════════════════════════════════════════
 global:
+  # All services pinned to the v1.0.6 release build (2026-09-02).
+  imageTag: v1.0.6
   region:
     id: region-b
     displayName: London
@@ -67,7 +69,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: b6c8a85199386116b71fba914cba0ace53526dcf
+    tag: v1.0.6
   # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
   # the old name on the login page). The old host stays as an alias so existing
   # bookmarks and links keep working; both CNAME to pop0 and share the
@@ -153,7 +155,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: 578d391f-r2
+    tag: v1.0.6
 
 secrets:
   existingSecret: wslvault-mesh-keys
@@ -163,7 +165,7 @@ secrets:
 cryptoService:
   replicaCount: 1
   image:
-    tag: 578d391f-r2
+    tag: v1.0.6
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Image pins, matched to region A.
@@ -191,25 +193,25 @@ cryptoService:
 identityService:
   replicaCount: 1
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 regionHealth:
   image:
-    tag: 9f724df36074eefbb97a44636e2f2d0442ed4cb6
+    tag: v1.0.6
 secretEngine:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 policyEngine:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 transitEngine:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 auditService:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 pkiEngine:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
 mcpServer:
   image:
-    tag: 2713cf4e058aa43f5d5a976d8d1d81aeee4a00af
+    tag: v1.0.6
