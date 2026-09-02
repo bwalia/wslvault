@@ -32,6 +32,7 @@ interface ApiKey {
   expires_at: string | null
   last_used_at: string | null
   rate_limit_per_minute: number | null
+  mfa_required?: boolean
 }
 
 interface ApiKeyCreateResponse extends ApiKey {
@@ -44,6 +45,7 @@ interface ApiKeyFormValues {
   path_prefixes: string
   expires_in_seconds: string
   rate_limit_per_minute: string
+  mfa_required: boolean
 }
 
 const APIKEYS_KEY = api.identity.apiKeys()
@@ -76,7 +78,11 @@ export default function IdentityPage() {
 
   const [createOpen, setCreateOpen] = useState(false)
   const [newKeyValue, setNewKeyValue] = useState<string | null>(null)
+  /** Whether the key just created will demand an authenticator, so the reveal
+   *  can hand over the enrolment link alongside it. */
+  const [newKeyNeedsEnrolment, setNewKeyNeedsEnrolment] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [enrolmentCopied, setEnrolmentCopied] = useState(false)
   const [copyError, setCopyError] = useState('')
 
   const [rotateTarget, setRotateTarget] = useState<ApiKey | null>(null)
@@ -88,14 +94,29 @@ export default function IdentityPage() {
   const remove = useAsyncAction()
 
   const form = useForm<ApiKeyFormValues>({
-    defaultValues: { policies: '', path_prefixes: '', expires_in_seconds: '', rate_limit_per_minute: '60' },
+    // MFA defaults OFF so a new key can sign in straight away, and the holder
+    // turns it on for themselves from the MFA page — confirming an enrolment
+    // sets `mfa_required` (mfa_store::confirm). Demanding it up front would
+    // hand people a key that cannot log in until it is enrolled, which is the
+    // right posture only when someone deliberately chooses it.
+    defaultValues: {
+      policies: '',
+      path_prefixes: '',
+      expires_in_seconds: '',
+      rate_limit_per_minute: '60',
+      mfa_required: false,
+    },
   })
 
   const onCreateKey = useCallback(
     (values: ApiKeyFormValues) => {
       void create.run(
         async () => {
-          const body: Record<string, unknown> = { name: values.name, tenant_id: tenantId }
+          const body: Record<string, unknown> = {
+            name: values.name,
+            tenant_id: tenantId,
+            mfa_required: values.mfa_required,
+          }
           if (values.policies.trim())
             body.policies = values.policies.split(',').map(p => p.trim()).filter(Boolean)
           if (values.path_prefixes.trim())
@@ -122,6 +143,9 @@ export default function IdentityPage() {
           fallback: 'Failed to create API key',
           onSuccess: res => {
             setNewKeyValue(res.key)
+            // Captured from the submitted values, not read back off the form:
+            // `reset()` on the next line would clear it first.
+            setNewKeyNeedsEnrolment(values.mfa_required)
             form.reset()
             setCreateOpen(false)
           },
@@ -165,15 +189,20 @@ export default function IdentityPage() {
     )
   }, [remove, deleteTarget, vaultMutate])
 
-  const copyKey = useCallback(async (val: string) => {
+  const copyKey = useCallback(async (val: string, which: 'key' | 'enrolment' = 'key') => {
     // clipboard.writeText rejects on an insecure origin (plain HTTP) or a denied
     // permission. Unhandled, the user believes a one-time key is on their
     // clipboard when it is not — and it is not shown again.
     try {
       await navigator.clipboard.writeText(val)
-      setCopied(true)
       setCopyError('')
-      setTimeout(() => setCopied(false), 2000)
+      if (which === 'enrolment') {
+        setEnrolmentCopied(true)
+        setTimeout(() => setEnrolmentCopied(false), 2000)
+      } else {
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      }
     } catch {
       setCopyError('Could not copy — select the key and copy it manually.')
     }
@@ -207,6 +236,16 @@ export default function IdentityPage() {
           }
         </div>
       ),
+    },
+    {
+      field: 'mfa_required',
+      label: 'MFA',
+      render: row =>
+        row.mfa_required ? (
+          <Badge variant="success" size="sm">Required</Badge>
+        ) : (
+          <span className="text-xs text-ink-faint">Off</span>
+        ),
     },
     {
       field: 'last_used_at',
@@ -341,6 +380,24 @@ export default function IdentityPage() {
             mono
             {...form.register('path_prefixes')}
           />
+          <div className="flex items-start gap-2.5 p-3 rounded-lg border border-line bg-surface-2">
+            <input
+              id="mfa-required"
+              type="checkbox"
+              className="mt-0.5 w-4 h-4 rounded border-line-strong text-primary-600 focus-ring"
+              {...form.register('mfa_required')}
+            />
+            <label htmlFor="mfa-required" className="text-sm leading-snug">
+              <span className="font-medium text-ink">
+                Require an authenticator app before this key can sign in
+              </span>
+              <span className="block text-ink-muted mt-0.5">
+                Leave this off and the holder can sign in immediately, then turn on
+                MFA themselves from the MFA page. Tick it to insist they set up an
+                authenticator first — they will need the enrolment link to do so.
+              </span>
+            </label>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Input
               label="Expires in (seconds)"
@@ -363,9 +420,11 @@ export default function IdentityPage() {
         title="API key created"
         keyValue={newKeyValue}
         copied={copied}
+        enrolmentCopied={enrolmentCopied}
         copyError={copyError}
         onCopy={copyKey}
         onClose={() => setNewKeyValue(null)}
+        showEnrolmentLink={newKeyNeedsEnrolment}
       />
 
       {/* Rotated key reveal modal */}
@@ -409,19 +468,32 @@ function KeyRevealModal({
   title,
   keyValue,
   copied,
+  enrolmentCopied = false,
   copyError,
   onCopy,
   onClose,
+  showEnrolmentLink = false,
 }: {
   title: string
   keyValue: string | null
   copied: boolean
+  /** Independent of `copied` so copying the enrolment link does not flash
+   *  the checkmark on the key button. */
+  enrolmentCopied?: boolean
   /** Clipboard failure. Critical here: the key is shown exactly once, so a
    *  silent copy failure means the user walks away with nothing. */
   copyError?: string
-  onCopy: (val: string) => void
+  onCopy: (val: string, which?: 'key' | 'enrolment') => void
   onClose: () => void
+  /** Show the hand-over instructions for a key that will demand an
+   *  authenticator. Without them the operator has the key but no idea that the
+   *  recipient also needs somewhere to enrol. */
+  showEnrolmentLink?: boolean
 }) {
+  // Read at render rather than module scope: the deployment's own hostname is
+  // what the recipient must open, and it is not known at build time.
+  const enrolmentUrl =
+    typeof window === 'undefined' ? '/enroll' : `${window.location.origin}/enroll`
   return (
     <Modal
       open={!!keyValue}
@@ -448,7 +520,7 @@ function KeyRevealModal({
             {keyValue}
           </code>
           <button
-            onClick={() => keyValue && onCopy(keyValue)}
+            onClick={() => keyValue && onCopy(keyValue, 'key')}
             aria-label={copied ? 'Copied' : 'Copy key'}
             className="shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
           >
@@ -460,6 +532,34 @@ function KeyRevealModal({
           <p role="alert" className="text-xs text-danger-600">
             {copyError}
           </p>
+        )}
+
+        {showEnrolmentLink && (
+          <div className="pt-1 space-y-2">
+            <p className="text-sm font-medium text-ink">Send the holder both of these</p>
+            <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
+              <code className="flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed">
+                {enrolmentUrl}
+              </code>
+              <button
+                onClick={() => onCopy(enrolmentUrl, 'enrolment')}
+                aria-label={enrolmentCopied ? 'Copied enrolment link' : 'Copy enrolment link'}
+                className="shrink-0 p-1.5 rounded hover:bg-surface-3 text-ink-faint hover:text-ink transition-colors focus-ring"
+              >
+                {enrolmentCopied ? (
+                  <Check className="w-4 h-4 text-success-600" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
+              </button>
+            </div>
+            <p className="text-xs text-ink-muted leading-relaxed">
+              The link is public and holds no secret, so it can go anywhere. Send the
+              key itself through a password manager or another channel meant for
+              secrets — not in the same message, so that one intercepted message is
+              never enough on its own.
+            </p>
+          </div>
         )}
       </div>
     </Modal>
