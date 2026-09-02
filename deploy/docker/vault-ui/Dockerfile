@@ -22,6 +22,12 @@ ARG POLICY_URL=http://wslvault-policy-engine:8083
 ARG AUDIT_URL=http://wslvault-audit-service:8085
 ARG LEASE_URL=http://wslvault-lease-manager:8084
 ARG GATEWAY_URL=http://wslvault-region-health:8092
+# Footer stamp. Next inlines `process.env.FOO` at compile time; if these are
+# absent here, /api/version ships as `dev` regardless of the runner ENV.
+ARG GIT_SHA=""
+ARG APP_VERSION=dev
+ENV APP_GIT_SHA=$GIT_SHA \
+    APP_VERSION=$APP_VERSION
 ENV IDENTITY_URL=$IDENTITY_URL \
     SECRET_URL=$SECRET_URL \
     TRANSIT_URL=$TRANSIT_URL \

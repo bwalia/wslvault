@@ -12,13 +12,16 @@ export const dynamic = 'force-dynamic'
 const startedAt = new Date().toISOString()
 
 /**
- * Build/deploy stamp for the footer. APP_VERSION and APP_GIT_SHA are set on
- * the Deployment by the chart; the Dockerfile bakes fallbacks for local runs.
+ * Build/deploy stamp for the footer. APP_VERSION / APP_GIT_SHA are baked by
+ * the image (CI build-args) and can be overridden by the Deployment.
+ *
+ * Bracket access on purpose: Next replaces `process.env.FOO` at compile time,
+ * so a missing builder env used to freeze every image as `version: "dev"`.
  */
 export function GET() {
   return NextResponse.json({
-    version: process.env.APP_VERSION || 'dev',
-    sha: process.env.APP_GIT_SHA || '',
+    version: process.env['APP_VERSION'] || 'dev',
+    sha: process.env['APP_GIT_SHA'] || '',
     deployed_at: startedAt,
   })
 }
