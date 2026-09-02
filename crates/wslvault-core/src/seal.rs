@@ -39,9 +39,9 @@ use std::sync::Arc;
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use blahaj::{Share, Sharks};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
-use sharks::{Share, Sharks};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
 

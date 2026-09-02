@@ -126,7 +126,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install protobuf compiler
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler postgresql-client
 
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -137,6 +137,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
+
+      # DATABASE_URL is set so storage tests talk to this Postgres. Without the
+      # schema they fail with `relation "shared.leases" does not exist` instead
+      # of exercising the code — that is what red Test Suite after #45 was.
+      - name: Apply schema
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: wslvault
+          PGDATABASE: wslvault_test
+          PGPASSWORD: testpassword
+        run: |
+          set -euo pipefail
+          until pg_isready >/dev/null 2>&1; do sleep 1; done
+          for f in storage/postgres/init/*.sql; do
+            echo "applying $f"
+            psql --no-psqlrc --set ON_ERROR_STOP=1 --quiet -f "$f"
+          done
 
       - name: Run tests
         env:

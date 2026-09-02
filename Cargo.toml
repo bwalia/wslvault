@@ -41,7 +41,9 @@ ed25519-dalek = { version = "2.0", features = ["rand_core"] }
 sha2 = "0.10"
 # Shamir Secret Sharing over GF(256), for the seal. Splitting the unseal key is
 # the one place hand-rolling would be indefensible.
-sharks = "0.5"
+# blahaj is the maintained fork of sharks; sharks 0.5 is RUSTSEC-2024-0398
+# (biased polynomial coefficients) with no upstream fix.
+blahaj = "0.6"
 # Constant-time byte comparison. ring's verify_slices_are_equal is deprecated
 # ("internal function not intended for external use"); subtle is its replacement.
 subtle = "2.6"
