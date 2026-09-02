@@ -234,11 +234,37 @@ jobs:
           KUBECONFIG: ${{ env.K3S_KUBECONFIG }}
         run: |
           set -euo pipefail
+
+          # The runner reaches the k3s API over the LAN. A momentary route or
+          # node flap (dial 6443: no route to host) used to fail ALL build jobs
+          # at once, because the bootstrap had no retry. Two-part hardening:
+          #   1. kubeconfig targets a control-plane node, not a worker (set on
+          #      the runner host; see the k3s API line printed below).
+          #   2. preflight-wait for the API, then bootstrap with retry, so a
+          #      transient blip self-heals instead of failing the matrix.
+          api=$(kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}')
+          echo "k3s API: $api"
+          ready=
+          for attempt in $(seq 1 30); do
+            if curl -sk -o /dev/null --max-time 5 "$api/livez"; then ready=1; break; fi
+            echo "k3s API unreachable (attempt $attempt/30); retrying in 5s"
+            sleep 5
+          done
+          [ -n "$ready" ] || { echo "::error::k3s API $api not reachable after retries"; exit 1; }
+
           docker buildx inspect k3s-amd64 >/dev/null 2>&1 || \
             docker buildx create --name k3s-amd64 --driver kubernetes \
               --driver-opt namespace=default,replicas=1,requests.cpu=4,requests.memory=8Gi \
               --platform linux/amd64
-          docker buildx inspect k3s-amd64 --bootstrap >/dev/null
+
+          # Booting the in-cluster buildkit pod can still race a brief blip.
+          booted=
+          for attempt in $(seq 1 6); do
+            if docker buildx inspect k3s-amd64 --bootstrap >/dev/null 2>&1; then booted=1; break; fi
+            echo "buildkit bootstrap failed (attempt $attempt/6); retrying in 10s"
+            sleep 10
+          done
+          [ -n "$booted" ] || { echo "::error::BuildKit bootstrap failed after retries"; exit 1; }
           docker buildx inspect k3s-amd64 | grep -E "^Status|^Platforms" || true
 
       # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
