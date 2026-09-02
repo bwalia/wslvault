@@ -59,14 +59,19 @@ spec:
               value: "http://{{ include "wslvault.componentFullname" (dict "component" "region-health" "context" $ctx) }}:{{ .Values.regionHealth.httpPort }}"
             # Footer build stamp (/api/version). The image bakes APP_VERSION —
             # CI's computed release tag (vX.Y.Z) — at build; ui.appVersion
-            # overrides it only when a pinned image predates that scheme. The
-            # SHA is stamped from the pin so the UI names what actually runs.
+            # overrides it only when a pinned image predates that scheme.
+            # APP_GIT_SHA: stamp the pin when it is a git SHA so the UI names
+            # what actually runs. A version/latest pin (0.1.0, v1.0.5) would
+            # overwrite the SHA CI baked into the image — skip those.
             {{- with $ui.appVersion }}
             - name: APP_VERSION
               value: {{ . | quote }}
             {{- end }}
+            {{- $imageTag := $ui.image.tag | default .Values.global.imageTag }}
+            {{- if regexMatch "^[0-9a-f]{7,40}$" $imageTag }}
             - name: APP_GIT_SHA
-              value: {{ ($ui.image.tag | default .Values.global.imageTag) | quote }}
+              value: {{ $imageTag | quote }}
+            {{- end }}
           readinessProbe:
             httpGet: { path: /login, port: http }
             initialDelaySeconds: 5

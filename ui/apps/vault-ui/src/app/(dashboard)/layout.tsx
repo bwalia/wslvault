@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/contexts/AuthContext'
 import Sidebar from '@/components/Sidebar'
 import AppBar from '@/components/AppBar'
+import BuildStamp from '@/components/BuildStamp'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -27,7 +28,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div className="max-w-7xl mx-auto px-6 py-6 w-full">{children}</div>
         </main>
         <footer className="border-t border-line px-6 py-2.5">
-          <p className="text-xs text-ink-faint font-mono">wslvault v0.1.0 · local build</p>
+          <BuildStamp className="text-xs text-ink-faint" />
         </footer>
       </div>
     </div>

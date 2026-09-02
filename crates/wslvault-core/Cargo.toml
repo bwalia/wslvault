@@ -27,7 +27,7 @@ anyhow = { workspace = true }
 axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 tonic = { workspace = true }
-sharks = { workspace = true }
+blahaj = { workspace = true }
 reqwest = { workspace = true }
 config = { workspace = true }
 tokio = { workspace = true }
