@@ -188,6 +188,9 @@ jobs:
     # as this job's own `if`.
     needs: [check, test, compute-version]
     if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write # push a second copy of each image to GHCR
     strategy:
       # One failing service must not cancel the others; hosted runners build
       # these in parallel.
@@ -246,6 +249,27 @@ jobs:
           # GitHub Actions cache, scoped per service.
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+      # Docker Hub stays the primary registry above. This publishes a SECOND
+      # copy of each image to GHCR — no rebuild: imagetools copies the manifest
+      # and blobs registry-to-registry from the just-pushed Docker Hub image.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mirror ${{ matrix.service }} to GHCR
+        run: |
+          set -euo pipefail
+          src="bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}"
+          img="ghcr.io/bwalia/wslvault-${{ matrix.service }}"
+          args=(--tag "$img:latest" --tag "$img:0.1.0" --tag "$img:${{ github.sha }}")
+          if [ "${{ needs.compute-version.outputs.tag_is_new }}" = "true" ]; then
+            args+=(--tag "$img:${{ needs.compute-version.outputs.next_version }}")
+          fi
+          docker buildx imagetools create "${args[@]}" "$src"
 
   # ─── claim the version: push the tag + cut the release ──────────────
   # Runs only after EVERY image is in the registry: a failed build leaves no
