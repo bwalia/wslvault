@@ -22,16 +22,28 @@ const sizeClasses = {
 export function Modal({ open, onClose, title, children, size = 'md', footer }: ModalProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  // Close on Escape; move focus into the dialog on open.
+  // Close on Escape.
   useEffect(() => {
     if (!open) return
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', handler)
-    dialogRef.current?.focus()
     return () => document.removeEventListener('keydown', handler)
   }, [open, onClose])
+
+  // Move focus into the dialog when it OPENS — and only then.
+  //
+  // This used to share the effect above, which depends on `onClose`. Every
+  // caller passes an inline arrow, so `onClose` is a fresh identity on each
+  // render, the effect re-ran on every render, and the focus() yanked the caret
+  // out of whatever field the user was typing in. It stayed hidden while the
+  // forms were uncontrolled (typing re-rendered nothing); the first form to
+  // update state per keystroke made every modal in the app lose focus on each
+  // character. Depending on `open` alone means it fires on the transition only.
+  useEffect(() => {
+    if (open) dialogRef.current?.focus()
+  }, [open])
 
   if (!open) return null
 

@@ -36,6 +36,17 @@ export default function LoginPage() {
   const handleVerify = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!challenge) return
+
+    // Refuse to spend the challenge on something that cannot be right. It is
+    // single-use, so submitting three typed digits does not just fail — it
+    // destroys the challenge and sends the user back to re-enter their key,
+    // which reads as "my key stopped working" rather than "finish typing".
+    const looksComplete = /^\d{6}$/.test(code) || /^[0-9A-Za-z]{4,}-?[0-9A-Za-z]{4,}$/.test(code)
+    if (!looksComplete) {
+      setError('Enter the full 6-digit code, or a complete recovery code.')
+      return
+    }
+
     setError('')
     setLoading(true)
     try {
@@ -153,11 +164,21 @@ export default function LoginPage() {
                   />
                   <input
                     id="mfa-code"
-                    // `text` with a numeric inputMode: `number` would render
-                    // spinners and strip a leading zero, and codes can start with one.
+                    // `type="text"`: `number` would render spinners and strip a
+                    // leading zero, and codes can start with one.
+                    //
+                    // `inputMode` follows what is being typed. It was fixed at
+                    // "numeric", which raises a digits-only keypad on a phone —
+                    // so the recovery code the hint below offers as the way back
+                    // in could not physically be typed on the device most people
+                    // reach for after losing the other one. Recovery codes are
+                    // base32 with a hyphen, so the moment a non-digit appears the
+                    // field asks for the full keyboard.
                     type="text"
-                    inputMode="numeric"
+                    inputMode={/[^0-9]/.test(code) ? 'text' : 'numeric'}
                     autoComplete="one-time-code"
+                    autoCapitalize="characters"
+                    autoCorrect="off"
                     value={code}
                     onChange={e => setCode(e.target.value.replace(/[^0-9A-Za-z-]/g, ''))}
                     placeholder="123456"

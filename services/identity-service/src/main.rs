@@ -20,7 +20,9 @@ mod azure_workload;
 mod crypto_client;
 mod grpc;
 mod health;
+mod invitations;
 mod lease_client;
+mod mailer;
 mod mfa;
 mod mtls;
 mod oidc;
@@ -433,7 +435,25 @@ async fn main() -> Result<(), anyhow::Error> {
     // Per-tenant Ed25519 signing keys need a database to keep them in and a
     // crypto-service to wrap them with. Without both, token issuance falls back
     // to the shared HS256 secret and warns on every token.
+    // Wire the durable revocation list into the process-wide checker, so
+    // `AdminAuth` (and anything else verifying a token here) can consult it.
+    // identity-service issues and revokes tokens but never installed this, so
+    // its own HTTP admin gate accepted revoked tokens while its gRPC surface
+    // rejected them — the inconsistency is what kept it hidden.
+    if let Some(pool) = revocation_pool.clone() {
+        wslvault_storage::revocation_store::install_auth_revocation_checker(pool);
+        info!("token revocation checker installed for HTTP token verification");
+    } else {
+        warn!(
+            "DATABASE_URL is not set — revoked tokens cannot be detected on the HTTP \
+             admin surface. Development only."
+        );
+    }
+
     let signing_key_pool = revocation_pool.clone();
+    // Cloned here because `revocation_pool` is moved into the gRPC service
+    // below, and the invitation routes are built afterwards.
+    let invitation_pool = revocation_pool.clone();
 
     if let Ok(ep) = std::env::var("LEASE_MANAGER_ENDPOINT") {
         if !ep.trim().is_empty() {
@@ -715,9 +735,58 @@ async fn main() -> Result<(), anyhow::Error> {
     // Fold optional auth-method routers into the protected route set.
     // Each is `Option<Router>` — absent when the feature is not configured.
     let mut protected_routes: Router = tenant_handlers::router(tenant_store, admin_auth.clone())
-        .merge(api_keys::router(api_key_state, admin_auth))
+        .merge(api_keys::router(api_key_state, admin_auth.clone()))
         .merge(quota_handlers::router(quota_state))
         .merge(scim::router().with_state(scim_state));
+
+    // Tenant invitations. Needs a database: an invitation is a durable,
+    // single-use record, and an in-memory one would be silently forgotten on
+    // restart while the recipient still held a link that looked valid.
+    if let Some(pool) = invitation_pool {
+        let mailer = mailer::Mailer::from_env().map(std::sync::Arc::new);
+        if mailer.is_none() {
+            warn!(
+                "SMTP is not configured — invitations will still be created, but the link \
+                 must be delivered by hand. See mailer.rs for the variables."
+            );
+        }
+
+        // The link the recipient opens. Defaults to the local UI so development
+        // works out of the box; in any real deployment this must be the address
+        // people can actually reach, which the service cannot infer.
+        let public_url = std::env::var("VAULT_PUBLIC_URL")
+            .ok()
+            .filter(|u| !u.trim().is_empty())
+            .unwrap_or_else(|| {
+                warn!(
+                    "VAULT_PUBLIC_URL is not set — invitation links will point at \
+                     http://localhost:3012, which is only correct for local development"
+                );
+                "http://localhost:3012".to_string()
+            });
+
+        let invitation_state = invitations::InvitationState {
+            pool,
+            mailer,
+            public_url,
+        };
+
+        protected_routes = protected_routes
+            // Issuing and listing invitations is administration.
+            .merge(
+                invitations::admin_router(invitation_state.clone()).layer(
+                    axum::middleware::from_fn_with_state(
+                        admin_auth.clone(),
+                        api_keys::require_admin,
+                    ),
+                ),
+            )
+            // Redeeming one is not: the recipient has no credential yet, which
+            // is the entire point. Guarded by a 256-bit single-use token.
+            .merge(invitations::public_router(invitation_state));
+    } else {
+        warn!("DATABASE_URL is not set — tenant invitations are unavailable");
+    }
 
     if let Some(r) = ldap_router {
         protected_routes = protected_routes.merge(r);

@@ -286,6 +286,15 @@ secrets:
   # a JWT carrying the administrator policy works too. Leave empty to disable
   # the bootstrap path entirely (JWT-only). Generate with: openssl rand -hex 32
   adminToken: ""
+  # -- SMTP password for tenant invitation emails. Optional: without it,
+  # invitations are still created and the link is returned for the operator to
+  # deliver by hand. For Gmail this must be an APP PASSWORD (2-Step
+  # Verification on) — an account password is rejected with SMTP 535.
+  #
+  # Prefer supplying this through secrets.existingSecret and an external secret
+  # manager. A value written here reaches the release manifest, `helm get
+  # values`, and whatever repository the values file lives in.
+  smtpPassword: ""
   # -- Deliver the three keys above from a Secret provisioned out-of-band
   # (SealedSecret, ExternalSecret, …) instead of from these values. REQUIRED in
   # a multi-region mesh: replicated ciphertext is decrypted with the receiving
@@ -302,6 +311,7 @@ secrets:
     auditSigningKey: audit-signing-key
     # Optional: absent from existingSecret means the bootstrap path stays off.
     adminToken: admin-token
+    smtpPassword: smtp-password
 
 # -- crypto-service: AES-GCM and ChaCha20 encryption primitives
 cryptoService:
@@ -413,7 +423,38 @@ identityService:
   # "admin credential required". Pin it to "admin", a policy the operator keys
   # actually hold. The bootstrap token in secrets.adminToken bypasses this and
   # is the only way to mint the first key.
-  adminPolicy: "admin"
+  # -- Policy a JWT must carry to manage tenants and API keys. Empty uses the
+  # compiled default, `wslvault:platform-admin`, which is what you want.
+  #
+  # This was pinned to "admin" because no key carried the namespaced policy and
+  # an empty value 401'd the dashboard. The cost was severe: `admin` is the
+  # most likely name a tenant gives its OWN administrators, so any tenant that
+  # created one was handing its staff authority over every tenant in the
+  # deployment. Migration 033 grants `wslvault:platform-admin` to the real
+  # operator keys (those carrying `root`, and superusers), which is what allows
+  # this to be empty again.
+  #
+  # Do not set this back to "admin". If an operator is locked out, the
+  # bootstrap token (X-Admin-Token) is not policy-gated and can grant the
+  # namespaced policy to the right keys.
+  adminPolicy: ""
+  # -- Base address tenant invitation links point at, e.g.
+  # "https://vault-ui.workstation.co.uk". Must be an address the recipient can
+  # actually open; the service cannot infer it, and a wrong value produces
+  # links that reach nobody. Empty falls back to a localhost default that is
+  # only correct for local development.
+  publicUrl: ""
+  # -- Outbound email for tenant invitations. Leave host empty to disable
+  # sending: invitations are still created and their link returned to the
+  # operator to deliver by hand. The password is NOT set here — it comes from
+  # secrets.smtpPassword or secrets.existingSecret.
+  smtp:
+    host: ""
+    port: 587
+    username: ""
+    # -- Envelope sender, e.g. "WSLVault <vault@example.com>". Defaults to
+    # username when empty.
+    from: ""
   resources:
     requests:
       cpu: "100m"

@@ -236,7 +236,6 @@ fn hotp(secret: &[u8], counter: u64) -> String {
 /// means losing access to every secret the key could read.
 pub fn generate_recovery_codes(count: usize) -> Result<Vec<(String, String)>, String> {
     use ring::rand::{SecureRandom, SystemRandom};
-    use sha2::{Digest, Sha256};
 
     let rng = SystemRandom::new();
     let mut out = Vec::with_capacity(count);
@@ -247,16 +246,25 @@ pub fn generate_recovery_codes(count: usize) -> Result<Vec<(String, String)>, St
         // Grouped for legibility: these get written down.
         let encoded = base32_encode(&raw);
         let code = format!("{}-{}", &encoded[..8], &encoded[8..16]);
-        let hash = hex::encode(Sha256::digest(code.as_bytes()));
+        // Hashed through the same function that verifies, so the two can never
+        // disagree about normalisation.
+        let hash = hash_recovery_code(&code);
         out.push((code, hash));
     }
     Ok(out)
 }
 
 /// SHA-256 of a recovery code, hex. Only the hash is ever stored.
+///
+/// Trims and upper-cases first. These codes are written on paper and typed back
+/// months later, often on a phone that lower-cases or auto-capitalises without
+/// being asked — and the generated alphabet (RFC 4648 base32) is upper-case
+/// only, so folding case cannot make two distinct codes collide. Without this,
+/// a correctly-transcribed code is rejected on the strength of its case, at the
+/// exact moment the user has already lost their phone.
 pub fn hash_recovery_code(code: &str) -> String {
     use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(code.trim().as_bytes()))
+    hex::encode(Sha256::digest(code.trim().to_ascii_uppercase().as_bytes()))
 }
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────

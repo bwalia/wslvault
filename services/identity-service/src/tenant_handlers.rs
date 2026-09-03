@@ -28,6 +28,7 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 use uuid::Uuid;
 use wslvault_core::{
     types::tenant::{Tenant, TenantId, TenantTier},
@@ -46,6 +47,56 @@ use wslvault_storage::pool::DbPool;
 #[derive(Clone)]
 pub struct TenantStoreState {
     inner: TenantStoreInner,
+}
+
+/// Policy every new tenant starts with, granting its own members full control
+/// of its own secrets — and nothing else.
+///
+/// Without it a tenant is born unusable. Keys issued by invitation carry
+/// `["default"]`, and a policy name that resolves to nothing grants nothing:
+/// the holder signs in successfully and is then refused on every request,
+/// including listing their own secrets. That is what shipped first, and it
+/// looked like a permissions bug rather than a missing row.
+///
+/// Scoped to `secret/**` deliberately. It does not grant policy management,
+/// key management or anything cross-tenant — those are separate decisions an
+/// operator makes deliberately, not defaults a tenant inherits by existing.
+const DEFAULT_TENANT_POLICY: &str = "default";
+
+/// Create the tenant's baseline policy.
+///
+/// Failure is logged, not propagated: the tenant row is already committed by
+/// the time this runs, and failing the request would report "tenant not
+/// created" for a tenant that exists — sending an operator to create it twice.
+/// The tenant is recoverable (the policy can be written by hand); a phantom
+/// duplicate is messier.
+async fn seed_default_policy(pool: &wslvault_storage::pool::DbPool, tenant_id: &Uuid) {
+    let document = serde_json::json!({
+        "name": DEFAULT_TENANT_POLICY,
+        "rules": [{
+            // `secret/**` covers both shapes the engine checks: `secret/list`
+            // and `secret/data/<path>`.
+            "paths": ["secret/**"],
+            "capabilities": ["read", "write", "list", "delete"],
+        }],
+    });
+
+    match wslvault_storage::policy_store::put_policy(
+        pool,
+        tenant_id,
+        DEFAULT_TENANT_POLICY,
+        &document,
+    )
+    .await
+    {
+        Ok(_) => info!(tenant_id = %tenant_id, "seeded the tenant's default policy"),
+        Err(e) => error!(
+            error = %e,
+            tenant_id = %tenant_id,
+            "could not seed the default policy — members of this tenant will be \
+             refused on every request until one is created"
+        ),
+    }
 }
 
 #[derive(Clone)]
@@ -93,7 +144,9 @@ impl TenantStoreState {
     async fn create(&self, tenant: Tenant) -> Result<(), VaultError> {
         match &self.inner {
             TenantStoreInner::Database(pool) => {
-                wslvault_storage::tenant_store::create_tenant(pool, &tenant).await
+                wslvault_storage::tenant_store::create_tenant(pool, &tenant).await?;
+                seed_default_policy(pool, tenant.id.as_uuid()).await;
+                Ok(())
             }
             TenantStoreInner::Memory(map) => {
                 let mut guard = map.write().map_err(|e| VaultError::Internal {

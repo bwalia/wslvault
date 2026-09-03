@@ -440,6 +440,56 @@ impl ApiKeyManager {
         (raw_key, record)
     }
 
+    /// Mint a key as a storage row, without writing it.
+    ///
+    /// Redeeming an invitation must insert the key in the *same transaction*
+    /// that marks the invitation spent, so it needs the row rather than a
+    /// persisted key. Built on [`Self::mint`] so an invited key is identical to
+    /// one created through the API — same generation, same prefix derivation,
+    /// same `mfa_required || is_superuser` rule.
+    pub(crate) fn mint_row(
+        tenant_uuid: Uuid,
+        name: &str,
+        policies: Vec<String>,
+        created_by: &str,
+        mfa_required: bool,
+    ) -> (String, api_key_store::ApiKeyRow) {
+        let req = ApiKeyCreateRequest {
+            tenant_id: tenant_uuid.to_string(),
+            name: name.to_string(),
+            policies: Some(policies),
+            path_prefixes: None,
+            expires_in_seconds: None,
+            rate_limit_per_minute: None,
+            // An invitation never confers cross-tenant authority. It is issued
+            // for one organisation, and a superuser belongs to none of them.
+            is_superuser: false,
+            mfa_required,
+        };
+
+        let (raw_key, record) = Self::mint(&req, name, created_by);
+
+        let row = api_key_store::ApiKeyRow {
+            id: record.id,
+            tenant_id: tenant_uuid,
+            name: record.name,
+            key_hash: record.key_hash,
+            key_prefix: record.key_prefix,
+            path_prefixes: record.path_prefixes,
+            policies: record.policies,
+            created_by: record.created_by,
+            created_at: record.created_at,
+            expires_at: record.expires_at,
+            last_used_at: None,
+            revoked_at: None,
+            rate_limit_per_minute: record.rate_limit_per_minute,
+            is_superuser: record.is_superuser,
+            mfa_required: record.mfa_required,
+        };
+
+        (raw_key, row)
+    }
+
     // -----------------------------------------------------------------------
     // Public API
     // -----------------------------------------------------------------------
@@ -975,6 +1025,17 @@ pub struct AdminIdentity {
     /// its own claims; `None` for the bootstrap token, which is not tenant
     /// scoped and must therefore name its tenant explicitly on each request.
     pub tenant_id: Option<String>,
+    /// Whether this caller may mint *superuser* keys.
+    ///
+    /// True only for an existing superuser (from the signed claim) and for the
+    /// bootstrap token, which is how the first superuser comes into existence.
+    /// Everyone else — including a platform administrator — cannot create one.
+    ///
+    /// Without this the `is_superuser` flag on a create request was taken at
+    /// face value, so anyone who could reach key management could mint
+    /// themselves cross-tenant access. Reproduced against a running instance:
+    /// three superuser keys minted from an ordinary tenant credential.
+    pub superuser: bool,
 }
 
 /// Authenticates callers of the key-management endpoints.
@@ -1064,15 +1125,23 @@ impl AdminAuth {
 
     /// Authenticates one request, returning the caller's identity.
     ///
-    /// Returns `None` when no acceptable credential is present.
-    async fn authenticate(&self, headers: &HeaderMap) -> Option<AdminIdentity> {
+    /// Distinguishes "no usable credential" from "authenticated but not
+    /// permitted". Collapsing both into `None` made every policy failure a
+    /// `401`, and the UI logs out on `401` — so a signed-in user without the
+    /// administrator policy was silently ejected the moment any page fetched an
+    /// admin-gated resource. The dashboard fetches one on load, so those users
+    /// could not stay signed in at all.
+    async fn authenticate(&self, headers: &HeaderMap) -> Result<AdminIdentity, AdminRejection> {
         // 1. Bootstrap token, compared in constant time.
         if let Some(expected) = &self.bootstrap_token {
             if let Some(provided) = headers.get(ADMIN_TOKEN_HEADER).map(|v| v.as_bytes()) {
                 if ct_bytes_equal(provided, expected) {
-                    return Some(AdminIdentity {
+                    return Ok(AdminIdentity {
                         principal_id: "bootstrap-admin".to_string(),
                         tenant_id: None,
+                        // The bootstrap token exists precisely to create the
+                        // first superuser, before any superuser exists to do it.
+                        superuser: true,
                     });
                 }
             }
@@ -1084,7 +1153,30 @@ impl AdminAuth {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "))
             .map(str::trim)
-            .filter(|t| !t.is_empty())?;
+            .filter(|t| !t.is_empty())
+            .ok_or(AdminRejection::Unauthenticated)?;
+
+        // Revocation is checked before the signature is even considered, so a
+        // revoked token cannot mint keys. This gate verifies tokens itself
+        // rather than going through `resolve_identity`, so it does not inherit
+        // that function's revocation check and had none of its own: a revoked
+        // administrator token could call POST /v1/api-keys, receive a working
+        // key, and exchange it for clean tokens.
+        //
+        // Fails closed. An unreachable revocation list denies the request,
+        // because answering "not revoked" when the answer is unknown is exactly
+        // how a revoked credential keeps working.
+        match wslvault_core::auth::is_token_revoked(bearer).await {
+            Ok(false) => {}
+            Ok(true) => {
+                warn!("a revoked token was presented to api key management");
+                return Err(AdminRejection::Unauthenticated);
+            }
+            Err(e) => {
+                error!(error = %e.0, "revocation lookup failed — denying");
+                return Err(AdminRejection::Unauthenticated);
+            }
+        }
 
         // Try the per-tenant EdDSA path first, then the legacy shared HS256.
         //
@@ -1095,9 +1187,15 @@ impl AdminAuth {
         let claims = match &self.signing_keys {
             Some(keys) => match keys.verify(bearer).await {
                 Ok(c) => c,
-                Err(_) => self.token_manager.validate_token(bearer).ok()?,
+                Err(_) => self
+                    .token_manager
+                    .validate_token(bearer)
+                    .map_err(|_| AdminRejection::Unauthenticated)?,
             },
-            None => self.token_manager.validate_token(bearer).ok()?,
+            None => self
+                .token_manager
+                .validate_token(bearer)
+                .map_err(|_| AdminRejection::Unauthenticated)?,
         };
 
         // A superuser is an administrator by definition: the claim already
@@ -1105,9 +1203,10 @@ impl AdminAuth {
         // would only mean a superuser could not administer the platform it has
         // authority over.
         if claims.superuser {
-            return Some(AdminIdentity {
+            return Ok(AdminIdentity {
                 principal_id: claims.sub,
                 tenant_id: Some(claims.tenant_id),
+                superuser: true,
             });
         }
 
@@ -1121,36 +1220,66 @@ impl AdminAuth {
                 "token presented to api key management lacks the '{}' policy",
                 self.required_policy
             );
-            return None;
+            // Authenticated, just not permitted — 403, not 401. See the note on
+            // this function.
+            return Err(AdminRejection::Forbidden);
         }
 
-        Some(AdminIdentity {
+        Ok(AdminIdentity {
             principal_id: claims.sub,
             tenant_id: Some(claims.tenant_id),
+            // Carrying the administrator policy is not the same as being a
+            // superuser: a platform administrator manages tenants, a superuser
+            // reads across them. Escalating between the two must be deliberate.
+            superuser: false,
         })
     }
 }
 
+/// Why an admin-gated request was turned away.
+///
+/// The distinction is load-bearing for the UI, not cosmetic: `401` means "your
+/// session is no good, sign in again" and the dashboard acts on it by logging
+/// out, while `403` means "you are signed in, this is simply not yours".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminRejection {
+    /// No credential, or one that does not verify.
+    Unauthenticated,
+    /// A valid credential that does not carry the required policy.
+    Forbidden,
+}
+
 /// Axum middleware enforcing [`AdminAuth`] on the key-management routes.
 ///
-/// Rejects with `401` and inserts the resolved [`AdminIdentity`] into the
-/// request extensions on success, so handlers never re-parse credentials.
+/// Inserts the resolved [`AdminIdentity`] into the request extensions on
+/// success, so handlers never re-parse credentials. On failure it answers `401`
+/// or `403` per [`AdminRejection`] — the two are not interchangeable, because
+/// the UI treats `401` as "session is dead" and logs the user out.
 pub async fn require_admin(
     State(auth): State<AdminAuth>,
     mut request: Request,
     next: Next,
 ) -> axum::response::Response {
     match auth.authenticate(request.headers()).await {
-        Some(identity) => {
+        Ok(identity) => {
             request.extensions_mut().insert(identity);
             next.run(request).await
         }
-        None => (
+        Err(AdminRejection::Unauthenticated) => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
                 "code": "admin_auth_required",
                 "message": "api key management requires an administrator credential: \
                             a Bearer token carrying the administrator policy, or X-Admin-Token",
+            })),
+        )
+            .into_response(),
+        Err(AdminRejection::Forbidden) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "admin_policy_required",
+                "message": "this account is signed in but does not carry the administrator \
+                            policy required to manage tenants and API keys",
             })),
         )
             .into_response(),
@@ -1276,6 +1405,30 @@ pub async fn handle_create_api_key(
     // The creator is whoever the admin gate authenticated, not a header the
     // caller controls — `created_by` is audit evidence and must not be forgeable.
     let created_by = identity.principal_id.clone();
+
+    // Only a superuser mints a superuser. `is_superuser` used to be taken
+    // straight from the request body, so any caller who reached this handler
+    // could grant themselves cross-tenant access to every secret in the
+    // deployment — one request, no further credential. Reproduced live: three
+    // superuser keys minted from an ordinary tenant credential, in a tenant the
+    // caller did not belong to.
+    //
+    // Checked here rather than in `AdminAuth` because it is an authorisation
+    // decision about *this* request's payload, not about who the caller is.
+    if payload.is_superuser && !identity.superuser {
+        warn!(
+            principal = %identity.principal_id,
+            "refused an attempt to mint a superuser key without superuser authority"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "superuser_grant_denied",
+                "message": "only a superuser can create a superuser key",
+            })),
+        )
+            .into_response();
+    }
 
     // A JWT caller mints only inside its own tenant, whatever the body says.
     if let Some(tenant) = &identity.tenant_id {
@@ -2575,6 +2728,81 @@ mod tests {
         .unwrap()
     }
 
+    /// A platform administrator is not a superuser.
+    ///
+    /// `is_superuser` came straight off the request body with no check, so any
+    /// caller who could reach key management could grant themselves
+    /// cross-tenant access to every secret in the deployment. Reproduced
+    /// against a running instance before this guard existed: three superuser
+    /// keys minted from an ordinary tenant credential.
+    #[tokio::test]
+    async fn a_non_superuser_cannot_mint_a_superuser_key() {
+        let app = make_app();
+        let (token, _) = make_token_manager()
+            .issue_token(
+                "admin-1",
+                "tenant-x",
+                vec![DEFAULT_ADMIN_POLICY.to_string()],
+                3600,
+            )
+            .unwrap();
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "name": "escalate",
+            "tenant_id": "tenant-x",
+            "policies": ["read"],
+            "is_superuser": true,
+            "mfa_required": true,
+        }))
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "carrying the administrator policy must not confer the ability to \
+             mint cross-tenant superuser keys"
+        );
+    }
+
+    /// The bootstrap token may, because that is how the first one exists.
+    #[tokio::test]
+    async fn the_bootstrap_token_may_mint_a_superuser_key() {
+        let app = make_app();
+        let body = serde_json::to_string(&serde_json::json!({
+            "name": "first-superuser",
+            "tenant_id": "tenant-x",
+            "policies": ["root"],
+            "is_superuser": true,
+            "mfa_required": true,
+        }))
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header(ADMIN_TOKEN_HEADER, TEST_ADMIN_TOKEN)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "the bootstrap path must remain able to create the first superuser, \
+             or a fresh deployment has no way to get one"
+        );
+    }
+
     #[tokio::test]
     async fn create_without_any_credential_is_rejected() {
         let app = make_app();
@@ -2642,8 +2870,12 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
-            StatusCode::UNAUTHORIZED,
-            "a valid token without the admin policy must not mint keys"
+            StatusCode::FORBIDDEN,
+            "a valid token without the admin policy must not mint keys — and the \
+             refusal must be 403, not 401. This asserted 401 until the UI was found \
+             to treat 401 as 'session is dead' and log the user out, which ejected \
+             every non-administrator the moment the dashboard fetched an admin-gated \
+             resource on load."
         );
     }
 
@@ -2887,9 +3119,26 @@ mod tests {
         );
 
         assert!(
-            auth.authenticate(&headers).await.is_none(),
-            "a tenant-scoped 'admin' policy must not confer platform administration"
+            matches!(
+                auth.authenticate(&headers).await,
+                Err(AdminRejection::Forbidden)
+            ),
+            "a tenant-scoped 'admin' policy must not confer platform administration, \
+             and the refusal must be Forbidden — Unauthenticated would make the UI \
+             log this perfectly valid session out"
         );
+    }
+
+    /// No credential at all is a different answer from the wrong one.
+    #[tokio::test]
+    async fn a_missing_credential_is_unauthenticated_not_forbidden() {
+        let tm = TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!");
+        let auth = AdminAuth::new(tm, None, DEFAULT_ADMIN_POLICY);
+
+        assert!(matches!(
+            auth.authenticate(&HeaderMap::new()).await,
+            Err(AdminRejection::Unauthenticated)
+        ));
     }
 
     /// The namespaced policy does confer it.
@@ -2913,6 +3162,6 @@ mod tests {
             format!("Bearer {token}").parse().unwrap(),
         );
 
-        assert!(auth.authenticate(&headers).await.is_some());
+        assert!(auth.authenticate(&headers).await.is_ok());
     }
 }

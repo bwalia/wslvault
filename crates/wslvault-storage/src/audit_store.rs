@@ -57,6 +57,24 @@ pub struct StoredAuditEvent {
 /// for that tenant, so two concurrent writers cannot read the same tip and
 /// fork the chain. Different tenants do not contend.
 ///
+/// An absent client address, as something `INET` will accept.
+///
+/// `client_ip` is a `String` on the record but an `INET` column in Postgres,
+/// and callers that do not know the address pass `""`. Postgres rejects
+/// `''::inet` outright — `invalid input syntax for type inet: ""` — so every
+/// insert carrying an empty address failed, which in practice was every insert:
+/// the audit table held zero rows while the services emitting into it logged a
+/// warning and carried on. The read path already `COALESCE`s this column back
+/// to `""`, so NULL round-trips correctly.
+fn client_ip_or_null(ip: &str) -> Option<&str> {
+    let trimmed = ip.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
+}
+
 /// Returns the assigned `(seq, prev_hash)`.
 pub async fn insert_event_chained<F>(
     pool: &DbPool,
@@ -116,7 +134,7 @@ where
     .bind(&event.outcome)
     .bind(&event.outcome_detail)
     .bind(&event.details)
-    .bind(&event.client_ip)
+    .bind(client_ip_or_null(&event.client_ip))
     .bind(&signature)
     .bind(event.timestamp)
     .bind(seq)
@@ -180,7 +198,7 @@ pub async fn insert_event(pool: &DbPool, event: &StoredAuditEvent) -> Result<(),
     .bind(&event.outcome)
     .bind(&event.outcome_detail)
     .bind(&event.details)
-    .bind(&event.client_ip)
+    .bind(client_ip_or_null(&event.client_ip))
     .bind(&event.signature)
     .bind(event.timestamp)
     .execute(pool.inner())
