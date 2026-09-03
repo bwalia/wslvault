@@ -105,7 +105,9 @@ impl Mailer {
             _ => {
                 // Unauthenticated SMTP is normal for an internal relay, so this
                 // is a warning rather than a refusal.
-                warn!("SMTP_USERNAME/SMTP_PASSWORD not both set — connecting without authentication");
+                warn!(
+                    "SMTP_USERNAME/SMTP_PASSWORD not both set — connecting without authentication"
+                );
                 builder.build()
             }
         };
@@ -249,7 +251,10 @@ mod tests {
     fn both_bodies_carry_the_url_and_expiry() {
         let url = "https://vault.example.com/invite/tok123";
         for body in [plain_body("Acme", url, 48), html_body("Acme", url, 48)] {
-            assert!(body.contains(url), "the recipient must be able to reach the link");
+            assert!(
+                body.contains(url),
+                "the recipient must be able to reach the link"
+            );
             assert!(body.contains("48"), "the expiry window must be stated");
         }
     }
