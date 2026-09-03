@@ -56,7 +56,7 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: v1.0.6
+    tag: v1.0.8
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -131,33 +131,48 @@ gateway:
 # move together. regionHealth stays at 9f724df (unchanged since).
 identityService:
   replicaCount: 1
+  # -- Where invitation links point. Must be the address the RECIPIENT opens,
+  # which is this region's UI host, not the API host and not cluster DNS. A
+  # wrong value produces links that reach nobody, and the service cannot infer
+  # it.
+  publicUrl: "https://vault-ui.workstation.co.uk"
+  # -- Outbound email for tenant invitations. The password is deliberately NOT
+  # here: it comes from the `wslvault-smtp` Secret created out-of-band in the
+  # cluster (see deploy/gitops/README.md). Leaving host empty disables sending
+  # — invitations are still created, and the link is returned to the operator
+  # to deliver by hand.
+  smtp:
+    host: smtp.gmail.com
+    port: 587
+    username: tenthmatrix.mailer@gmail.com
+    from: "WSLVault <tenthmatrix.mailer@gmail.com>"
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 regionHealth:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 secretEngine:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 policyEngine:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 transitEngine:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 auditService:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 pkiEngine:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 mcpServer:
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 cryptoService:
   replicaCount: 1
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 
 # The three shared keys arrive from a Secret provisioned out-of-band and
 # replicated to every region's namespace — never from Git. Populate it with
@@ -173,7 +188,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: v1.0.6
+    tag: v1.0.8
 
 secrets:
   existingSecret: wslvault-mesh-keys
