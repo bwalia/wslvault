@@ -11,6 +11,7 @@
 mod analytics;
 mod grpc;
 mod health;
+mod http;
 mod integrity;
 mod pg_store;
 mod store;
@@ -64,6 +65,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::new(store::InMemoryAuditStore::new())
         };
 
+    // Both servers read through the same backend.
+    let audit_store_for_http = Arc::clone(&audit_store);
+
     // Build the gRPC service.
     let audit_service = AuditServiceImpl::new(audit_store, signer);
     let grpc_addr = "0.0.0.0:50056".parse()?;
@@ -75,8 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ));
 
     // Build the health HTTP service with metrics middleware.
+    // The query surface rides on the same port as /health. It is merged rather
+    // than nested so the path stays /v1/audit/events, which is what the UI and
+    // the gateway already call.
     let health_router = Router::new()
         .route("/health", get(health::health_handler))
+        .merge(http::router(audit_store_for_http))
         .layer(middleware::from_fn(metrics_middleware));
     let health_addr = "0.0.0.0:8085".parse::<std::net::SocketAddr>()?;
 

@@ -64,6 +64,25 @@ export const api = {
     mfaEnroll: () => '/api/identity/v1/auth/mfa/totp/enroll',
     /** POST — prove the authenticator works; until this lands, enrolment is inert. */
     mfaConfirm: () => '/api/identity/v1/auth/mfa/totp/confirm',
+
+    /** GET/POST — invitations for a tenant. Requires an administrator. */
+    tenantInvitations: (tenantId: string) =>
+      `/api/identity/v1/tenants/${encodeURIComponent(tenantId)}/invitations`,
+    /** DELETE — withdraw a pending invitation. */
+    tenantInvitation: (tenantId: string, id: string) =>
+      `/api/identity/v1/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(id)}`,
+    /**
+     * GET — what an invitation is for, without spending it.
+     *
+     * Public, and deliberately so: the recipient has no credential yet, which
+     * is the whole point of an invitation. Safe because the token is 256 bits
+     * looked up by hash, single-use and expiring.
+     */
+    invitationPreview: (token: string) =>
+      `/api/identity/v1/invitations/${encodeURIComponent(token)}`,
+    /** POST — spend the invitation and mint the recipient's key. Public. */
+    invitationAccept: (token: string) =>
+      `/api/identity/v1/invitations/${encodeURIComponent(token)}/accept`,
   },
   policy: {
     list: () => '/api/policy/v1/policies',

@@ -104,6 +104,41 @@ spec:
             - name: VAULT_ADMIN_POLICY
               value: {{ . | quote }}
             {{- end }}
+            {{- with .Values.identityService.publicUrl }}
+            # Base address invitation links point at. Must be what a recipient
+            # can actually open — the service cannot infer it, and a wrong value
+            # produces links that reach nobody.
+            - name: VAULT_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.identityService.smtp }}
+            {{- if .host }}
+            # Outbound email for tenant invitations. Absent host disables
+            # sending; invitations are still created and the link returned.
+            - name: SMTP_HOST
+              value: {{ .host | quote }}
+            - name: SMTP_PORT
+              value: {{ .port | default 587 | quote }}
+            {{- with .username }}
+            - name: SMTP_USERNAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .from }}
+            - name: SMTP_FROM
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if or .Values.secrets.smtpPassword .Values.secrets.existingSecret }}
+            # Never inlined: the password comes from the Secret, so it does not
+            # appear in the Deployment manifest or in `kubectl describe pod`.
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.secrets.existingSecret | default (printf "%s-smtp" (include "wslvault.fullname" .)) }}
+                  key: {{ .Values.secrets.existingSecretKeys.smtpPassword | default "smtp-password" }}
+                  optional: true
+            {{- end }}
             # gRPC address of the policy-engine for permission checks during token validation
             - name: POLICY_ENGINE_ADDR
               value: {{ printf "%s:%s"

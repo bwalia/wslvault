@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useRouter } from 'next/navigation'
+import { mutate as swrMutate } from 'swr'
 import { safeStorage, safeJsonParse } from '@/lib/safe'
 import { api } from '@/lib/api'
 import { ApiError } from '@/lib/fetcher'
@@ -132,6 +133,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     clearStoredSession()
     setState(EMPTY_STATE)
+
+    // Drop every cached response, without revalidating. The cache is keyed by
+    // URL and those URLs are identical across tenants — `/v1/api-keys` is
+    // `/v1/api-keys` whoever asks — so anything left behind is rendered to
+    // whoever signs in next. `keepPreviousData` in the SWR config means it is
+    // shown eagerly rather than behind a spinner, and on a shared machine that
+    // is one tenant's secrets appearing in another tenant's window.
+    void swrMutate(() => true, undefined, { revalidate: false })
+
     router.push('/login')
   }, [router])
 

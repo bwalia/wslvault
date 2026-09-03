@@ -2,6 +2,7 @@
 import { useVaultSWR } from '@/hooks/useVaultSWR'
 import { api } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { useAuth } from '@/contexts/AuthContext'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { StatusBadge } from '@/components/ui/StatusBadge'
@@ -32,8 +33,22 @@ interface SecretsResponse {
 }
 
 export default function DashboardPage() {
-  const { data: tenants, error: tenantsError } = useVaultSWR<TenantsResponse>(api.identity.tenants())
-  const { data: apiKeys, error: apiKeysError } = useVaultSWR<ApiKeysResponse>(api.identity.apiKeys())
+  const { policies } = useAuth()
+  // Tenants and API keys are administrator-only. Requesting them as an
+  // ordinary tenant member returned 403 and painted the landing page with an
+  // error banner and two "!" tiles — telling someone their vault was broken
+  // when in fact it was working and those two figures were simply not theirs
+  // to see. Passing `null` to SWR skips the request entirely.
+  const isAdmin = policies.some(
+    p => p === 'wslvault:platform-admin' || p === 'admin' || p === 'root',
+  )
+
+  const { data: tenants, error: tenantsError } = useVaultSWR<TenantsResponse>(
+    isAdmin ? api.identity.tenants() : null,
+  )
+  const { data: apiKeys, error: apiKeysError } = useVaultSWR<ApiKeysResponse>(
+    isAdmin ? api.identity.apiKeys() : null,
+  )
   const { data: secrets, error: secretsError } = useVaultSWR<SecretsResponse>(api.secret.list())
   const { data: audit, error: auditError } = useVaultSWR<AuditResponse>(
     '/api/audit/v1/audit/events?limit=10',
@@ -56,21 +71,15 @@ export default function DashboardPage() {
       <ErrorBanner message={failureMessage} />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          label="Tenants"
-          value={tenantsError ? '!' : tenants?.length ?? '—'}
-        />
-        <StatCard
-          label="API Keys"
-          value={apiKeysError ? '!' : apiKeys?.length ?? '—'}
-        />
+        {isAdmin && (
+          <>
+            <StatCard label="Tenants" value={tenantsError ? '!' : tenants?.length ?? '—'} />
+            <StatCard label="API Keys" value={apiKeysError ? '!' : apiKeys?.length ?? '—'} />
+          </>
+        )}
         <StatCard
           label="Secrets"
           value={secretsError ? '!' : secrets?.paths?.length ?? '—'}
-        />
-        <StatCard
-          label="Policies"
-          value="—"
         />
       </div>
 

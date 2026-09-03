@@ -189,7 +189,29 @@ pub async fn active_name_exists(
 /// `ValidationError { field: "name" }` so the handler can map it to 409
 /// without inspecting sqlx error codes itself.
 pub async fn insert(pool: &DbPool, row: &ApiKeyRow) -> Result<(), VaultError> {
-    let result = sqlx::query(
+    let result = insert_query(row).execute(pool.inner()).await;
+    map_insert_result(result, &row.name)
+}
+
+/// [`insert`], inside a caller-supplied transaction.
+///
+/// Exists so minting a key can be made atomic with another write. Redeeming an
+/// invitation is the case that needs it: marking the invitation spent and
+/// creating the key it grants must commit together, or a failure between them
+/// leaves the recipient with a spent invitation and no key — locked out, with
+/// nothing to retry.
+pub async fn insert_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    row: &ApiKeyRow,
+) -> Result<(), VaultError> {
+    let result = insert_query(row).execute(&mut **tx).await;
+    map_insert_result(result, &row.name)
+}
+
+/// The INSERT itself, shared so the pooled and transactional paths cannot drift
+/// — in particular the `mfa_required || is_superuser` bind below.
+fn insert_query(row: &ApiKeyRow) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    sqlx::query(
         "INSERT INTO shared.api_keys
              (id, tenant_id, name, key_hash, key_prefix, path_prefixes, policies,
               created_by, created_at, expires_at, rate_limit_per_minute,
@@ -211,15 +233,18 @@ pub async fn insert(pool: &DbPool, row: &ApiKeyRow) -> Result<(), VaultError> {
     // Superuser keys always require MFA; the schema enforces it too, so a
     // caller that forgets gets a constraint violation rather than a hole.
     .bind(row.mfa_required || row.is_superuser)
-    .execute(pool.inner())
-    .await;
+}
 
+fn map_insert_result(
+    result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>,
+    name: &str,
+) -> Result<(), VaultError> {
     match result {
         Ok(_) => Ok(()),
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
             Err(VaultError::ValidationError {
                 field: "name".to_string(),
-                reason: format!("an active api key named '{}' already exists", row.name),
+                reason: format!("an active api key named '{name}' already exists"),
             })
         }
         Err(e) => Err(db_err("insert", e)),
