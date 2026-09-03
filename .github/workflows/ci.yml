@@ -178,7 +178,12 @@ jobs:
     # BuildKit contraption, which depended on the runner's flaky LAN path to the
     # k3s API/kubelet proxy and failed the whole matrix at once. ubuntu-latest is
     # x86_64, so the Dockerfiles' `uname -m` musl target is amd64 with no
-    # emulation. Images push straight to Docker Hub.
+    # emulation.
+    #
+    # Images are built and pushed to GHCR, then mirrored to Docker Hub. GHCR is
+    # primary because it authenticates with the built-in GITHUB_TOKEN against a
+    # service in the same datacentre — a Docker Hub auth flake used to fail the
+    # whole release, and it is no longer on the build's critical path.
     runs-on: ubuntu-latest
     # Gated on check + test. These were decoupled (`needs: []`) back when lint
     # and audit were `continue-on-error`, so gating on them meant gating on
@@ -190,7 +195,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
-      packages: write # push a second copy of each image to GHCR
+      packages: write # GHCR is the primary registry for these images
     strategy:
       # One failing service must not cancel the others; hosted runners build
       # these in parallel.
@@ -218,14 +223,24 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Requires repo secrets DOCKERHUB_USERNAME and DOCKERHUB_TOKEN.
-      - name: Log in to Docker Hub
+      # GHCR is the PRIMARY registry, and the build pushes straight to it.
+      #
+      # It used to be Docker Hub, and a release died on
+      #   failed to fetch oauth token: Post "https://auth.docker.io/token":
+      #   unexpected EOF
+      # — one service out of thirteen, same credentials as the twelve that
+      # succeeded, so purely Docker Hub's auth endpoint dropping a connection.
+      # GHCR authenticates with the built-in GITHUB_TOKEN against a service in
+      # the same datacentre as the runner: no stored PAT to expire, no
+      # third-party auth host on the critical path, and no pull-rate limits.
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ${{ matrix.service }}
+      - name: Build & push ${{ matrix.service }} to GHCR
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -237,10 +252,10 @@ jobs:
           # The vX.Y.Z line lands only when the version is new; empty entries
           # are dropped by the action's list parser.
           tags: |
-            bwalia/wslvault-${{ matrix.service }}:latest
-            bwalia/wslvault-${{ matrix.service }}:0.1.0
-            bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}
-            ${{ needs.compute-version.outputs.tag_is_new == 'true' && format('bwalia/wslvault-{0}:{1}', matrix.service, needs.compute-version.outputs.next_version) || '' }}
+            ghcr.io/bwalia/wslvault-${{ matrix.service }}:latest
+            ghcr.io/bwalia/wslvault-${{ matrix.service }}:0.1.0
+            ghcr.io/bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}
+            ${{ needs.compute-version.outputs.tag_is_new == 'true' && format('ghcr.io/bwalia/wslvault-{0}:{1}', matrix.service, needs.compute-version.outputs.next_version) || '' }}
           # Only vault-ui declares these (footer build stamp); they are inert
           # for the other services.
           build-args: |
@@ -250,26 +265,41 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
 
-      # Docker Hub stays the primary registry above. This publishes a SECOND
-      # copy of each image to GHCR — no rebuild: imagetools copies the manifest
-      # and blobs registry-to-registry from the just-pushed Docker Hub image.
-      - name: Log in to GHCR
+      # Docker Hub is now the MIRROR. It stays a required step rather than
+      # best-effort, because the deployed regions still pull `bwalia/…` by
+      # default and a release that never reached the registry the cluster reads
+      # is not a release — it would fail silently at sync time instead of
+      # loudly here.
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Mirror ${{ matrix.service }} to GHCR
+      - name: Mirror ${{ matrix.service }} to Docker Hub
         run: |
           set -euo pipefail
-          src="bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}"
-          img="ghcr.io/bwalia/wslvault-${{ matrix.service }}"
+          src="ghcr.io/bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}"
+          img="bwalia/wslvault-${{ matrix.service }}"
           args=(--tag "$img:latest" --tag "$img:0.1.0" --tag "$img:${{ github.sha }}")
           if [ "${{ needs.compute-version.outputs.tag_is_new }}" = "true" ]; then
             args+=(--tag "$img:${{ needs.compute-version.outputs.next_version }}")
           fi
-          docker buildx imagetools create "${args[@]}" "$src"
+
+          # Retried, because this is the leg that actually failed: the fault was
+          # a dropped connection to auth.docker.io, which a second attempt
+          # moments later does not reproduce. imagetools only copies a manifest
+          # and blobs, so a retry costs seconds and never rebuilds.
+          for attempt in 1 2 3; do
+            if docker buildx imagetools create "${args[@]}" "$src"; then
+              echo "mirrored to Docker Hub on attempt $attempt"
+              exit 0
+            fi
+            echo "::warning::Docker Hub mirror attempt $attempt failed; retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::Docker Hub mirror failed after 3 attempts"
+          exit 1
 
   # ─── claim the version: push the tag + cut the release ──────────────
   # Runs only after EVERY image is in the registry: a failed build leaves no
