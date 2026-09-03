@@ -210,7 +210,9 @@ pub async fn insert_tx(
 
 /// The INSERT itself, shared so the pooled and transactional paths cannot drift
 /// — in particular the `mfa_required || is_superuser` bind below.
-fn insert_query(row: &ApiKeyRow) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
+fn insert_query(
+    row: &ApiKeyRow,
+) -> sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments> {
     sqlx::query(
         "INSERT INTO shared.api_keys
              (id, tenant_id, name, key_hash, key_prefix, path_prefixes, policies,

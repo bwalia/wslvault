@@ -417,9 +417,10 @@ pub async fn revoke_invitation(
     Extension(_identity): Extension<AdminIdentity>,
     Path((tenant_id, id)): Path<(String, String)>,
 ) -> Response {
-    let (Ok(tenant_uuid), Ok(invitation_id)) =
-        (Uuid::parse_str(tenant_id.trim()), Uuid::parse_str(id.trim()))
-    else {
+    let (Ok(tenant_uuid), Ok(invitation_id)) = (
+        Uuid::parse_str(tenant_id.trim()),
+        Uuid::parse_str(id.trim()),
+    ) else {
         return err(
             StatusCode::BAD_REQUEST,
             "invalid_id",
@@ -629,7 +630,10 @@ pub async fn accept_invitation(
 /// Routes requiring an administrator. Layered by the caller.
 pub fn admin_router(state: InvitationState) -> Router {
     Router::new()
-        .route("/v1/tenants/:tenant_id/invitations", post(create_invitation))
+        .route(
+            "/v1/tenants/:tenant_id/invitations",
+            post(create_invitation),
+        )
         .route("/v1/tenants/:tenant_id/invitations", get(list_invitations))
         .route(
             "/v1/tenants/:tenant_id/invitations/:id",
@@ -656,7 +660,8 @@ mod tests {
         // 32 bytes -> 43 base64url chars, unpadded.
         assert_eq!(t.len(), 43);
         assert!(
-            t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+            t.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
             "must survive a URL path segment without escaping: {t}"
         );
         assert!(!t.contains('='), "padding would need escaping in a URL");
@@ -683,7 +688,14 @@ mod tests {
     #[test]
     fn rejects_addresses_that_can_never_receive() {
         for bad in [
-            "", "nobody", "@example.com", "a@b", "a@.com", "a@b.", "a b@c.com", "a@b c.com",
+            "",
+            "nobody",
+            "@example.com",
+            "a@b",
+            "a@.com",
+            "a@b.",
+            "a b@c.com",
+            "a@b c.com",
         ] {
             assert!(!looks_like_email(bad), "should reject {bad:?}");
         }

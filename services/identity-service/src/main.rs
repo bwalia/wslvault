@@ -773,14 +773,9 @@ async fn main() -> Result<(), anyhow::Error> {
 
         protected_routes = protected_routes
             // Issuing and listing invitations is administration.
-            .merge(
-                invitations::admin_router(invitation_state.clone()).layer(
-                    axum::middleware::from_fn_with_state(
-                        admin_auth.clone(),
-                        api_keys::require_admin,
-                    ),
-                ),
-            )
+            .merge(invitations::admin_router(invitation_state.clone()).layer(
+                axum::middleware::from_fn_with_state(admin_auth.clone(), api_keys::require_admin),
+            ))
             // Redeeming one is not: the recipient has no credential yet, which
             // is the entire point. Guarded by a 256-bit single-use token.
             .merge(invitations::public_router(invitation_state));
