@@ -337,6 +337,26 @@ fn token_revocation() -> Option<&'static std::sync::Arc<dyn TokenRevocation>> {
     TOKEN_REVOCATION.get()
 }
 
+/// Whether this token has been revoked, for callers that verify tokens
+/// themselves rather than going through [`resolve_identity`].
+///
+/// identity-service is the one that needs this: its `AdminAuth` gate verifies
+/// per-tenant EdDSA tokens against its own signing keys and never calls
+/// `resolve_identity`, so it was checking signature and expiry and nothing
+/// else. A revoked-but-unexpired administrator token could therefore still mint
+/// a fresh API key and exchange it for clean tokens — revocation bypassed in
+/// two requests, while the gRPC surface enforced it correctly and hid the gap.
+///
+/// Returns `Ok(false)` when no checker is installed. That is the in-memory
+/// development configuration, which warns loudly at startup; a deployment with
+/// `DATABASE_URL` set always has one.
+pub async fn is_token_revoked(token: &str) -> Result<bool, AuthFailure> {
+    match token_revocation() {
+        Some(checker) => checker.is_revoked(token).await,
+        None => Ok(false),
+    }
+}
+
 /// Header a superuser uses to name the tenant it is acting on.
 ///
 /// Only honoured for an identity whose *signed* token carries `superuser`.

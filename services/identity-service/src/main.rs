@@ -435,6 +435,21 @@ async fn main() -> Result<(), anyhow::Error> {
     // Per-tenant Ed25519 signing keys need a database to keep them in and a
     // crypto-service to wrap them with. Without both, token issuance falls back
     // to the shared HS256 secret and warns on every token.
+    // Wire the durable revocation list into the process-wide checker, so
+    // `AdminAuth` (and anything else verifying a token here) can consult it.
+    // identity-service issues and revokes tokens but never installed this, so
+    // its own HTTP admin gate accepted revoked tokens while its gRPC surface
+    // rejected them — the inconsistency is what kept it hidden.
+    if let Some(pool) = revocation_pool.clone() {
+        wslvault_storage::revocation_store::install_auth_revocation_checker(pool);
+        info!("token revocation checker installed for HTTP token verification");
+    } else {
+        warn!(
+            "DATABASE_URL is not set — revoked tokens cannot be detected on the HTTP \
+             admin surface. Development only."
+        );
+    }
+
     let signing_key_pool = revocation_pool.clone();
     // Cloned here because `revocation_pool` is moved into the gRPC service
     // below, and the invitation routes are built afterwards.

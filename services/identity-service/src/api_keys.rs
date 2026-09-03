@@ -1025,6 +1025,17 @@ pub struct AdminIdentity {
     /// its own claims; `None` for the bootstrap token, which is not tenant
     /// scoped and must therefore name its tenant explicitly on each request.
     pub tenant_id: Option<String>,
+    /// Whether this caller may mint *superuser* keys.
+    ///
+    /// True only for an existing superuser (from the signed claim) and for the
+    /// bootstrap token, which is how the first superuser comes into existence.
+    /// Everyone else — including a platform administrator — cannot create one.
+    ///
+    /// Without this the `is_superuser` flag on a create request was taken at
+    /// face value, so anyone who could reach key management could mint
+    /// themselves cross-tenant access. Reproduced against a running instance:
+    /// three superuser keys minted from an ordinary tenant credential.
+    pub superuser: bool,
 }
 
 /// Authenticates callers of the key-management endpoints.
@@ -1128,6 +1139,9 @@ impl AdminAuth {
                     return Ok(AdminIdentity {
                         principal_id: "bootstrap-admin".to_string(),
                         tenant_id: None,
+                        // The bootstrap token exists precisely to create the
+                        // first superuser, before any superuser exists to do it.
+                        superuser: true,
                     });
                 }
             }
@@ -1141,6 +1155,28 @@ impl AdminAuth {
             .map(str::trim)
             .filter(|t| !t.is_empty())
             .ok_or(AdminRejection::Unauthenticated)?;
+
+        // Revocation is checked before the signature is even considered, so a
+        // revoked token cannot mint keys. This gate verifies tokens itself
+        // rather than going through `resolve_identity`, so it does not inherit
+        // that function's revocation check and had none of its own: a revoked
+        // administrator token could call POST /v1/api-keys, receive a working
+        // key, and exchange it for clean tokens.
+        //
+        // Fails closed. An unreachable revocation list denies the request,
+        // because answering "not revoked" when the answer is unknown is exactly
+        // how a revoked credential keeps working.
+        match wslvault_core::auth::is_token_revoked(bearer).await {
+            Ok(false) => {}
+            Ok(true) => {
+                warn!("a revoked token was presented to api key management");
+                return Err(AdminRejection::Unauthenticated);
+            }
+            Err(e) => {
+                error!(error = %e.0, "revocation lookup failed — denying");
+                return Err(AdminRejection::Unauthenticated);
+            }
+        }
 
         // Try the per-tenant EdDSA path first, then the legacy shared HS256.
         //
@@ -1170,6 +1206,7 @@ impl AdminAuth {
             return Ok(AdminIdentity {
                 principal_id: claims.sub,
                 tenant_id: Some(claims.tenant_id),
+                superuser: true,
             });
         }
 
@@ -1191,6 +1228,10 @@ impl AdminAuth {
         Ok(AdminIdentity {
             principal_id: claims.sub,
             tenant_id: Some(claims.tenant_id),
+            // Carrying the administrator policy is not the same as being a
+            // superuser: a platform administrator manages tenants, a superuser
+            // reads across them. Escalating between the two must be deliberate.
+            superuser: false,
         })
     }
 }
@@ -1364,6 +1405,30 @@ pub async fn handle_create_api_key(
     // The creator is whoever the admin gate authenticated, not a header the
     // caller controls — `created_by` is audit evidence and must not be forgeable.
     let created_by = identity.principal_id.clone();
+
+    // Only a superuser mints a superuser. `is_superuser` used to be taken
+    // straight from the request body, so any caller who reached this handler
+    // could grant themselves cross-tenant access to every secret in the
+    // deployment — one request, no further credential. Reproduced live: three
+    // superuser keys minted from an ordinary tenant credential, in a tenant the
+    // caller did not belong to.
+    //
+    // Checked here rather than in `AdminAuth` because it is an authorisation
+    // decision about *this* request's payload, not about who the caller is.
+    if payload.is_superuser && !identity.superuser {
+        warn!(
+            principal = %identity.principal_id,
+            "refused an attempt to mint a superuser key without superuser authority"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "superuser_grant_denied",
+                "message": "only a superuser can create a superuser key",
+            })),
+        )
+            .into_response();
+    }
 
     // A JWT caller mints only inside its own tenant, whatever the body says.
     if let Some(tenant) = &identity.tenant_id {
@@ -2661,6 +2726,81 @@ mod tests {
             "policies": ["read"],
         }))
         .unwrap()
+    }
+
+    /// A platform administrator is not a superuser.
+    ///
+    /// `is_superuser` came straight off the request body with no check, so any
+    /// caller who could reach key management could grant themselves
+    /// cross-tenant access to every secret in the deployment. Reproduced
+    /// against a running instance before this guard existed: three superuser
+    /// keys minted from an ordinary tenant credential.
+    #[tokio::test]
+    async fn a_non_superuser_cannot_mint_a_superuser_key() {
+        let app = make_app();
+        let (token, _) = make_token_manager()
+            .issue_token(
+                "admin-1",
+                "tenant-x",
+                vec![DEFAULT_ADMIN_POLICY.to_string()],
+                3600,
+            )
+            .unwrap();
+
+        let body = serde_json::to_string(&serde_json::json!({
+            "name": "escalate",
+            "tenant_id": "tenant-x",
+            "policies": ["read"],
+            "is_superuser": true,
+            "mfa_required": true,
+        }))
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "carrying the administrator policy must not confer the ability to \
+             mint cross-tenant superuser keys"
+        );
+    }
+
+    /// The bootstrap token may, because that is how the first one exists.
+    #[tokio::test]
+    async fn the_bootstrap_token_may_mint_a_superuser_key() {
+        let app = make_app();
+        let body = serde_json::to_string(&serde_json::json!({
+            "name": "first-superuser",
+            "tenant_id": "tenant-x",
+            "policies": ["root"],
+            "is_superuser": true,
+            "mfa_required": true,
+        }))
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/api-keys")
+            .header("content-type", "application/json")
+            .header(ADMIN_TOKEN_HEADER, TEST_ADMIN_TOKEN)
+            .body(Body::from(body))
+            .unwrap();
+
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "the bootstrap path must remain able to create the first superuser, \
+             or a fresh deployment has no way to get one"
+        );
     }
 
     #[tokio::test]

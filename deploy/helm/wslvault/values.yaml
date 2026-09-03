@@ -423,7 +423,21 @@ identityService:
   # "admin credential required". Pin it to "admin", a policy the operator keys
   # actually hold. The bootstrap token in secrets.adminToken bypasses this and
   # is the only way to mint the first key.
-  adminPolicy: "admin"
+  # -- Policy a JWT must carry to manage tenants and API keys. Empty uses the
+  # compiled default, `wslvault:platform-admin`, which is what you want.
+  #
+  # This was pinned to "admin" because no key carried the namespaced policy and
+  # an empty value 401'd the dashboard. The cost was severe: `admin` is the
+  # most likely name a tenant gives its OWN administrators, so any tenant that
+  # created one was handing its staff authority over every tenant in the
+  # deployment. Migration 033 grants `wslvault:platform-admin` to the real
+  # operator keys (those carrying `root`, and superusers), which is what allows
+  # this to be empty again.
+  #
+  # Do not set this back to "admin". If an operator is locked out, the
+  # bootstrap token (X-Admin-Token) is not policy-gated and can grant the
+  # namespaced policy to the right keys.
+  adminPolicy: ""
   # -- Base address tenant invitation links point at, e.g.
   # "https://vault-ui.workstation.co.uk". Must be an address the recipient can
   # actually open; the service cannot infer it, and a wrong value produces
