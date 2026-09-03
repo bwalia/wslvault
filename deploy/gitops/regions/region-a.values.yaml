@@ -6,8 +6,13 @@
 # drifted values would have Argo CD rewrite a working region on first sync.
 # ═══════════════════════════════════════════════════════════════════════════
 global:
-  # All services pinned to the v1.0.6 release build (2026-09-02).
-  imageTag: v1.0.6
+  # Fallback tag for services that do not pin their own image below —
+  # leaseManager and syncScheduler both rely on it. Bumping only the
+  # explicit `tag:` lines leaves those two on the old release, which is
+  # exactly what happened on the v1.0.8 rollout: lease-manager stayed on
+  # v1.0.6 and its HTTP router (added after that build) stayed missing,
+  # so /leases answered 404 in production.
+  imageTag: v1.0.8
   region:
     id: region-a
     displayName: Manchester
