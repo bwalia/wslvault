@@ -197,7 +197,7 @@ obs-promtail-edge-gchfk 0/1   Running   31h   10.42.17.6      vps002
 #   curl https://vault.workstation.co.uk  -> Could not resolve host
 #   curl https://kubernetes.default.svc   -> Could not resolve host
 #   curl -k https://10.43.0.1             -> timed out after 5s
-#   curl -H 'Host: …' http://72.62.211.28 -> 200   (public egress works)
+#   curl -H 'Host: …' http://origin-uk-001.pop0.uk -> 200  (public egress works)
 ```
 
 Diagnosis: `kube-dns` is `internalTrafficPolicy: Local`, so every node resolves
@@ -220,8 +220,9 @@ kubectl -n kube-system delete pod -l k8s-app=kube-dns --field-selector spec.node
 kubectl -n kube-system get pods -o wide | grep vps002   # coredns-node must be 1/1
 ```
 
-`kubectl logs`/`exec` against vps002 also fail (`502` dialing `85.190.106.88:10250`),
-so the kubelet tunnel needs the same attention.
+`kubectl logs`/`exec` against vps002 also fail — the API server returns `502`
+dialing that node's kubelet on port 10250 — so the kubelet tunnel needs the
+same attention.
 
 cloud003 is used instead: same isolation profile as cloud001 (edge taint,
 `cross-node=unavailable`, traefik-edge, `local-path`), CoreDNS Ready, and a
@@ -265,10 +266,15 @@ origin.
 | Record | Target |
 |---|---|
 | `vault.workstation.co.uk` | PoP → region A origin (the shared alias) |
-| `vault-a.workstation.co.uk` | `72.62.211.28` (cloud001) |
-| `vault-b.workstation.co.uk` | `77.68.126.63` (cloud003) |
-| `vault-ha.workstation.co.uk` | `77.68.126.63` (cloud003) |
-| `vault-ui-b.workstation.co.uk` | `77.68.126.63` (cloud003, legacy UI alias) |
+| `vault-a.workstation.co.uk` | `origin-uk-001.pop0.uk` (cloud001) |
+| `vault-b.workstation.co.uk` | `origin-uk-003.pop0.uk` (cloud003) |
+| `vault-ha.workstation.co.uk` | `origin-uk-003.pop0.uk` (cloud003) |
+| `vault-ui-b.workstation.co.uk` | `origin-uk-003.pop0.uk` (cloud003, legacy UI alias) |
+
+Targets are the PoP origin **names**, not their addresses. An address written
+into a document is wrong the first time an origin moves, and wrong silently —
+nothing validates prose. `origin-uk-001` and `origin-uk-003` are the stable
+identifiers for cloud001 and cloud003.
 
 The `-a`/`-b` hosts must resolve **before** the regions can peer: the
 replication URLs in the roster use them.
