@@ -30,7 +30,7 @@ global:
   # exactly what happened on the v1.0.8 rollout: lease-manager stayed on
   # v1.0.6 and its HTTP router (added after that build) stayed missing,
   # so /leases answered 404 in production.
-  imageTag: v1.0.8
+  imageTag: v1.0.14
   region:
     id: region-b
     displayName: London
@@ -74,10 +74,9 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    # v1.0.11: client clock-skew login fix (session TTL from the token's own
-    # iat/exp against the local clock). Ahead of the other services, which stay
-    # at global.imageTag until a full deploy of the newer main.
-    tag: v1.0.11
+    # Promoted with the rest of the mesh to release v1.0.14 (vault redesign,
+    # RLS on api_keys / MFA, invitations). Keep in lockstep with region A.
+    tag: v1.0.14
   # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
   # the old name on the login page). The old host stays as an alias so existing
   # bookmarks and links keep working; both CNAME to pop0 and share the
@@ -163,7 +162,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 
 secrets:
   existingSecret: wslvault-mesh-keys
@@ -173,7 +172,7 @@ secrets:
 cryptoService:
   replicaCount: 1
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Image pins, matched to region A.
@@ -216,25 +215,25 @@ identityService:
     username: tenthmatrix.mailer@gmail.com
     from: "WSLVault <tenthmatrix.mailer@gmail.com>"
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 regionHealth:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 secretEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 policyEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 transitEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 auditService:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 pkiEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 mcpServer:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
