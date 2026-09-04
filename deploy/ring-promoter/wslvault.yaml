@@ -79,7 +79,8 @@ apps:
             --set cryptoService.image.tag="${ver}" \
             --set replicationAgent.image.tag="${ver}" \
             --wait --timeout 15m
-          echo "wslvault ${ver} live in ${ns}"      resources: { cpu_request: 100m, memory_limit: 512Mi }
+          echo "wslvault ${ver} live in ${ns}"
+      resources: { cpu_request: 100m, memory_limit: 512Mi }
       timeout: 20m
       retries: 0
       ttl_after_finished: 1h
