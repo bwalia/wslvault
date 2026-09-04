@@ -77,3 +77,27 @@ curl --fail -sS -X POST 'https://rp.workstation.co.uk/api/apps/wslvault/seed?asy
 ```
 
 Track the app at <https://rp.workstation.co.uk/?app=wslvault>.
+
+## Companion change on `bwalia/ring-promoter`
+
+Pipeline cards show `rings.*.display_name` only after Ring Promoter gains that
+field (API + UI). This agent cannot push to that repo; apply the bundled patch
+from a machine with write access:
+
+```bash
+cd ~/Documents/Work/ring-promoter
+git checkout -b cursor/ring-display-name-region-labels origin/main
+git am /path/to/wslvault/deploy/ring-promoter/upstream-display-name.patch
+# then rebuild the embedded UI:
+cd web && npm ci && npm run build:embed && cd ..
+git add internal/web/static && git commit --amend --no-edit   # or a follow-up commit
+git push -u origin HEAD && gh pr create
+```
+
+Or pull the full commit (including embedded UI) from the bundle:
+
+```bash
+git fetch /path/to/wslvault/deploy/ring-promoter/upstream-display-name.bundle   cursor/ring-display-name-region-labels:cursor/ring-display-name-region-labels
+git checkout cursor/ring-display-name-region-labels
+git push -u origin HEAD && gh pr create
+```
