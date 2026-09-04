@@ -172,7 +172,9 @@ pub async fn redeem(
     // exist yet violates the foreign key. Doing it in this order is also the
     // safer arrangement — if the claim below matches nothing, this insert rolls
     // back with it, so a spent or expired token never leaves a stray key behind.
-    crate::api_key_store::insert_tx(&mut tx, key)
+    // `&mut *tx` derefs to the connection: the insert runs on the same
+    // connection as the claim below, inside this transaction.
+    crate::api_key_store::insert(&mut tx, key)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "could not mint the invited key; rolling back");
