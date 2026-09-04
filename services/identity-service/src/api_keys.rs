@@ -1657,11 +1657,44 @@ pub async fn handle_rotate_api_key(
 }
 
 /// Whether this key has a confirmed authenticator enrolled.
-async fn mfa_enrolment_active(state: &ApiKeyState, api_key_id: Uuid) -> Result<bool, String> {
+
+/// Open a tenant scope for the MFA tables.
+///
+/// MFA rows belong to one key, which belongs to one tenant, so every operation
+/// here is scoped — none of them takes the cross-tenant bypass. The tenant
+/// arrives as a string from the claim or the challenge, so parsing it is part
+/// of opening the scope rather than repeated at each call site.
+///
+/// # Committing
+///
+/// A scope that WRITES must be committed explicitly. Dropping one rolls it
+/// back, and that is not a compile error — the confirm handler was written
+/// without its commit and would have reported "confirmed" while silently
+/// discarding the enrolment and leaving `mfa_required` false.
+///
+/// A read-only scope may simply be dropped, and two here are:
+/// `mfa_enrolment_active` and the lookup in `handle_mfa_verify`.
+async fn mfa_scope<'p>(
+    pool: &'p wslvault_storage::pool::DbPool,
+    tenant_id: &str,
+) -> Result<wslvault_storage::tenant_scope::ScopedTx<'p>, String> {
+    let uuid =
+        Uuid::parse_str(tenant_id.trim()).map_err(|e| format!("tenant is not a UUID: {e}"))?;
+    pool.begin_tenant(&TenantId(uuid))
+        .await
+        .map_err(|e| format!("could not open the tenant scope: {e}"))
+}
+
+async fn mfa_enrolment_active(
+    state: &ApiKeyState,
+    api_key_id: Uuid,
+    tenant_id: &str,
+) -> Result<bool, String> {
     let Some(pool) = state.mfa_pool.as_ref() else {
         return Ok(false);
     };
-    Ok(wslvault_storage::mfa_store::find(pool, api_key_id)
+    let mut scope = mfa_scope(pool, tenant_id).await?;
+    Ok(wslvault_storage::mfa_store::find(scope.conn(), api_key_id)
         .await
         .map_err(|e| e.to_string())?
         .map(|e| e.is_active())
@@ -1757,7 +1790,13 @@ pub async fn handle_auth_api_key(
     // per key so machine clients — ESO, CI, the SDKs — keep the one-step
     // exchange; a service account cannot read an authenticator app.
     if validation_result.mfa_required {
-        match mfa_enrolment_active(&state, validation_result.key_id).await {
+        match mfa_enrolment_active(
+            &state,
+            validation_result.key_id,
+            &validation_result.tenant_id,
+        )
+        .await
+        {
             Ok(true) => {
                 let challenge = state
                     .challenges
@@ -1916,7 +1955,19 @@ pub async fn handle_mfa_verify(
             .into_response();
     };
 
-    let enrolment = match wslvault_storage::mfa_store::find(pool, pending.api_key_id).await {
+    let mut scope = match mfa_scope(pool, &pending.tenant_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not scope the MFA lookup");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "MFA is temporarily unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    let enrolment = match wslvault_storage::mfa_store::find(scope.conn(), pending.api_key_id).await
+    {
         Ok(Some(e)) if e.is_active() => e,
         Ok(_) => {
             return (
@@ -2023,20 +2074,30 @@ async fn verify_second_factor(
     let secret = String::from_utf8(secret_bytes)
         .map_err(|_| "stored TOTP secret is not valid UTF-8".to_string())?;
 
+    // Its own scope: this runs from a match arm where the caller's scope is
+    // already borrowed, and both writes below belong to the same tenant anyway.
+    let mut scope = mfa_scope(pool, &pending.tenant_id).await?;
+
     let now = chrono::Utc::now().timestamp();
     if let Some(step) = crate::mfa::verify_code(&secret, code, now) {
         // Replay defence lives in the UPDATE, not here: two requests presenting
         // the same code would otherwise both pass this check before either
         // wrote. See `try_consume_step`.
-        return wslvault_storage::mfa_store::try_consume_step(pool, pending.api_key_id, step)
-            .await
-            .map_err(|e| e.to_string());
+        let ok =
+            wslvault_storage::mfa_store::try_consume_step(scope.conn(), pending.api_key_id, step)
+                .await
+                .map_err(|e| e.to_string())?;
+        scope.commit().await.map_err(|e| e.to_string())?;
+        return Ok(ok);
     }
 
     let hash = crate::mfa::hash_recovery_code(code);
-    wslvault_storage::mfa_store::consume_recovery_code(pool, pending.api_key_id, &hash)
-        .await
-        .map_err(|e| e.to_string())
+    let ok =
+        wslvault_storage::mfa_store::consume_recovery_code(scope.conn(), pending.api_key_id, &hash)
+            .await
+            .map_err(|e| e.to_string())?;
+    scope.commit().await.map_err(|e| e.to_string())?;
+    Ok(ok)
 }
 
 /// AAD binding a wrapped TOTP secret to the key it protects.
@@ -2136,9 +2197,25 @@ pub async fn handle_mfa_enroll(
         }
     };
 
-    if let Err(e) =
-        wslvault_storage::mfa_store::upsert_pending(pool, validated.key_id, tenant_uuid, &wrapped)
-            .await
+    let mut scope = match mfa_scope(pool, &validated.tenant_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not scope the MFA enrolment");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "MFA is temporarily unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    if let Err(e) = wslvault_storage::mfa_store::upsert_pending(
+        scope.conn(),
+        validated.key_id,
+        tenant_uuid,
+        &wrapped,
+    )
+    .await
     {
         return (
             StatusCode::CONFLICT,
@@ -2160,7 +2237,7 @@ pub async fn handle_mfa_enroll(
     };
     let hashes: Vec<String> = codes.iter().map(|(_, h)| h.clone()).collect();
     if let Err(e) = wslvault_storage::mfa_store::replace_recovery_codes(
-        pool,
+        scope.conn(),
         validated.key_id,
         tenant_uuid,
         &hashes,
@@ -2171,6 +2248,17 @@ pub async fn handle_mfa_enroll(
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "message": "could not store recovery codes" })),
+        )
+            .into_response();
+    }
+
+    // Both writes commit together: an enrolment without its recovery codes
+    // would leave the holder one lost phone away from a dead account.
+    if let Err(e) = scope.commit().await {
+        error!(error = %e, "could not commit the MFA enrolment");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not store the enrolment" })),
         )
             .into_response();
     }
@@ -2217,7 +2305,18 @@ pub async fn handle_mfa_confirm(
             .into_response();
     };
 
-    let enrolment = match wslvault_storage::mfa_store::find(pool, validated.key_id).await {
+    let mut scope = match mfa_scope(pool, &validated.tenant_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not scope the MFA lookup");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "MFA is temporarily unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    let enrolment = match wslvault_storage::mfa_store::find(scope.conn(), validated.key_id).await {
         Ok(Some(e)) => e,
         Ok(None) => {
             return (
@@ -2264,8 +2363,22 @@ pub async fn handle_mfa_confirm(
             .into_response();
     };
 
-    if let Err(e) = wslvault_storage::mfa_store::confirm(pool, validated.key_id, step).await {
+    if let Err(e) = wslvault_storage::mfa_store::confirm(scope.conn(), validated.key_id, step).await
+    {
         error!(error = %e, "could not confirm the enrolment");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not confirm the enrolment" })),
+        )
+            .into_response();
+    }
+
+    // Without this the ScopedTx rolls back on drop and the confirmation is
+    // silently discarded: the caller is told "confirmed" while the enrolment
+    // stays pending and mfa_required stays false. Dropping a transaction is not
+    // a compile error, so this is the one line the type system cannot enforce.
+    if let Err(e) = scope.commit().await {
+        error!(error = %e, "could not commit the MFA confirmation");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "message": "could not confirm the enrolment" })),
