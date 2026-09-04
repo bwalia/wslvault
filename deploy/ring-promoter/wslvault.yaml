@@ -88,12 +88,14 @@ apps:
       # Wave 0 — Manchester. Auto-promote onward so a seed rolls London too.
       int:
         target_env: region-a
+        display_name: "region-a · Manchester"
         health_url: "https://vault-ui.workstation.co.uk/api/version"
         health_version_field: version
         auto_promote: true
       # Wave 1 — London. Stop here; higher rings are unused for this app.
       test:
         target_env: region-b
+        display_name: "region-b · London"
         health_url: "https://vault-ha.workstation.co.uk/api/version"
         health_version_field: version
         auto_promote: false

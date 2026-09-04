@@ -39,10 +39,15 @@ kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter
 4. Health is `GET /api/version` on that region's vault-ui, requiring the
    JSON `version` field to equal the seeded tag.
 
-| Ring | `target_env` | Namespace | Health | Auto-promote |
-|------|--------------|-----------|--------|--------------|
-| `int` | `region-a` | `wslvault` | `https://vault-ui.workstation.co.uk/api/version` | yes |
-| `test` | `region-b` | `wslvault-b` | `https://vault-ha.workstation.co.uk/api/version` | no |
+| Ring | `target_env` | Namespace | Pipeline label | Health | Auto-promote |
+|------|--------------|-----------|----------------|--------|--------------|
+| `int` | `region-a` | `wslvault` | `region-a · Manchester` | `https://vault-ui.workstation.co.uk/api/version` | yes |
+| `test` | `region-b` | `wslvault-b` | `region-b · London` | `https://vault-ha.workstation.co.uk/api/version` | no |
+
+Ring cards in the RP UI show the **pipeline label** (`display_name`) as the
+primary title, with the shared ring name (Integration / Test) as a subtitle.
+That needs Ring Promoter support for `rings.*.display_name` (see the companion
+PR on `bwalia/ring-promoter`).
 
 ## CI
 
