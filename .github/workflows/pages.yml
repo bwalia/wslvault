@@ -1,19 +1,13 @@
 name: Deploy marketing site to GitHub Pages
 
 # Builds the Next.js static export in www/ and publishes it to GitHub Pages
-# (www.wslvault.org). Ring Promoter's github deployer dispatches this workflow
-# with ENV / DEPLOY_BRANCH / DEPLOY_MODE — see deploy/ring-promoter/wslvault-www.yaml.
-#
-# Push to www/** on main still deploys directly as a safety net; the normal
-# promote path is: push → seed RP (seed-www-ring-promoter.yml) → RP dispatches
-# this workflow.
+# (www.wslvault.org). Every push/merge to main redeploys the live site so the
+# landing page stays current. Ring Promoter can also workflow_dispatch this
+# workflow — see deploy/ring-promoter/wslvault-www.yaml.
 
 on:
   push:
     branches: [main]
-    paths:
-      - "www/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
     inputs:
       ENV:
@@ -50,9 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          # RP seeds a version string as DEPLOY_BRANCH; push events use the
-          # triggering commit. Either way the static export embeds that ref in
-          # version.json so RP health_version_field checks can verify the live site.
+          # Full history + tags so the footer can show a real version tag when
+          # HEAD is tagged (or git describe otherwise).
+          fetch-depth: 0
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.DEPLOY_BRANCH || github.sha }}
 
       - uses: actions/setup-node@v5
@@ -75,20 +69,43 @@ jobs:
             echo "NEXT_PUBLIC_BASE_PATH=/${{ github.event.repository.name }}" >> "$GITHUB_ENV"
           fi
 
-      - name: Stamp version.json for Ring Promoter health checks
+      - name: Stamp version.json and footer version
         env:
-          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.DEPLOY_BRANCH || github.sha }}
+          # RP health_version_field compares against this exact string when
+          # seeding via Ring Promoter. On plain main pushes use the commit SHA.
+          RP_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.DEPLOY_BRANCH || github.sha }}
           ENV_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.ENV || 'www' }}
         run: |
           set -euo pipefail
           mkdir -p public
-          # Exact string RP seeded / promoted — health_version_field: version
-          # compares against this. Prefer the ref name over the resolved SHA so
-          # seeding "main" or "v1.0.14" matches what the UI reports.
-          printf '{"version":"%s","env":"%s","sha":"%s","built_at":"%s"}\n' \
-            "$VERSION" "$ENV_NAME" "${{ github.sha }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          FULL_SHA=$(git rev-parse HEAD)
+          # Prefer an exact tag on this commit (release), else git describe,
+          # else the short SHA — this is what the footer shows.
+          if LABEL=$(git describe --tags --exact-match HEAD 2>/dev/null); then
+            :
+          elif LABEL=$(git describe --tags --always HEAD 2>/dev/null); then
+            :
+          else
+            LABEL="$SHORT_SHA"
+          fi
+          # workflow_dispatch with an explicit tag/branch name should win for
+          # the visible label when it is not a raw 40-char SHA.
+          case "${RP_VERSION}" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+              ;;
+            *)
+              if [ -n "${RP_VERSION}" ]; then
+                LABEL="${RP_VERSION}"
+              fi
+              ;;
+          esac
+          printf '{"version":"%s","label":"%s","env":"%s","sha":"%s","built_at":"%s"}\n' \
+            "$RP_VERSION" "$LABEL" "$ENV_NAME" "$FULL_SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             > public/version.json
           cat public/version.json
+          echo "NEXT_PUBLIC_SITE_VERSION=${LABEL}" >> "$GITHUB_ENV"
+          echo "NEXT_PUBLIC_SITE_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
 
       - name: Build static export
         env:

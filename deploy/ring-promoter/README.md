@@ -68,6 +68,13 @@ kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter
 
 ## Marketing site (`wslvault-www`)
 
+**Every push to `main`** also runs `.github/workflows/pages.yml` directly, so
+https://www.wslvault.org/ stays current without waiting on Ring Promoter. The
+footer shows the published version tag (exact git tag, else `git describe`,
+else short SHA).
+
+Ring Promoter path (optional / tracked in the RP UI):
+
 1. Seed/promote dispatches `.github/workflows/pages.yml` with
    `DEPLOY_BRANCH=<version>` and `ENV=www`.
 2. The workflow builds `www/`, writes `public/version.json` with that version,
