@@ -250,3 +250,6 @@ footer { border-top: 1px solid var(--steel-line-soft); padding: 40px 0; color: v
   border-radius: 4px;
 }
 .foot-version:hover { color: var(--ink); border-color: var(--steel-line); }
+@media (max-width: 640px) {
+  .foot-meta { align-items: flex-start; text-align: left; width: 100%; }
+}
