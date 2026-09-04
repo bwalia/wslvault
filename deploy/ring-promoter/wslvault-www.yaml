@@ -1,0 +1,46 @@
+# Ring Promoter app — marketing site at https://www.wslvault.org/
+#
+# deployer: github — each seed/promote workflow-dispatches
+# .github/workflows/pages.yml on bwalia/wslvault, which builds www/ and
+# publishes to GitHub Pages. There is a single live site (no per-ring
+# staging hostname); int and prod both deploy that site. int auto-promotes
+# so a seed lands on the pipeline and continues to prod.
+#
+# Paste into the workstation Ring Promoter ConfigMap
+# (workstation-ring-promoter/ring-promoter-config → data.config.yaml), then:
+#   kubectl apply -f <configmap>
+#   kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter
+#
+# CRITICAL: set RP_GITHUB_TOKEN on Secret ring-promoter FIRST (actions:write +
+# contents:read on bwalia/wslvault). If this app is present and the token is
+# empty, Ring Promoter refuses to start (CrashLoopBackOff). Without the token
+# the github deployer also cannot dispatch pages.yml.
+apps:
+  - name: wslvault-www
+    display_name: "WSLVault www (www.wslvault.org)"
+    location: { lat: 53.4808, lng: -2.2426, city: Manchester, region: GB }
+    deployer: github
+    github:
+      owner: bwalia
+      repo: wslvault
+      workflow: pages.yml
+      ref: main
+      deploy_mode: full
+      token_env: RP_GITHUB_TOKEN
+      poll_interval: 20s
+      run_lookup_timeout: 90s
+    rings:
+      # Single live site; int auto-promotes to the next consecutive ring (test).
+      # Ring order is fixed as int → test → acc → prod — cannot skip to prod.
+      int:
+        target_env: www
+        display_name: "www.wslvault.org · int"
+        health_url: "https://www.wslvault.org/version.json"
+        health_version_field: version
+        auto_promote: true
+      test:
+        target_env: www
+        display_name: "www.wslvault.org"
+        health_url: "https://www.wslvault.org/version.json"
+        health_version_field: version
+        auto_promote: false

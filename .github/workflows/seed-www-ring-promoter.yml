@@ -1,0 +1,109 @@
+name: Seed www Ring Promoter
+
+# After www/ lands on main, seed Ring Promoter so it owns the rollout to
+# https://www.wslvault.org/ (dispatches pages.yml via the github deployer).
+# Direct push deploys of pages.yml remain as a safety net; this is the
+# promote path surfaced in the RP UI (rp.workstation.co.uk/?app=wslvault-www).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "www/**"
+      - ".github/workflows/pages.yml"
+      - "deploy/ring-promoter/wslvault-www.yaml"
+  workflow_dispatch:
+    inputs:
+      VERSION:
+        description: "Git ref to seed (branch, tag, or SHA). Default: this commit."
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: Seed wslvault-www int
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Seed Ring Promoter and wait for healthy deploy
+        env:
+          RP_API_TOKEN: ${{ secrets.RP_API_TOKEN }}
+          RP_URL: ${{ secrets.RP_URL }}
+          VERSION: ${{ inputs.VERSION || github.sha }}
+        run: |
+          set -euo pipefail
+          RP="${RP_URL:-https://rp.workstation.co.uk}"
+          TAG="${VERSION}"
+          if [ -z "${RP_API_TOKEN:-}" ]; then
+            echo "::error::RP_API_TOKEN is not set — cannot seed Ring Promoter."
+            exit 1
+          fi
+          echo "Seeding wslvault-www int @ ${TAG} via ${RP}…"
+          echo "Track: ${RP}/?app=wslvault-www"
+          code=$(curl -sS -o /tmp/seed.out -w '%{http_code}' \
+            -X POST "${RP}/api/apps/wslvault-www/seed?async=1" \
+            -H "Authorization: Bearer ${RP_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"ring":"int","version":"%s"}' "$TAG")" || echo 000)
+          echo "seed -> HTTP ${code} :: $(cat /tmp/seed.out)"
+          case "${code}" in
+            200|202) ;;
+            *) echo "::error::Ring Promoter seed failed (HTTP ${code})"; exit 1 ;;
+          esac
+
+          JOB_ID=$(python3 -c 'import json; print(json.load(open("/tmp/seed.out")).get("job_id") or "")')
+          if [ -z "$JOB_ID" ]; then
+            echo "::error::seed response had no job_id"
+            exit 1
+          fi
+          echo "Waiting for Ring Promoter job ${JOB_ID}…"
+
+          python3 - "$RP" "$RP_API_TOKEN" "$JOB_ID" "$TAG" <<'PY'
+          import json, sys, time, urllib.error, urllib.request
+
+          rp, token, job_id, tag = sys.argv[1:5]
+          url = f"{rp}/api/apps/wslvault-www/jobs/{job_id}"
+          deadline = time.time() + 40 * 60
+          last = None
+
+          def dump_logs(body):
+              for step in body.get("steps") or []:
+                  print(f"--- step {step.get('id')} status={step.get('status')} ---")
+                  for line in step.get("logs") or []:
+                      print(line)
+
+          while time.time() < deadline:
+              req = urllib.request.Request(
+                  url, headers={"Authorization": f"Bearer {token}"}
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      body = json.load(resp)
+              except urllib.error.HTTPError as e:
+                  print(f"::warning::job poll HTTP {e.code}")
+                  time.sleep(15)
+                  continue
+              status = (body.get("status") or "").lower()
+              if body != last:
+                  print(f"RP job {job_id} status={status}")
+                  last = {k: body.get(k) for k in ("status", "finished_at")}
+              if status == "success":
+                  result = body.get("result") or {}
+                  dump_logs(body)
+                  if result.get("success") is False:
+                      print("::error::RP job marked success but result.success is false")
+                      sys.exit(1)
+                  print(f"www seeded {tag}; auto_promote should roll prod")
+                  sys.exit(0)
+              if status in ("failed", "failure", "error"):
+                  dump_logs(body)
+                  msg = (body.get("result") or {}).get("message") or status
+                  print(f"::error::Ring Promoter deploy failed: {msg}")
+                  sys.exit(1)
+              time.sleep(15)
+          print("::error::timed out waiting for Ring Promoter job")
+          sys.exit(1)
+          PY

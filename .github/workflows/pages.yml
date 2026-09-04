@@ -1,10 +1,12 @@
 name: Deploy marketing site to GitHub Pages
 
-# Builds the Next.js static export in www/ and publishes it to GitHub Pages,
-# served at the custom domain in www/CNAME (www.wslvault.org, with the apex
-# wslvault.org redirecting to it). Mirrors the vantiq site's deploy.
+# Builds the Next.js static export in www/ and publishes it to GitHub Pages
+# (www.wslvault.org). Ring Promoter's github deployer dispatches this workflow
+# with ENV / DEPLOY_BRANCH / DEPLOY_MODE — see deploy/ring-promoter/wslvault-www.yaml.
 #
-# Only paths under www/ trigger it, so the Rust/services CI is untouched.
+# Push to www/** on main still deploys directly as a safety net; the normal
+# promote path is: push → seed RP (seed-www-ring-promoter.yml) → RP dispatches
+# this workflow.
 
 on:
   push:
@@ -13,15 +15,28 @@ on:
       - "www/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
+    inputs:
+      ENV:
+        description: "Ring target_env from Ring Promoter (informational for a single live site)"
+        required: true
+        default: "www"
+        type: string
+      DEPLOY_BRANCH:
+        description: "Git ref (branch, tag, or SHA) to build and publish"
+        required: true
+        default: "main"
+        type: string
+      DEPLOY_MODE:
+        description: "Deploy mode (accepted for Ring Promoter compatibility)"
+        required: false
+        default: "full"
+        type: string
 
-# GitHub Pages needs these; the default GITHUB_TOKEN permissions are not enough.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# One deploy at a time. In-progress runs finish rather than being cancelled, so
-# a half-uploaded artifact never becomes the live site.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -34,6 +49,11 @@ jobs:
         working-directory: www
     steps:
       - uses: actions/checkout@v5
+        with:
+          # RP seeds a version string as DEPLOY_BRANCH; push events use the
+          # triggering commit. Either way the static export embeds that ref in
+          # version.json so RP health_version_field checks can verify the live site.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.DEPLOY_BRANCH || github.sha }}
 
       - uses: actions/setup-node@v5
         with:
@@ -44,9 +64,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The custom domain serves from the root; a project page serves from
-      # /<repo>. The domain is read from www/CNAME so the repo is the source of
-      # truth and no one has to keep a variable in sync with it.
       - name: Resolve base path from CNAME
         run: |
           if [ -s CNAME ]; then
@@ -58,17 +75,29 @@ jobs:
             echo "NEXT_PUBLIC_BASE_PATH=/${{ github.event.repository.name }}" >> "$GITHUB_ENV"
           fi
 
+      - name: Stamp version.json for Ring Promoter health checks
+        env:
+          VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.DEPLOY_BRANCH || github.sha }}
+          ENV_NAME: ${{ github.event_name == 'workflow_dispatch' && inputs.ENV || 'www' }}
+        run: |
+          set -euo pipefail
+          mkdir -p public
+          # Exact string RP seeded / promoted — health_version_field: version
+          # compares against this. Prefer the ref name over the resolved SHA so
+          # seeding "main" or "v1.0.14" matches what the UI reports.
+          printf '{"version":"%s","env":"%s","sha":"%s","built_at":"%s"}\n' \
+            "$VERSION" "$ENV_NAME" "${{ github.sha }}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > public/version.json
+          cat public/version.json
+
       - name: Build static export
         env:
           NEXT_STATIC_EXPORT: "true"
         run: npm run build
 
-      # Without this, Pages runs the upload through Jekyll, which drops _next/.
       - name: Disable Jekyll processing
         run: touch out/.nojekyll
 
-      # An Actions deploy replaces the whole site, so the CNAME must be part of
-      # the artifact or the custom-domain setting is dropped on publish.
       - name: Carry CNAME into the artifact
         run: cp CNAME out/CNAME
 

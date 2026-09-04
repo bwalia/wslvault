@@ -18,9 +18,17 @@ npm run preview:static   # serve the exported site
 
 ## Deploy
 
-`.github/workflows/pages.yml` builds `www/` with `NEXT_STATIC_EXPORT=true` and
-publishes `www/out` to GitHub Pages on any push to `main` that touches `www/`
-(or via **Run workflow**). Pages must have its source set to **GitHub Actions**.
+Normal path: push to `www/` on `main` →
+`.github/workflows/seed-www-ring-promoter.yml` seeds Ring Promoter app
+`wslvault-www` → RP workflow-dispatches `.github/workflows/pages.yml` →
+GitHub Pages updates **https://www.wslvault.org/**.
+
+`pages.yml` also still runs on direct pushes to `www/**` as a safety net, and
+accepts `workflow_dispatch` inputs (`ENV`, `DEPLOY_BRANCH`, `DEPLOY_MODE`) for
+Ring Promoter. Pages source must be **GitHub Actions**.
+
+See `deploy/ring-promoter/README.md` and
+https://rp.workstation.co.uk/?app=wslvault-www.
 
 ## Domain
 
