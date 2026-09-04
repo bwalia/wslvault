@@ -23,8 +23,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
-use axum::response::Json;
+use axum::http::{Request, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::OnceCell;
@@ -88,15 +89,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("REGION_HEALTH_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8092".to_string());
     let addr: std::net::SocketAddr = listen_addr.parse()?;
 
-    let app = Router::new()
-        .route("/health", get(health::health_handler))
-        .route("/ready", get(readiness_handler))
+    // Everything under /v1/sys is operator surface: the region topology, the
+    // node inventory, and a promote that forces a failover. None of it was
+    // gated on anything at all — any caller that could open a socket to this
+    // service could read the estate's layout and trigger a region promotion.
+    // The health and readiness probes stay open for orchestrators.
+    let operator_routes = Router::new()
         .route("/v1/sys/regions", get(list_regions))
         .route("/v1/sys/regions/:region_id", get(get_region))
         .route("/v1/sys/regions/:region_id/promote", post(promote_region))
         .route("/v1/sys/cluster/status", get(cluster_status))
         .route("/v1/sys/cluster/nodes", get(cluster_nodes))
-        .with_state(state);
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn(require_platform_admin));
+
+    let app = Router::new()
+        .route("/health", get(health::health_handler))
+        .route("/ready", get(readiness_handler))
+        .with_state(state)
+        .merge(operator_routes);
 
     info!(addr = %addr, "region-health HTTP server starting");
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -176,6 +187,48 @@ async fn readiness_handler(State(state): State<AppState>) -> StatusCode {
         },
         None => StatusCode::SERVICE_UNAVAILABLE,
     }
+}
+
+/// Reject anyone who is not a platform administrator.
+///
+/// Region topology is not tenant data — there is no per-tenant view of it to
+/// serve — so the gate is the platform-admin policy rather than a policy-engine
+/// lookup on some synthesised resource path. `wslvault_core::auth` owns the
+/// name so this and identity-service cannot drift apart.
+///
+/// 403 rather than 401 for a valid token without the policy: the console reads
+/// 401 as "session dead" and signs the user out, so answering 401 here would
+/// eject any tenant member whose browser happened to prefetch this page.
+async fn require_platform_admin(req: Request<axum::body::Body>, next: Next) -> Response {
+    let identity = match wslvault_core::auth::resolve_identity(req.headers()).await {
+        Ok(i) => i,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    if !wslvault_core::auth::is_platform_admin(&identity) {
+        warn!(
+            principal_id = %identity.principal_id,
+            "rejected a non-administrator on an operator endpoint"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": format!(
+                    "platform administration required: this endpoint needs the '{}' policy",
+                    wslvault_core::auth::admin_policy_name()
+                ),
+            })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
 }
 
 async fn list_regions(State(state): State<AppState>) -> Result<Json<Vec<RegionInfo>>, StatusCode> {

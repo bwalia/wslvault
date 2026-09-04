@@ -1060,21 +1060,11 @@ pub struct ApiKeyState {
 pub const ADMIN_TOKEN_ENV: &str = "VAULT_ADMIN_TOKEN";
 
 /// Environment variable naming the policy a JWT must carry to manage keys.
-pub const ADMIN_POLICY_ENV: &str = "VAULT_ADMIN_POLICY";
-
-/// Policy required of a JWT caller when `VAULT_ADMIN_POLICY` is unset.
 ///
-/// Namespaced deliberately. This used to be `"admin"` — which is the single
-/// most likely name a tenant gives its own administrator policy, and there is
-/// nothing tenant-scoped about the check: carrying the policy grants
-/// PLATFORM administration, including listing and deleting every tenant in the
-/// deployment.
-///
-/// So any tenant that created a policy called `admin` for its own users was
-/// silently handing them authority over every other tenant. A tenant
-/// administrator and a platform administrator are different things, and the
-/// default name now says which one it means.
-const DEFAULT_ADMIN_POLICY: &str = "wslvault:platform-admin";
+/// Re-exported from core rather than declared again: region-health gates its
+/// operator endpoints on the same name, and two copies of a security-relevant
+/// string are two things to change and one to forget.
+pub use wslvault_core::auth::{ADMIN_POLICY_ENV, DEFAULT_ADMIN_POLICY};
 
 /// Header carrying the bootstrap administrator token.
 pub const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
