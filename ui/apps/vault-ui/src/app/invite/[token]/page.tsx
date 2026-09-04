@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { OtpInput } from '@/components/ui/OtpInput'
 import { api } from '@/lib/api'
+import { recoveryCodeDocument, recoveryCodeFilename } from '@/lib/recovery-codes'
 import { errorMessage, mutate } from '@/lib/fetcher'
 
 /**
@@ -433,8 +434,19 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
           title="Save your backup codes"
           lede="If you lose your phone, these are the only way back in. Nobody can restore your account without them — not even the person who invited you."
         >
-          <div className="p-4 rounded-lg border border-line bg-surface-2 mb-3">
-            <div className="grid grid-cols-2 gap-2 font-mono text-sm text-ink select-all">
+          <div className="rounded-xl border border-line bg-surface-2 mb-3 overflow-hidden">
+            {/* Whose codes these are.
+                They only ever work for the key they were issued to, so a bare
+                list of eight is unusable the moment someone holds two sets —
+                which is exactly what happens to anyone in more than one
+                organisation. Naming the account here, and in the copy and the
+                downloaded file, is the difference between a backup and eight
+                strings of base32. */}
+            <p className="px-4 py-2.5 border-b border-line text-xs text-ink-muted">
+              Backup codes for <strong className="text-ink font-semibold">{accepted?.tenant_name}</strong>
+              {' — they will not work for any other account.'}
+            </p>
+            <div className="p-4 grid grid-cols-2 gap-2 font-mono text-sm text-ink select-all">
               {enrolment.recovery_codes.map(c => (
                 <span key={c}>{c}</span>
               ))}
@@ -442,13 +454,35 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
           </div>
 
           <div className="flex gap-2 mb-5">
-            <CopyButton value={enrolment.recovery_codes.join('\n')} label="backup codes" />
+            <CopyButton
+              value={recoveryCodeDocument(accepted?.tenant_name, enrolment.recovery_codes)}
+              label="backup codes"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const url = URL.createObjectURL(
+                  new Blob(
+                    [recoveryCodeDocument(accepted?.tenant_name, enrolment.recovery_codes)],
+                    { type: 'text/plain' },
+                  ),
+                )
+                const a = document.createElement('a')
+                a.href = url
+                a.download = recoveryCodeFilename(accepted?.tenant_name)
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-line-strong hover:bg-surface-2 text-ink-muted hover:text-ink transition-colors focus-ring"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+            </button>
             <button
               type="button"
               onClick={() => window.print()}
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium border border-line-strong hover:bg-surface-2 text-ink-muted hover:text-ink transition-colors focus-ring"
             >
-              <Download className="w-3.5 h-3.5" />
               Print
             </button>
           </div>

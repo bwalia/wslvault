@@ -203,6 +203,18 @@ export default function LoginPage() {
                     ? 'Use the code from my authenticator app'
                     : "I do not have my phone — use a recovery code"}
                 </button>
+
+                {/* Said here rather than only in an error, because by the time
+                    the error appears the challenge is spent and the user is
+                    back at the key field. Codes are scoped to one API key, and
+                    anyone who belongs to two organisations is holding two sets
+                    of eight indistinguishable strings. */}
+                {useRecovery && (
+                  <p className="mt-2 text-xs text-ink-muted leading-relaxed">
+                    Use the set issued for the key you just entered — codes from
+                    another account will not work here.
+                  </p>
+                )}
               </div>
               <Button type="submit" className="w-full" size="lg" loading={loading}>
                 Verify

@@ -9,6 +9,7 @@ import { OtpInput } from '@/components/ui/OtpInput'
 import { Input } from '@/components/ui/Input'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { api } from '@/lib/api'
+import { keyLabel, recoveryCodeDocument, recoveryCodeFilename } from '@/lib/recovery-codes'
 import { errorMessage, mutate } from '@/lib/fetcher'
 
 /**
@@ -126,17 +127,15 @@ export function TwoFactorSetup() {
 
   const downloadCodes = () => {
     if (!enrolment) return
-    const body = [
-      'WSLVault recovery codes',
-      'Each code works once. Store them where you can reach them without this vault.',
-      '',
-      ...enrolment.recovery_codes,
-      '',
-    ].join('\n')
+    // Named after the key, and the file says which key it is for. A generic
+    // "wslvault-recovery-codes.txt" tells a user with two accounts nothing, and
+    // a second download lands beside the first as "... (1).txt".
+    const account = keyLabel(apiKey)
+    const body = recoveryCodeDocument(account, enrolment.recovery_codes)
     const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = 'wslvault-recovery-codes.txt'
+    a.download = recoveryCodeFilename(account)
     a.click()
     URL.revokeObjectURL(url)
     setSavedCodes(true)
@@ -219,12 +218,22 @@ export function TwoFactorSetup() {
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">2. Save your recovery codes</h3>
               <p className="text-sm text-ink-muted mb-3">{enrolment.warning}</p>
-              <div className="grid grid-cols-2 gap-2 rounded-md bg-surface-2 border border-line p-3">
-                {enrolment.recovery_codes.map((c) => (
-                  <code key={c} className="font-mono text-sm text-ink">
-                    {c}
-                  </code>
-                ))}
+              <div className="rounded-md bg-surface-2 border border-line overflow-hidden">
+                {/* Which key these belong to. They are looked up by
+                    `api_key_id`, so a code from another key is simply not
+                    present — and eight strings of base32 do not say which key
+                    that was once they leave the screen. */}
+                <p className="px-3 py-2 border-b border-line text-xs text-ink-muted">
+                  For <strong className="text-ink font-semibold">{keyLabel(apiKey) ?? 'this key'}</strong>
+                  {' — they will not work for any other key.'}
+                </p>
+                <div className="grid grid-cols-2 gap-2 p-3">
+                  {enrolment.recovery_codes.map((c) => (
+                    <code key={c} className="font-mono text-sm text-ink">
+                      {c}
+                    </code>
+                  ))}
+                </div>
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <Button variant="secondary" size="sm" onClick={downloadCodes}>
@@ -232,7 +241,7 @@ export function TwoFactorSetup() {
                   Download
                 </Button>
                 <CopyButton
-                  value={enrolment.recovery_codes.join('\n')}
+                  value={recoveryCodeDocument(keyLabel(apiKey), enrolment.recovery_codes)}
                   label="Copy recovery codes"
                 />
                 <label className="flex items-center gap-2 text-sm text-ink-muted ml-1">
