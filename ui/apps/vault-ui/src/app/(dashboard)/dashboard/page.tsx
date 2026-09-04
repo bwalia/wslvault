@@ -2,6 +2,8 @@
 import { useVaultSWR } from '@/hooks/useVaultSWR'
 import { api } from '@/lib/api'
 import { PageHeader } from '@/components/ui/PageHeader'
+import { motion } from 'framer-motion'
+import { stagger, staggerItem } from '@/lib/motion'
 import { useAuth } from '@/contexts/AuthContext'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
@@ -66,43 +68,79 @@ export default function DashboardPage() {
 
   return (
     <div className="max-w-7xl space-y-6">
-      <PageHeader title="Dashboard" description="WSLVault overview" />
+      <PageHeader
+        title="Dashboard"
+        description="An overview of what is in your vault and what has happened recently."
+        guide={
+          <>
+            <p>
+              This is the front door. The tiles show how much is stored, and the
+              list below shows what has happened recently.
+            </p>
+            <p>
+              Nothing here is a secret itself — reading an actual value takes a
+              deliberate trip to <strong>Secrets</strong>, and that read is written to
+              the audit log like everything else.
+            </p>
+          </>
+        }
+      />
 
       <ErrorBanner message={failureMessage} />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <motion.div
+        variants={stagger}
+        initial="hidden"
+        animate="visible"
+        className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"
+      >
         {isAdmin && (
           <>
-            <StatCard label="Tenants" value={tenantsError ? '!' : tenants?.length ?? '—'} />
-            <StatCard label="API Keys" value={apiKeysError ? '!' : apiKeys?.length ?? '—'} />
+            <motion.div variants={staggerItem}>
+              <StatCard
+                label="Tenants"
+                value={tenantsError ? '!' : tenants?.length ?? '—'}
+                detail="organisations in this deployment"
+              />
+            </motion.div>
+            <motion.div variants={staggerItem}>
+              <StatCard
+                label="Access keys"
+                value={apiKeysError ? '!' : apiKeys?.length ?? '—'}
+                detail="people and services that can sign in"
+              />
+            </motion.div>
           </>
         )}
-        <StatCard
-          label="Secrets"
-          value={secretsError ? '!' : secrets?.paths?.length ?? '—'}
-        />
-      </div>
+        <motion.div variants={staggerItem}>
+          <StatCard
+            label="Secrets"
+            value={secretsError ? '!' : secrets?.paths?.length ?? '—'}
+            detail="values stored, all encrypted"
+          />
+        </motion.div>
+      </motion.div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent Audit Events</CardTitle>
+          <CardTitle>Recent activity</CardTitle>
         </CardHeader>
         <CardBody className="p-0">
           {audit?.events?.length ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-surface-2">
+                <thead className="bg-surface-2 border-b border-line-strong">
                   <tr>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Action
                     </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Resource
                     </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Outcome
                     </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-ink-faint">
+                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Time
                     </th>
                   </tr>
@@ -111,18 +149,18 @@ export default function DashboardPage() {
                   {audit.events.map(e => (
                     <tr
                       key={e.event_id}
-                      className="hover:bg-surface-2 transition-colors"
+                      className="transition-colors hover:bg-surface-2 hover:shadow-[inset_2px_0_0_0_var(--brass)]"
                     >
-                      <td className="px-4 py-2.5">
+                      <td className="px-4 py-3">
                         <span className="font-mono text-[13px] text-ink">{e.action}</span>
                       </td>
-                      <td className="px-4 py-2.5 max-w-xs truncate">
+                      <td className="px-4 py-3 max-w-xs truncate">
                         <CodeChip value={e.resource} truncate={48} />
                       </td>
-                      <td className="px-4 py-2.5">
+                      <td className="px-4 py-3">
                         <StatusBadge status={e.outcome} />
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-ink-faint tabular">
+                      <td className="px-4 py-3 text-xs text-ink-faint tabular">
                         {formatRelativeTime(e.timestamp)}
                       </td>
                     </tr>

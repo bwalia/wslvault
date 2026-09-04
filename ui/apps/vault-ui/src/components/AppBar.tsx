@@ -2,12 +2,29 @@
 import { useState } from 'react'
 import { Menu, Sun, Moon, Monitor, LogOut, ChevronDown, Timer } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useVaultSWR } from '@/hooks/useVaultSWR'
+import { api } from '@/lib/api'
 import { useTheme } from '@/contexts/ThemeContext'
 import { cn } from '@/lib/utils'
 import { getRemainingSeconds, formatDuration } from '@/lib/utils'
 
 export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
   const { logout, tenantId, policies, expiresAt } = useAuth()
+
+  // Resolve the tenant's human name. A raw UUID in the chrome tells a
+  // non-technical user nothing — "Vault 01a065e6" is not an answer to "whose
+  // data am I looking at".
+  //
+  // The lookup needs the administrator policy, so an ordinary member gets a
+  // 403. That is expected rather than an error: the short id is a correct, if
+  // duller, answer, and SWR is told not to retry so a member's session does not
+  // re-request a forbidden endpoint on every navigation.
+  const { data: tenant } = useVaultSWR<{ display_name?: string }>(
+    tenantId ? api.identity.tenant(tenantId) : null,
+    { shouldRetryOnError: false },
+  )
+  const tenantLabel =
+    tenant?.display_name?.trim() || (tenantId ? tenantId.slice(0, 8) : '')
   const { theme, setTheme } = useTheme()
   const [userOpen, setUserOpen] = useState(false)
 
@@ -31,6 +48,22 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
       >
         <Menu className="w-5 h-5" />
       </button>
+
+      {/* Which vault you are in. Surfaced in the bar rather than buried in a
+          menu: on a product whose premise is tenant isolation, "whose data am
+          I looking at" is the one thing the chrome must always answer. */}
+      {tenantId && (
+        <div className="hidden md:flex items-center gap-2 pl-1">
+          <span
+            className="w-1.5 h-1.5 rounded-full bg-accent-500"
+            aria-hidden="true"
+          />
+          <span className="text-[13px] text-ink-muted">
+            <span className="text-ink-faint">Vault</span>{' '}
+            <span className="font-medium text-ink">{tenantLabel}</span>
+          </span>
+        </div>
+      )}
 
       <span className="flex-1" />
 
@@ -79,7 +112,7 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
           aria-haspopup="menu"
           className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg hover:bg-surface-2 text-sm text-ink focus-ring"
         >
-          <span className="w-7 h-7 rounded-full bg-primary-600 flex items-center justify-center text-white text-xs font-semibold">
+          <span className="w-7 h-7 rounded-full bg-brass flex items-center justify-center text-steel text-xs font-bold">
             {policies[0]?.[0]?.toUpperCase() ?? 'U'}
           </span>
           <span className="hidden sm:block max-w-32 truncate">{policies[0] ?? 'user'}</span>
