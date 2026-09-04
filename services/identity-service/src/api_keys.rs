@@ -49,6 +49,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
+use wslvault_core::types::tenant::TenantId;
 use wslvault_storage::{api_key_store, pool::DbPool};
 
 use crate::token::TokenManager;
@@ -519,10 +520,19 @@ impl ApiKeyManager {
                     .await
                     .map_err(store_err)?;
 
+                // One scope for the pre-check and the insert. Splitting them
+                // across two would let the check read a different connection
+                // from the write, which is the race the partial unique index
+                // exists to catch — no reason to widen the window.
+                let mut scope = pool
+                    .begin_tenant(&TenantId(tenant_uuid))
+                    .await
+                    .map_err(store_err)?;
+
                 // Pre-check for a friendly 409. The partial unique index added
                 // in migration 016 is what actually enforces this under
                 // concurrency; the insert below maps that violation too.
-                if api_key_store::active_name_exists(pool, tenant_uuid, &name)
+                if api_key_store::active_name_exists(scope.conn(), tenant_uuid, &name)
                     .await
                     .map_err(store_err)?
                 {
@@ -561,7 +571,7 @@ impl ApiKeyManager {
                     mfa_required: record.mfa_required,
                 };
 
-                api_key_store::insert(pool, &row)
+                api_key_store::insert(scope.conn(), &row)
                     .await
                     .map_err(|e| match e {
                         // The unique index fired between the pre-check and the insert.
@@ -572,6 +582,8 @@ impl ApiKeyManager {
                         }
                         other => store_err(other),
                     })?;
+
+                scope.commit().await.map_err(store_err)?;
 
                 info!(
                     key_id = %record.id,
@@ -650,14 +662,29 @@ impl ApiKeyManager {
 
         match &self.backend {
             Backend::Database(pool) => {
-                // Indexed equality lookup on the unique key_hash column. The
-                // hash is a SHA-256 digest of the presented key, so an attacker
-                // cannot steer the comparison toward a stored value without
-                // already holding a key that hashes to it.
-                let row = api_key_store::find_by_hash(pool, &candidate_hash)
-                    .await
-                    .map_err(store_err)?
-                    .ok_or(ApiKeyError::KeyNotFound)?;
+                // Cross-tenant by necessity: this lookup is what DETERMINES
+                // the tenant, so there is none to scope to yet. Safe because
+                // the predicate is a SHA-256 of the presented key — it cannot
+                // enumerate anything, only confirm a secret the caller already
+                // holds. A listing could never justify the same bypass.
+                let row = {
+                    let mut scope = pool
+                        .begin_cross_tenant("api key authentication precedes tenant identity")
+                        .await
+                        .map_err(store_err)?;
+
+                    // Indexed equality lookup on the unique key_hash column. The
+                    // hash is a SHA-256 digest of the presented key, so an attacker
+                    // cannot steer the comparison toward a stored value without
+                    // already holding a key that hashes to it.
+                    let found = api_key_store::find_by_hash(scope.conn(), &candidate_hash)
+                        .await
+                        .map_err(store_err)?;
+
+                    // Read-only: let the scope roll back on drop rather than
+                    // holding the bypass open across the checks below.
+                    found.ok_or(ApiKeyError::KeyNotFound)?
+                };
 
                 if row.revoked_at.is_some() {
                     warn!(key_id = %row.id, "attempt to use revoked api key");
@@ -671,8 +698,24 @@ impl ApiKeyManager {
                     }
                 }
 
-                if let Err(e) = api_key_store::touch_last_used(pool, row.id).await {
-                    warn!(key_id = %row.id, error = %e, "failed to stamp last_used_at");
+                // Now the tenant IS known, so the stamp runs scoped rather
+                // than under the bypass above. Best-effort throughout: a
+                // bookkeeping write must not fail an otherwise valid
+                // authentication, so both the scope and the update only warn.
+                match pool.begin_tenant(&TenantId(row.tenant_id)).await {
+                    Ok(mut scope) => {
+                        if let Err(e) =
+                            api_key_store::touch_last_used(scope.conn(), row.id, row.tenant_id)
+                                .await
+                        {
+                            warn!(key_id = %row.id, error = %e, "failed to stamp last_used_at");
+                        } else if let Err(e) = scope.commit().await {
+                            warn!(key_id = %row.id, error = %e, "failed to commit last_used_at");
+                        }
+                    }
+                    Err(e) => {
+                        warn!(key_id = %row.id, error = %e, "could not scope last_used_at update")
+                    }
                 }
 
                 Ok(ApiKeyValidationResult {
@@ -738,20 +781,30 @@ impl ApiKeyManager {
                     .await
                     .map_err(store_err)?;
 
-                if api_key_store::revoke(pool, key_id, tenant_uuid)
+                let mut scope = pool
+                    .begin_tenant(&TenantId(tenant_uuid))
+                    .await
+                    .map_err(store_err)?;
+
+                if api_key_store::revoke(scope.conn(), key_id, tenant_uuid)
                     .await
                     .map_err(store_err)?
                 {
+                    scope.commit().await.map_err(store_err)?;
                     info!(key_id = %key_id, tenant_id = %tenant_uuid, "api key revoked");
                     return Ok(());
                 }
 
                 // Nothing was updated: either the key belongs to another
-                // tenant (or does not exist), or it was already revoked.
-                match api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                // tenant (or does not exist), or it was already revoked. The
+                // read shares the scope above — it exists only to explain that
+                // miss, so it has to see the same rows the write did.
+                let existing = api_key_store::find_by_id(scope.conn(), key_id, tenant_uuid)
                     .await
-                    .map_err(store_err)?
-                {
+                    .map_err(store_err)?;
+                scope.commit().await.map_err(store_err)?;
+
+                match existing {
                     Some(_) => Ok(()),
                     None => Err(ApiKeyError::KeyNotFound),
                 }
@@ -800,9 +853,14 @@ impl ApiKeyManager {
                     .await
                     .map_err(store_err)?;
 
-                let rows = api_key_store::list_active_for_tenant(pool, tenant_uuid)
+                let mut scope = pool
+                    .begin_tenant(&TenantId(tenant_uuid))
                     .await
                     .map_err(store_err)?;
+                let rows = api_key_store::list_active_for_tenant(scope.conn(), tenant_uuid)
+                    .await
+                    .map_err(store_err)?;
+                scope.commit().await.map_err(store_err)?;
 
                 Ok(rows.into_iter().map(record_from_row).collect())
             }
@@ -856,10 +914,15 @@ impl ApiKeyManager {
                     .await
                     .map_err(store_err)?;
 
-                let row = api_key_store::find_by_id(pool, key_id, tenant_uuid)
+                let mut scope = pool
+                    .begin_tenant(&TenantId(tenant_uuid))
                     .await
-                    .map_err(store_err)?
-                    .ok_or(ApiKeyError::KeyNotFound)?;
+                    .map_err(store_err)?;
+                let found = api_key_store::find_by_id(scope.conn(), key_id, tenant_uuid)
+                    .await
+                    .map_err(store_err)?;
+                scope.commit().await.map_err(store_err)?;
+                let row = found.ok_or(ApiKeyError::KeyNotFound)?;
 
                 (
                     row.name,
