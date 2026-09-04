@@ -2079,12 +2079,9 @@ async fn verify_second_factor(
         return Ok(ok);
     }
 
-    // Canonical first, then the pre-normalisation form for codes issued before
-    // separators were folded out. See `mfa::legacy_hash_recovery_code`.
-    let candidates = vec![
-        crate::mfa::hash_recovery_code(code),
-        crate::mfa::legacy_hash_recovery_code(code),
-    ];
+    // Every hash this code could legitimately be stored under — see
+    // `mfa::recovery_code_hash_candidates` for why there is more than one.
+    let candidates = crate::mfa::recovery_code_hash_candidates(code);
     let ok = wslvault_storage::mfa_store::consume_recovery_code(
         scope.conn(),
         pending.api_key_id,

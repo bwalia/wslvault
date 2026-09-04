@@ -285,14 +285,57 @@ pub fn hash_recovery_code(code: &str) -> String {
 ///
 /// Kept solely so codes issued under the old scheme keep working: their stored
 /// hashes cover the hyphenated string and cannot be recomputed, since the codes
-/// themselves were never stored. Verification tries this alongside the
-/// canonical form.
+/// themselves were never stored.
 ///
 /// Remove once no enrolment predates that change — every enrolment written
 /// after it stores the canonical hash, so this only ever matches old rows.
-pub fn legacy_hash_recovery_code(code: &str) -> String {
+fn legacy_hash_recovery_code(code: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(code.trim().to_ascii_uppercase().as_bytes()))
+}
+
+/// Number of code characters either side of the display hyphen.
+const RECOVERY_GROUP: usize = 8;
+
+/// Every stored hash a typed recovery code could legitimately match.
+///
+/// Three, because two things vary independently: how the user typed it, and
+/// which scheme the row was written under.
+///
+/// 1. The canonical hash — separators stripped, upper-cased. Matches every row
+///    written since normalisation, however the user spelled the code.
+/// 2. The code exactly as typed, upper-cased. Matches a pre-normalisation row
+///    for a user who included the hyphen, as displayed.
+/// 3. The canonical characters *re-grouped* with the hyphen put back. This is
+///    the one that was missing, and it is the case that actually strands
+///    people: an old row, typed without the separator. Neither of the first
+///    two can match it — (1) is the wrong scheme for the row and (2) hashes a
+///    string with no hyphen against a hash that has one — so a valid code was
+///    refused and a single-use challenge spent finding out.
+///
+/// Trying three candidates weakens nothing. Each is a SHA-256 preimage of the
+/// same high-entropy secret; an attacker gains no guesses they did not have.
+pub fn recovery_code_hash_candidates(code: &str) -> Vec<String> {
+    let normalised: String = code
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+
+    let mut candidates = vec![hash_recovery_code(code), legacy_hash_recovery_code(code)];
+
+    if normalised.len() == RECOVERY_GROUP * 2 {
+        let regrouped = format!(
+            "{}-{}",
+            &normalised[..RECOVERY_GROUP],
+            &normalised[RECOVERY_GROUP..]
+        );
+        candidates.push(legacy_hash_recovery_code(&regrouped));
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    candidates
 }
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
@@ -493,6 +536,40 @@ mod tests {
         assert_eq!(hash_recovery_code(&lower), stored, "lower-cased");
         assert_eq!(hash_recovery_code(&no_hyphen), stored, "hyphen omitted");
         assert_eq!(hash_recovery_code(&spaced), stored, "space for hyphen");
+    }
+
+    /// The case that actually stranded people: a code issued before
+    /// normalisation, typed without its display hyphen.
+    ///
+    /// The stored hash covers `ABCD1234-EFGH5678`; the user types
+    /// `ABCD1234EFGH5678`. Neither the canonical hash (wrong scheme for the
+    /// row) nor the as-typed hash (no hyphen, but the stored one has one)
+    /// matches, so the code was refused and the login challenge spent. Only a
+    /// candidate that puts the separator back reaches it.
+    #[test]
+    fn an_old_code_typed_without_its_hyphen_is_still_reachable() {
+        let displayed = "LEGACY01-TESTCODE";
+        let stored_the_old_way = legacy_hash_recovery_code(displayed);
+
+        for typed in [
+            "LEGACY01-TESTCODE",
+            "LEGACY01TESTCODE",
+            "legacy01testcode",
+            "LEGACY01 TESTCODE",
+        ] {
+            assert!(
+                recovery_code_hash_candidates(typed).contains(&stored_the_old_way),
+                "typed as {typed:?} could not reach a pre-normalisation row",
+            );
+        }
+    }
+
+    /// ...and a code that is simply wrong still is.
+    #[test]
+    fn a_wrong_recovery_code_matches_nothing() {
+        let stored = legacy_hash_recovery_code("LEGACY01-TESTCODE");
+        assert!(!recovery_code_hash_candidates("LEGACY01-TESTCODF").contains(&stored));
+        assert!(!recovery_code_hash_candidates("").contains(&stored));
     }
 
     /// Codes issued before separators were normalised are still reachable.
