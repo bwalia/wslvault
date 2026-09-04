@@ -64,9 +64,17 @@ const STORAGE_KEYS = [
  *  at ~1.15s, and this leaves a beat to read it. */
 const UNLOCK_ANIMATION_MS = 1900
 
-/** Sign-out is shorter. Leaving is not a moment anyone wants drawn out, and
- *  unlike sign-in there is no first fetch to cover. */
-const SEAL_ANIMATION_MS = 1500
+/** Sign-out. Was 1500ms, which cut the "Vault sealed" line off mid-fade: it
+ *  finished appearing at 1650ms, so it never reached full opacity before the
+ *  route changed. Long enough now for the message to be read, and no longer. */
+const SEAL_ANIMATION_MS = 1950
+
+/** How long the overlay outlives the `router.push` that it is covering.
+ *
+ *  Navigation is not instantaneous, and unmounting the overlay the moment it is
+ *  requested reveals whatever is still underneath. This holds it for a few
+ *  frames past the push so the new route is what appears when it lifts. */
+const OVERLAP_MS = 350
 
 const EMPTY_STATE: AuthState = {
   token: null,
@@ -201,8 +209,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     setVaultTransition('closing')
     window.setTimeout(() => {
-      setVaultTransition(null)
       router.push('/login')
+      window.setTimeout(() => setVaultTransition(null), OVERLAP_MS)
     }, SEAL_ANIMATION_MS)
   }, [router])
 
@@ -268,11 +276,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       setVaultTransition('opening')
       window.setTimeout(() => {
-        // Cleared before navigating. Leaving it set was a real bug: the flag
-        // outlived the transition, so arriving back at /login after signing out
-        // replayed "Vault unlocked" — the opening sequence, on the way out.
-        setVaultTransition(null)
+        // Navigate FIRST, clear after. Clearing first unmounted the overlay
+        // while the push was still in flight, uncovering the login form for a
+        // few frames — the flash of the page you just left, right at the end
+        // of an animation whose whole job is to hide the swap.
         router.push('/dashboard')
+        window.setTimeout(() => setVaultTransition(null), OVERLAP_MS)
       }, UNLOCK_ANIMATION_MS)
     },
     [router],

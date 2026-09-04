@@ -181,7 +181,7 @@ export function VaultTransition({ direction }: { direction: VaultDirection }) {
           className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: opening ? 1 : 0, scale: 1 }}
-          transition={{ delay: at(1.15, 0), duration: 0.4, ease }}
+          transition={{ delay: at(1.0, 0), duration: 0.35, ease }}
         >
           <ShieldCheck className="w-10 h-10 text-accent-400" aria-hidden="true" />
           <p className="font-display text-lg font-semibold text-white">Vault unlocked</p>
@@ -194,7 +194,7 @@ export function VaultTransition({ direction }: { direction: VaultDirection }) {
           className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           initial={{ opacity: 0 }}
           animate={{ opacity: opening ? 0 : 1 }}
-          transition={{ delay: at(0, 1.25), duration: 0.4, ease }}
+          transition={{ delay: at(0, 1.05), duration: 0.35, ease }}
         >
           <Lock className="w-10 h-10 text-brass" aria-hidden="true" />
           <p className="font-display text-lg font-semibold text-white">Vault sealed</p>
