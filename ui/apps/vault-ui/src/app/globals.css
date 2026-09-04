@@ -34,9 +34,12 @@
   --steel-ink:     #b7c0cc;
   --steel-ink-dim: #828da0;
 
-  /* Brass: the lock on the door. One warm accent against all that navy, used
-     only for the vault mark and the locked/sealed state — if it appeared
-     anywhere else it would stop reading as "this is secured". */
+  /* Brass: the lock on the door, and the thing you press.
+     Two roles, both deliberate — the vault mark and the primary action. A
+     product whose CTA is not its own colour looks assembled from parts, which
+     is exactly how the sign-in screen read with a brass vault beside a navy
+     button. Everything structural stays navy; brass is reserved for identity
+     and for action, never for decoration. */
   --brass:         #c9a227;
   --brass-dim:     #8a6f1a;
 }

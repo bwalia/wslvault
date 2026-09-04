@@ -2,6 +2,7 @@
 
 import { SWRConfig } from 'swr'
 import { useEffect, type ReactNode } from 'react'
+import { VaultTransitionHost } from '@/components/VaultTransitionHost'
 import { ApiError } from '@/lib/fetcher'
 import { useAuth } from '@/contexts/AuthContext'
 
@@ -79,6 +80,7 @@ export function Providers({ children }: { children: ReactNode }) {
       }}
     >
       {children}
+      <VaultTransitionHost />
     </SWRConfig>
   )
 }

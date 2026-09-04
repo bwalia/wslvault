@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { useRouter } from 'next/navigation'
 import { mutate as swrMutate } from 'swr'
+import type { VaultDirection } from '@/components/VaultTransition'
 import { safeStorage, safeJsonParse } from '@/lib/safe'
 import { api } from '@/lib/api'
 import { ApiError } from '@/lib/fetcher'
@@ -40,9 +41,10 @@ interface AuthContextType extends AuthState {
   login(apiKey: string): Promise<MfaChallenge | null>
   /** Complete a login by answering its challenge with a code. */
   verifyMfa(challenge: string, code: string): Promise<void>
-  /** True from the moment a sign-in succeeds until the dashboard is reached.
-   *  The auth layout renders the vault-opening sequence while it holds. */
-  unlocking: boolean
+  /** Which end-of-session animation is running, if any. Rendered at the app
+   *  root so it covers whichever layout the user happens to be in — sign-out
+   *  starts from the dashboard, where the auth layout is not mounted. */
+  vaultTransition: VaultDirection | null
   logout(): void
   isAuthenticated: boolean
 }
@@ -61,6 +63,10 @@ const STORAGE_KEYS = [
  *  Must stay in step with VaultOpening's choreography — the confirmation lands
  *  at ~1.15s, and this leaves a beat to read it. */
 const UNLOCK_ANIMATION_MS = 1900
+
+/** Sign-out is shorter. Leaving is not a moment anyone wants drawn out, and
+ *  unlike sign-in there is no first fetch to cover. */
+const SEAL_ANIMATION_MS = 1500
 
 const EMPTY_STATE: AuthState = {
   token: null,
@@ -157,7 +163,7 @@ function isChallenge(body: unknown): body is ChallengeResponse {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [isMounted, setIsMounted] = useState(false)
-  const [unlocking, setUnlocking] = useState(false)
+  const [vaultTransition, setVaultTransition] = useState<VaultDirection | null>(null)
   const [state, setState] = useState<AuthState>(EMPTY_STATE)
 
   // Restore on mount. This runs before any error boundary exists, so every
@@ -181,7 +187,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // is one tenant's secrets appearing in another tenant's window.
     void swrMutate(() => true, undefined, { revalidate: false })
 
-    router.push('/login')
+    // The session is already gone by this point — the animation covers the
+    // navigation, it does not gate it. If anything here failed, the user would
+    // still be signed out.
+    const wantsMotion =
+      typeof window !== 'undefined' &&
+      !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (!wantsMotion) {
+      router.push('/login')
+      return
+    }
+
+    setVaultTransition('closing')
+    window.setTimeout(() => {
+      setVaultTransition(null)
+      router.push('/login')
+    }, SEAL_ANIMATION_MS)
   }, [router])
 
   /** Turn a successful auth response into a live session. */
@@ -244,8 +266,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return
       }
 
-      setUnlocking(true)
-      window.setTimeout(() => router.push('/dashboard'), UNLOCK_ANIMATION_MS)
+      setVaultTransition('opening')
+      window.setTimeout(() => {
+        // Cleared before navigating. Leaving it set was a real bug: the flag
+        // outlived the transition, so arriving back at /login after signing out
+        // replayed "Vault unlocked" — the opening sequence, on the way out.
+        setVaultTransition(null)
+        router.push('/dashboard')
+      }, UNLOCK_ANIMATION_MS)
     },
     [router],
   )
@@ -322,8 +350,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `logout` (e.g. useAsyncAction) gets a fresh identity each time, defeating
   // its own memoization.
   const value = useMemo<AuthContextType>(
-    () => ({ ...state, login, verifyMfa, logout, isAuthenticated, unlocking }),
-    [state, login, verifyMfa, logout, isAuthenticated, unlocking],
+    () => ({ ...state, login, verifyMfa, logout, isAuthenticated, vaultTransition }),
+    [state, login, verifyMfa, logout, isAuthenticated, vaultTransition],
   )
 
   if (!isMounted) return null

@@ -2,8 +2,20 @@ import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ButtonHTMLAttributes, forwardRef } from 'react'
 
+/**
+ * Brass is the action colour, navy is the structure.
+ *
+ * The two halves of the sign-in screen disagreed before this: a brass vault on
+ * the left, a navy button on the right, so the thing you were meant to press
+ * was the one element not wearing the product's colour.
+ *
+ * Dark text on brass rather than white — white on #c9a227 is about 2.3:1 and
+ * fails outright, while steel on brass is ~8:1. It also happens to be how
+ * brass hardware actually looks: dark engraving on a warm plate.
+ */
 const variants = {
-  primary: 'bg-primary-600 hover:bg-primary-700 active:bg-primary-800 text-white',
+  primary:
+    'bg-brass hover:bg-brass/90 active:bg-brass-dim text-steel font-semibold shadow-sm shadow-brass/20',
   secondary:
     'bg-surface border border-line-strong text-ink hover:bg-surface-2 active:bg-surface-3',
   danger: 'bg-danger-600 hover:bg-danger-700 text-white',

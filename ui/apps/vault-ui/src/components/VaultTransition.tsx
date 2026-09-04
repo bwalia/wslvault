@@ -1,15 +1,19 @@
 'use client'
 
 import { motion, useReducedMotion } from 'framer-motion'
-import { ShieldCheck } from 'lucide-react'
+import { ShieldCheck, Lock } from 'lucide-react'
 
 /**
- * The vault opening — what a successful sign-in looks like.
+ * The vault opening, or closing — the transition at both ends of a session.
  *
- * The mirror of {@link VaultDoor}: bolts retract, the dial spins back, the door
- * splits and swings apart, and light comes through the gap. Where the login
- * mark says "this is sealed", this says "it is open, come in", and then it gets
- * out of the way.
+ * One component with a direction rather than two, because it is the same door.
+ * Two components would drift: someone would restyle the bolts on one and not
+ * the other, and signing out would stop looking like the reverse of signing in.
+ *
+ * `opening` runs on a successful sign-in — bolts retract, the dial spins back,
+ * the halves swing apart, light comes through the gap. `closing` runs on
+ * sign-out and is the same choreography backwards: the halves swing shut, the
+ * dial turns, the bolts throw, and the light is cut off.
  *
  * ## Why it earns the ~1.5s it costs
  *
@@ -26,10 +30,17 @@ import { ShieldCheck } from 'lucide-react'
 
 const DOOR_R = 96
 
-export function VaultOpening() {
+export type VaultDirection = 'opening' | 'closing'
+
+export function VaultTransition({ direction }: { direction: VaultDirection }) {
   const reduced = useReducedMotion()
+  const opening = direction === 'opening'
 
   const ease = [0.16, 1, 0.3, 1] as const
+
+  /** Closing runs the same beats in reverse order. */
+  const at = (openDelay: number, closeDelay: number) =>
+    reduced ? 0 : opening ? openDelay : closeDelay
 
   return (
     <motion.div
@@ -43,7 +54,9 @@ export function VaultOpening() {
       role="status"
       aria-live="polite"
     >
-      <span className="sr-only">Signed in. Opening your vault.</span>
+      <span className="sr-only">
+        {opening ? 'Signed in. Opening your vault.' : 'Signing out. Sealing your vault.'}
+      </span>
 
       <div className="relative">
         <svg viewBox="0 0 240 240" className="w-64 h-64 md:w-80 md:h-80" fill="none">
@@ -70,9 +83,9 @@ export function VaultOpening() {
             cy="120"
             r="110"
             fill="url(#vault-glow)"
-            initial={{ opacity: 0, scale: 0.7 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ delay: reduced ? 0 : 0.85, duration: 0.8, ease }}
+            initial={{ opacity: opening ? 0 : 1, scale: opening ? 0.7 : 1 }}
+            animate={{ opacity: opening ? 1 : 0, scale: opening ? 1 : 0.75 }}
+            transition={{ delay: at(0.85, 0.5), duration: 0.7, ease }}
             style={{ transformOrigin: '120px 120px' }}
           />
 
@@ -87,9 +100,9 @@ export function VaultOpening() {
             <motion.g
               key={id}
               clipPath={`url(#${id})`}
-              initial={{ x: 0 }}
-              animate={{ x: reduced ? 0 : dir * 130 }}
-              transition={{ delay: reduced ? 0 : 0.75, duration: 0.9, ease }}
+              initial={{ x: opening ? 0 : dir * 130 }}
+              animate={{ x: reduced ? 0 : opening ? dir * 130 : 0 }}
+              transition={{ delay: at(0.75, 0.05), duration: 0.8, ease }}
             >
               <circle cx="120" cy="120" r={DOOR_R} className="fill-steel-raised" />
               <circle
@@ -119,18 +132,25 @@ export function VaultOpening() {
                     key={angle}
                     r="5"
                     className="fill-brass"
-                    initial={{ cx: out.x, cy: out.y }}
-                    animate={{ cx: reduced ? out.x : inn.x, cy: reduced ? out.y : inn.y }}
-                    transition={{ delay: reduced ? 0 : 0.15 + i * 0.03, duration: 0.35, ease }}
+                    initial={{ cx: opening ? out.x : inn.x, cy: opening ? out.y : inn.y }}
+                    animate={{
+                      cx: reduced ? out.x : opening ? inn.x : out.x,
+                      cy: reduced ? out.y : opening ? inn.y : out.y,
+                    }}
+                    transition={{
+                      delay: at(0.15 + i * 0.03, 0.95 + i * 0.03),
+                      duration: 0.35,
+                      ease,
+                    }}
                   />
                 )
               })}
 
               {/* Dial, spinning back the other way */}
               <motion.g
-                initial={{ rotate: 0 }}
-                animate={{ rotate: reduced ? 0 : 260 }}
-                transition={{ delay: reduced ? 0 : 0.05, duration: 0.75, ease }}
+                initial={{ rotate: opening ? 0 : 260 }}
+                animate={{ rotate: reduced ? 0 : opening ? 260 : 0 }}
+                transition={{ delay: at(0.05, 0.7), duration: 0.75, ease }}
                 style={{ transformOrigin: '120px 120px' }}
               >
                 <circle cx="120" cy="120" r="36" className="fill-steel" />
@@ -160,12 +180,25 @@ export function VaultOpening() {
         <motion.div
           className="absolute inset-0 flex flex-col items-center justify-center gap-3"
           initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: reduced ? 0.05 : 1.15, duration: 0.4, ease }}
+          animate={{ opacity: opening ? 1 : 0, scale: 1 }}
+          transition={{ delay: at(1.15, 0), duration: 0.4, ease }}
         >
           <ShieldCheck className="w-10 h-10 text-accent-400" aria-hidden="true" />
           <p className="font-display text-lg font-semibold text-white">Vault unlocked</p>
           <p className="text-sm text-steel-ink">Taking you inside…</p>
+        </motion.div>
+
+        {/* Closing says the opposite, and says it in brass rather than green —
+            green is reserved for "open". */}
+        <motion.div
+          className="absolute inset-0 flex flex-col items-center justify-center gap-3"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: opening ? 0 : 1 }}
+          transition={{ delay: at(0, 1.25), duration: 0.4, ease }}
+        >
+          <Lock className="w-10 h-10 text-brass" aria-hidden="true" />
+          <p className="font-display text-lg font-semibold text-white">Vault sealed</p>
+          <p className="text-sm text-steel-ink">You have been signed out.</p>
         </motion.div>
       </div>
     </motion.div>

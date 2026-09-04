@@ -1,13 +1,11 @@
 'use client'
 
 import { Lock } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { motion } from 'framer-motion'
 
 import BuildStamp from '@/components/BuildStamp'
 import { VaultDoor } from '@/components/VaultDoor'
-import { VaultOpening } from '@/components/VaultOpening'
 import { ParticleField } from '@/components/ParticleField'
-import { useAuth } from '@/contexts/AuthContext'
 import { stagger, staggerItem } from '@/lib/motion'
 
 /**
@@ -24,8 +22,6 @@ import { stagger, staggerItem } from '@/lib/motion'
  * later (a status banner, a region indicator) inherits that for free.
  */
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
-  const { unlocking } = useAuth()
-
   return (
     <div className="min-h-screen grid lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] bg-canvas">
       {/* Left — the vault. Hidden below lg: on a phone it would be a screen of
@@ -88,10 +84,6 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
       {/* Right — whichever step the user is on */}
       <div className="flex items-center justify-center p-6">{children}</div>
-
-      {/* The opening. Rendered at the layout root so it covers both panels and
-          survives the navigation it is covering. */}
-      <AnimatePresence>{unlocking && <VaultOpening />}</AnimatePresence>
     </div>
   )
 }
