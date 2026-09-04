@@ -196,6 +196,20 @@ export default function LeasesPage() {
       <PageHeader
         title="Leases"
         description="Token leases and remaining TTL. Revoking a lease immediately invalidates that JWT."
+        guide={
+          <>
+            <p>
+              A <strong>lease</strong> is a credential with an expiry date. Instead of a
+              password that works forever, the vault issues one that stops working
+              on its own after a set time.
+            </p>
+            <p>
+              That limits the damage if one is ever leaked: an expired lease is
+              useless to whoever found it. You can also <strong>revoke</strong> one here
+              to cut it off immediately.
+            </p>
+          </>
+        }
       />
 
       <div className="flex items-center gap-1 mb-6 p-1 rounded-lg bg-surface-2 border border-line w-fit">

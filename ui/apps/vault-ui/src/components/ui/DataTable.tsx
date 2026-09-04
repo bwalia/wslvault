@@ -98,14 +98,14 @@ export function DataTable<T extends Record<string, unknown>>({
             onChange={e => setSearch(e.target.value)}
             placeholder="Filter rows…"
             aria-label="Filter table rows"
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+            className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
           />
         </div>
         <select
           value={pageSize}
           onChange={e => { setPageSize(Number(e.target.value)); setPage(1) }}
           aria-label="Rows per page"
-          className="px-2 py-2 text-sm rounded-lg border border-line-strong bg-surface text-ink-muted focus:outline-none focus:ring-2 focus:ring-primary-500/40"
+          className="px-2 py-2 text-sm rounded-lg border border-line-strong bg-surface text-ink-muted transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
         >
           {PAGE_SIZES.map(s => (
             <option key={s} value={s}>{s} per page</option>
@@ -116,7 +116,7 @@ export function DataTable<T extends Record<string, unknown>>({
       {/* Table */}
       <div className="rounded-xl border border-line overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-surface-2">
+          <thead className="bg-surface-2 border-b border-line-strong">
             <tr>
               {columns.map(col => (
                 <th
@@ -127,7 +127,7 @@ export function DataTable<T extends Record<string, unknown>>({
                       : undefined
                   }
                   className={cn(
-                    'px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-ink-faint',
+                    'px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint',
                     col.align === 'right' ? 'text-right' : 'text-left',
                     col.sortable && 'cursor-pointer select-none hover:text-ink',
                   )}
@@ -167,15 +167,18 @@ export function DataTable<T extends Record<string, unknown>>({
                   key={String(row[keyField] ?? i)}
                   onClick={() => onRowClick?.(row)}
                   className={cn(
-                    'transition-colors',
-                    onRowClick && 'cursor-pointer hover:bg-surface-2',
+                    'group transition-colors',
+                    // box-shadow rather than a border-left: a border changes the
+                    // row's box and shifts every cell by 2px on hover.
+                    onRowClick &&
+                      'cursor-pointer hover:bg-surface-2 hover:shadow-[inset_2px_0_0_0_var(--brass)]',
                   )}
                 >
                   {columns.map(col => (
                     <td
                       key={col.field}
                       className={cn(
-                        'px-4 py-2.5 text-ink',
+                        'px-4 py-3 text-ink',
                         col.align === 'right' && 'text-right tabular',
                         col.mono && 'font-mono text-[13px]',
                       )}

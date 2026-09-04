@@ -111,7 +111,20 @@ export default function AuditPage() {
         <PageHeader
           title="Audit Log"
           description="Forensic event history across all services and principals"
-        />
+        guide={
+          <>
+            <p>
+              Every read, write and sign-in is recorded here — who did it, what
+              they touched, and whether it succeeded.
+            </p>
+            <p>
+              The records are chained together cryptographically, so an entry
+              cannot be quietly altered or removed after the fact. If one were,
+              the chain would no longer verify.
+            </p>
+          </>
+        }
+      />
 
         {/* Filter bar — single row above the table */}
         <div className="flex flex-wrap items-end gap-3 px-4 py-3 bg-surface rounded-xl border border-line">

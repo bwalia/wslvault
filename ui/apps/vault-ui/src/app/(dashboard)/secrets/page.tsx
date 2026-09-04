@@ -619,6 +619,24 @@ export default function SecretsPage() {
       <PageHeader
         title="Secrets"
         description="Browse and manage secret key-value pairs"
+        guide={
+          <>
+            <p>
+              A <strong>secret</strong> is any value you would not want written down in
+              plain text: a database password, an API key, a certificate.
+            </p>
+            <p>
+              Everything here is encrypted before it is stored, with a key that
+              belongs to your organisation alone. Nobody else can read these —
+              not other tenants, and not someone with a copy of the database.
+            </p>
+            <p>
+              Paths work like folders. <strong>prod/database/password</strong> keeps your
+              production database password separate from
+              <strong> staging/database/password</strong>.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={startCreating}>
             <Plus className="w-4 h-4" aria-hidden="true" />

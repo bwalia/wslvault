@@ -168,6 +168,18 @@ export default function TransitPage() {
       <PageHeader
         title="Transit Engine"
         description="Encryption as a service"
+        guide={
+          <>
+            <p>
+              Transit encrypts data on your behalf. You send a value, the vault
+              returns it encrypted — the key itself never leaves.
+            </p>
+            <p>
+              Useful when an application needs to protect something but should
+              not be trusted to hold the key that protects it.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" aria-hidden="true" />

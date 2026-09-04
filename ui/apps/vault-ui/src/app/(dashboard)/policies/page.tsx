@@ -197,6 +197,19 @@ export default function PoliciesPage() {
       <PageHeader
         title="Policies"
         description="Manage access control policies"
+        guide={
+          <>
+            <p>
+              A <strong>policy</strong> is a list of rules. Each one says which paths a
+              holder may touch, and what they may do — read, write, list or delete.
+            </p>
+            <p>
+              Policies attach to API keys. A key carrying a policy that grants
+              <strong> read</strong> on <strong>secret/prod/**</strong> can read every production
+              secret and change none of them.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={openCreate}>
             <Plus className="w-4 h-4" />

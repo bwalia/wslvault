@@ -305,6 +305,23 @@ export default function IdentityPage() {
       <PageHeader
         title="Identity & Access"
         description="Manage API keys and access credentials"
+        guide={
+          <>
+            <p>
+              An <strong>API key</strong> is how someone signs in — a person through this
+              console, or a service from its own code.
+            </p>
+            <p>
+              Keys are shown once, when created, and never again. Only a
+              fingerprint is stored, so if one is lost it must be replaced rather
+              than recovered.
+            </p>
+            <p>
+              <strong>Rotate</strong> issues a fresh key and retires the old one.
+              <strong> Revoke</strong> stops a key working immediately.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" />
