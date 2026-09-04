@@ -1,0 +1,618 @@
+From a237040672169d8c6c77876b35f7aa2f9dc0a5d8 Mon Sep 17 00:00:00 2001
+From: Balinder Walia <balinder.walia@gmail.com>
+Date: Fri, 4 Sep 2026 16:00:55 +0000
+Subject: [PATCH] feat(ui): show per-app ring display_name in the promotion
+ pipeline
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Apps can set rings.*.display_name (e.g. "region-a · Manchester") so the
+pipeline cards and promote actions name the real deploy target instead of
+only the shared Integration/Test labels. target_env is also exposed on
+RingView for a secondary cue. Registers wslvault HA regions on the
+workstation ConfigMap with those labels.
+---
+ deploy/k8s/configmap.yaml                     | 198 +++++++++++-------
+ internal/config/config.go                     |   9 +-
+ internal/config/config_test.go                |  41 ++++
+ internal/promoter/promoter.go                 |  15 +-
+ .../components/dashboard/action-dialogs.tsx   |  10 +-
+ web/src/components/dashboard/pipeline.tsx     |  61 ++++--
+ web/src/lib/types.ts                          |  26 +++
+ 7 files changed, 256 insertions(+), 104 deletions(-)
+
+diff --git a/deploy/k8s/configmap.yaml b/deploy/k8s/configmap.yaml
+index f641b2f..13e6e12 100644
+--- a/deploy/k8s/configmap.yaml
++++ b/deploy/k8s/configmap.yaml
+@@ -7,6 +7,11 @@
+ # ConfigMap. A ConfigMap change does not restart the pod on its own, so the
+ # deploy workflow issues a rollout restart after applying it; by hand it is
+ # `kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter`.
++#
++# wslvault app definition is authored in bwalia/wslvault
++# deploy/ring-promoter/wslvault.yaml — keep them in sync when editing.
++# Per-ring display_name (e.g. "region-a · Manchester") is shown as the primary
++# promotion-pipeline card title once the server/UI supports rings.*.display_name.
+ apiVersion: v1
+ kind: ConfigMap
+ metadata:
+@@ -14,88 +19,123 @@ metadata:
+   namespace: workstation-ring-promoter
+ data:
+   config.yaml: |
+-    listen_addr: ":8080"
+-    deployer: log         # global default; jobshout overrides to k8sjob below
+-    health: http          # real HTTP health checks against each ring's health_url
++    listen_addr: :8080
++    deployer: log
++    health: http
+     database:
+-      driver: postgres    # DSN comes from RP_DB_DSN (Secret)
++      driver: postgres
+     retry:
+       count: 3
+       delay: 5s
+     operation_timeout: 60m
+     apps:
+-      # jobshout — deployed via the K8SJOB deployer: each seed/promote/rollback
+-      # runs as a short-lived Kubernetes Job in ring-exec (SA ring-deploy-job)
+-      # that helm-installs the jobshout chart into the ring's namespace. The
+-      # chart lives in the PUBLIC bwalia/jobshout repo, so the Job git-clones it
+-      # at the promoted SHA. RP injects RP_TARGET_ENV (int|test|acc|prod) and
+-      # RP_VERSION (the image tag). Requires the ring-exec RBAC in rbac.yaml and
+-      # the images pushed by jobshout's deploy-k3s.yml workflow.
+-      - name: jobshout
+-        display_name: "JobShout"
+-        location: { lat: 51.5074, lng: -0.1278, city: London, region: GB }
+-        deployer: k8sjob
+-        k8sjob:
+-          namespace: ring-exec
+-          image: docker.io/dtzar/helm-kubectl:3.15.4
+-          service_account: ring-deploy-job
+-          # SpectonCR registry creds (REGISTRY_USERNAME/REGISTRY_PASSWORD),
+-          # injected as env for the helm --set below. Create the secret once:
+-          #   kubectl -n ring-exec create secret generic jobshout-registry-creds \
+-          #     --from-literal=REGISTRY_USERNAME=<user> \
+-          #     --from-literal=REGISTRY_PASSWORD=<pass>
+-          env_from_secrets: [jobshout-registry-creds]
+-          # CNI overlay egress to github.com started failing ~2h after the last
+-          # good helm (TLS timeout / connection reset). The node itself can still
+-          # clone; hostNetwork uses that path.
+-          host_network: true
+-          command: ["/bin/sh", "-c"]
+-          args:
+-            - |
+-              set -eu
+-              ns="${RP_TARGET_ENV}"
+-              echo "deploy jobshout ${RP_VERSION} -> ns ${ns}"
+-              rm -rf /src
+-              n=0
+-              until git clone --depth 1 https://github.com/bwalia/jobshout /src; do
+-                n=$((n+1))
+-                if [ "$n" -ge 5 ]; then exit 1; fi
+-                echo "git clone failed (attempt $n), retrying..."
+-                sleep $((n*5))
+-              done
+-              # No --create-namespace: int/test/acc/prod are shared platform
+-              # namespaces that pre-exist (RBAC here is namespaced to them). The
+-              # ring-deploy-job SA has no cluster-scoped namespace rights.
+-              #
+-              # k3s1 has no External Secrets Operator, so use the chart's
+-              # plaintext fallback (externalSecret.enabled=false) and pass the
+-              # registry creds injected from jobshout-registry-creds so the
+-              # pull secret is valid.
+-              #
+-              # --timeout 12m, not 5m: every seed pushes three freshly-built
+-              # images (server/web/python-sidecar) that must be pulled COLD onto
+-              # whichever node the pods land on — the pod's node rarely has them
+-              # cached. That cold pull plus startup routinely runs past 5m, so
+-              # helm's --wait gave up and marked the release failed while the
+-              # pods went on to converge seconds later (int stayed up the whole
+-              # time because maxUnavailable:0 keeps the old pods serving). 12m
+-              # covers the cold-pull worst case and still finishes inside this
+-              # job's 15m timeout below, so a genuinely stuck deploy still fails.
+-              helm upgrade --install jobshout /src/deploy/helm/jobshout \
+-                --namespace "${ns}" \
+-                -f "/src/deploy/helm/jobshout/values-${ns}.yaml" \
+-                --set image.tag="${RP_VERSION}" \
+-                --set externalSecret.enabled=false \
+-                --set-string secrets.registryUsername="${REGISTRY_USERNAME}" \
+-                --set-string secrets.registryPassword="${REGISTRY_PASSWORD}" \
+-                --wait --timeout 12m
+-              echo "jobshout ${RP_VERSION} live in ${ns}"
+-          resources: { cpu_request: 100m, memory_limit: 512Mi }
+-          timeout: 15m
+-          retries: 0
+-          ttl_after_finished: 1h
+-        rings:
+-          int:  { target_env: int,  health_url: "http://jobshout-api.int.svc.cluster.local:8080/health" }
+-          test: { target_env: test, health_url: "http://jobshout-api.test.svc.cluster.local:8080/health" }
+-          acc:  { target_env: acc,  health_url: "http://jobshout-api.acc.svc.cluster.local:8080/health" }
+-          prod: { target_env: prod, health_url: "http://jobshout-api.prod.svc.cluster.local:8080/health" }
++    - name: jobshout
++      display_name: JobShout
++      location:
++        lat: 51.5074
++        lng: -0.1278
++        city: London
++        region: GB
++      deployer: k8sjob
++      k8sjob:
++        namespace: ring-exec
++        image: docker.io/dtzar/helm-kubectl:3.15.4
++        service_account: ring-deploy-job
++        env_from_secrets:
++        - jobshout-registry-creds
++        host_network: true
++        command:
++        - /bin/sh
++        - -c
++        args:
++        - "set -eu\nns=\"${RP_TARGET_ENV}\"\necho \"deploy jobshout ${RP_VERSION} -> ns ${ns}\"\nrm -rf /src\n\
++          n=0\nuntil git clone --depth 1 https://github.com/bwalia/jobshout /src; do\n  n=$((n+1))\n  if [\
++          \ \"$n\" -ge 5 ]; then exit 1; fi\n  echo \"git clone failed (attempt $n), retrying...\"\n  sleep\
++          \ $((n*5))\ndone\n# No --create-namespace: int/test/acc/prod are shared platform\n# namespaces that\
++          \ pre-exist (RBAC here is namespaced to them). The\n# ring-deploy-job SA has no cluster-scoped namespace\
++          \ rights.\n#\n# k3s1 has no External Secrets Operator, so use the chart's\n# plaintext fallback\
++          \ (externalSecret.enabled=false) and pass the\n# registry creds injected from jobshout-registry-creds\
++          \ so the\n# pull secret is valid.\n#\n# --timeout 12m, not 5m: every seed pushes three freshly-built\n\
++          # images (server/web/python-sidecar) that must be pulled COLD onto\n# whichever node the pods land\
++          \ on \u2014 the pod's node rarely has them\n# cached. That cold pull plus startup routinely runs\
++          \ past 5m, so\n# helm's --wait gave up and marked the release failed while the\n# pods went on to\
++          \ converge seconds later (int stayed up the whole\n# time because maxUnavailable:0 keeps the old\
++          \ pods serving). 12m\n# covers the cold-pull worst case and still finishes inside this\n# job's\
++          \ 15m timeout below, so a genuinely stuck deploy still fails.\nhelm upgrade --install jobshout /src/deploy/helm/jobshout\
++          \ \\\n  --namespace \"${ns}\" \\\n  -f \"/src/deploy/helm/jobshout/values-${ns}.yaml\" \\\n  --set\
++          \ image.tag=\"${RP_VERSION}\" \\\n  --set externalSecret.enabled=false \\\n  --set-string secrets.registryUsername=\"\
++          ${REGISTRY_USERNAME}\" \\\n  --set-string secrets.registryPassword=\"${REGISTRY_PASSWORD}\" \\\n\
++          \  --wait --timeout 12m\necho \"jobshout ${RP_VERSION} live in ${ns}\"\n"
++        resources:
++          cpu_request: 100m
++          memory_limit: 512Mi
++        timeout: 15m
++        retries: 0
++        ttl_after_finished: 1h
++      rings:
++        int:
++          target_env: int
++          health_url: http://jobshout-api.int.svc.cluster.local:8080/health
++        test:
++          target_env: test
++          health_url: http://jobshout-api.test.svc.cluster.local:8080/health
++        acc:
++          target_env: acc
++          health_url: http://jobshout-api.acc.svc.cluster.local:8080/health
++        prod:
++          target_env: prod
++          health_url: http://jobshout-api.prod.svc.cluster.local:8080/health
++    - name: wslvault
++      display_name: WSLVault (k3s1 HA)
++      location:
++        lat: 53.4808
++        lng: -2.2426
++        city: Manchester
++        region: GB
++      deployer: k8sjob
++      k8sjob:
++        namespace: ring-exec
++        image: docker.io/dtzar/helm-kubectl:3.15.4
++        service_account: ring-deploy-job
++        host_network: true
++        command:
++        - /bin/sh
++        - -c
++        args:
++        - "set -eu\nenv=\"${RP_TARGET_ENV}\"\nver=\"${RP_VERSION}\"\ncase \"${env}\" in\n  region-a)\n   \
++          \ ns=\"wslvault\"\n    values=\"deploy/gitops/regions/region-a.values.yaml\"\n    ;;\n  region-b)\n\
++          \    ns=\"wslvault-b\"\n    values=\"deploy/gitops/regions/region-b.values.yaml\"\n    ;;\n  *)\n\
++          \    echo \"unknown RP_TARGET_ENV=${env} (expected region-a|region-b)\"\n    exit 1\n    ;;\nesac\n\
++          echo \"deploy wslvault ${ver} -> ns ${ns} (${env}, ring ${RP_RING})\"\nrm -rf /src\nn=0\nuntil git\
++          \ clone --depth 1 --branch \"${ver}\" https://github.com/bwalia/wslvault /src; do\n  n=$((n+1))\n\
++          \  if [ \"$n\" -ge 5 ]; then exit 1; fi\n  echo \"git clone failed (attempt $n), retrying...\"\n\
++          \  sleep $((n*5))\ndone\ncd /src\n# Region values pin explicit per-service tags; --set overrides\
++          \ all of\n# them plus global.imageTag so lease-manager / sync-scheduler (which\n# fall back to global)\
++          \ cannot lag behind.\n# No --create-namespace: wslvault / wslvault-b already exist; the\n# ring-deploy-job\
++          \ SA has no cluster-scoped namespace rights.\nhelm upgrade --install wslvault ./deploy/helm/wslvault\
++          \ \\\n  --namespace \"${ns}\" \\\n  -f \"${values}\" \\\n  --set global.imageTag=\"${ver}\" \\\n\
++          \  --set ui.image.tag=\"${ver}\" \\\n  --set identityService.image.tag=\"${ver}\" \\\n  --set regionHealth.image.tag=\"\
++          ${ver}\" \\\n  --set secretEngine.image.tag=\"${ver}\" \\\n  --set policyEngine.image.tag=\"${ver}\"\
++          \ \\\n  --set transitEngine.image.tag=\"${ver}\" \\\n  --set auditService.image.tag=\"${ver}\" \\\
++          \n  --set pkiEngine.image.tag=\"${ver}\" \\\n  --set mcpServer.image.tag=\"${ver}\" \\\n  --set\
++          \ cryptoService.image.tag=\"${ver}\" \\\n  --set replicationAgent.image.tag=\"${ver}\" \\\n  --wait\
++          \ --timeout 15m\necho \"wslvault ${ver} live in ${ns}\"\n"
++        resources:
++          cpu_request: 100m
++          memory_limit: 512Mi
++        timeout: 20m
++        retries: 0
++        ttl_after_finished: 1h
++      rings:
++        int:
++          target_env: region-a
++          display_name: "region-a \xB7 Manchester"
++          health_url: https://vault-ui.workstation.co.uk/api/version
++          health_version_field: version
++          auto_promote: true
++        test:
++          target_env: region-b
++          display_name: "region-b \xB7 London"
++          health_url: https://vault-ha.workstation.co.uk/api/version
++          health_version_field: version
++          auto_promote: false
+diff --git a/internal/config/config.go b/internal/config/config.go
+index f69069a..d2d7104 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -416,8 +416,15 @@ type RingConfig struct {
+ 	HealthVersionHeader string `yaml:"health_version_header"`
+ 	// TargetEnv is the environment name a non-Kubernetes deployer ships this
+ 	// ring to (e.g. "int", "test", "prod"). Required for the "github" deployer;
+-	// ignored by the kubectl deployer.
++	// ignored by the kubectl deployer. Also used by k8sjob scripts as
++	// RP_TARGET_ENV (e.g. "region-a").
+ 	TargetEnv string `yaml:"target_env"`
++	// DisplayName is an optional per-app title for this ring in the UI
++	// (e.g. "region-a · Manchester"). When set, the promotion pipeline shows
++	// it as the primary card label and keeps the shared ring label
++	// (Integration / Test / …) as a secondary cue. API paths and storage
++	// still use the ring name — this is display-only.
++	DisplayName string `yaml:"display_name"`
+ 	// Ref pins the version (git branch/tag/sha) this ring always deploys,
+ 	// overriding the seeded/promoted version. Use it when a ring is fixed to a
+ 	// source branch — e.g. acceptance may only ever run `release`: setting
+diff --git a/internal/config/config_test.go b/internal/config/config_test.go
+index 48ef9b0..9d42f44 100644
+--- a/internal/config/config_test.go
++++ b/internal/config/config_test.go
+@@ -513,3 +513,44 @@ apps:
+ 		t.Fatal("longitude out of range must be rejected")
+ 	}
+ }
++
++func TestRingDisplayNameAndTargetEnv(t *testing.T) {
++	t.Setenv("RP_API_TOKEN", "tok")
++	body := `
++apps:
++  - name: wslvault
++    deployer: k8sjob
++    k8sjob:
++      namespace: ring-exec
++      image: docker.io/dtzar/helm-kubectl:3.15.4
++      service_account: ring-deploy-job
++      command: ["/bin/sh", "-c"]
++      args: ["echo ok"]
++    rings:
++      int:
++        target_env: region-a
++        display_name: "region-a · Manchester"
++        health_url: "https://vault-ui.example/api/version"
++        health_version_field: version
++      test:
++        target_env: region-b
++        display_name: "region-b · London"
++        health_url: "https://vault-ha.example/api/version"
++        health_version_field: version
++`
++	cfg, err := Load(writeConfig(t, body))
++	if err != nil {
++		t.Fatalf("load: %v", err)
++	}
++	intRing := cfg.Apps[0].Rings["int"]
++	if intRing.DisplayName != "region-a · Manchester" {
++		t.Fatalf("int DisplayName = %q", intRing.DisplayName)
++	}
++	if intRing.TargetEnv != "region-a" {
++		t.Fatalf("int TargetEnv = %q", intRing.TargetEnv)
++	}
++	testRing := cfg.Apps[0].Rings["test"]
++	if testRing.DisplayName != "region-b · London" {
++		t.Fatalf("test DisplayName = %q", testRing.DisplayName)
++	}
++}
+diff --git a/internal/promoter/promoter.go b/internal/promoter/promoter.go
+index bcdabb8..4ccfb09 100644
+--- a/internal/promoter/promoter.go
++++ b/internal/promoter/promoter.go
+@@ -18,6 +18,7 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"log/slog"
++	"strings"
+ 	"sync"
+ 	"time"
+ 
+@@ -76,8 +77,14 @@ type RingView struct {
+ 	LatencyMs       *int64    `json:"latency_ms,omitempty"`
+ 	// TTFBms is time-to-first-byte of the live health check, when the
+ 	// transport reported it. Distinct from LatencyMs (full request duration).
+-	TTFBms      *int64 `json:"ttfb_ms,omitempty"`
+-	AutoPromote bool   `json:"auto_promote"` // continue onward automatically
++	TTFBms *int64 `json:"ttfb_ms,omitempty"`
++	// DisplayName is the optional per-app ring title from config
++	// (RingConfig.display_name). Empty when unset — UI falls back to ring.label.
++	DisplayName string `json:"display_name,omitempty"`
++	// TargetEnv is the deployer environment for this ring (config target_env),
++	// e.g. "region-a". Empty when unset.
++	TargetEnv          string `json:"target_env,omitempty"`
++	AutoPromote        bool   `json:"auto_promote"` // continue onward automatically
+ 	// AutoPromoteManaged reports that config owns this ring's auto-promote
+ 	// switch, so the API toggle returns 409 and the UI must render its control
+ 	// disabled rather than offer one that cannot work.
+@@ -268,6 +275,10 @@ func (p *Promoter) Rings(ctx context.Context, app string) ([]RingView, error) {
+ 	for i, r := range all {
+ 		rc, configured := ac.Rings[r.Name]
+ 		v := RingView{Ring: r, Configured: configured, AutoPromoteManaged: rc.AutoPromoteOwnedByConfig()}
++		if configured {
++			v.DisplayName = strings.TrimSpace(rc.DisplayName)
++			v.TargetEnv = strings.TrimSpace(rc.TargetEnv)
++		}
+ 		if st, err := p.store.GetRingState(ctx, app, r.Name); err == nil {
+ 			v.CurrentVersion = st.CurrentVersion
+ 			v.PreviousVersion = st.PreviousVersion
+diff --git a/web/src/components/dashboard/action-dialogs.tsx b/web/src/components/dashboard/action-dialogs.tsx
+index 5c0330f..782ed43 100644
+--- a/web/src/components/dashboard/action-dialogs.tsx
++++ b/web/src/components/dashboard/action-dialogs.tsx
+@@ -62,7 +62,11 @@ import {
+   useAppTitle,
+ } from "@/lib/queries";
+ import { useUiStore } from "@/lib/ui-store";
+-import type { AppVersion, RingView } from "@/lib/types";
++import {
++  ringDisplayLabel,
++  type AppVersion,
++  type RingView,
++} from "@/lib/types";
+ import { cn } from "@/lib/utils";
+ import { GateChecklist, gatesActive } from "@/components/dashboard/gate-controls";
+ import {
+@@ -197,7 +201,7 @@ function SeedDialog({
+               <SelectContent>
+                 {configured.map((r) => (
+                   <SelectItem key={r.ring.name} value={r.ring.name}>
+-                    {r.ring.label} ({r.ring.name})
++                    {ringDisplayLabel(r)} ({r.ring.name}{r.target_env ? ` · ${r.target_env}` : ""})
+                   </SelectItem>
+                 ))}
+               </SelectContent>
+@@ -461,7 +465,7 @@ function PromoteDialog({
+       <AlertDialogContent>
+         <AlertDialogHeader>
+           <AlertDialogTitle>
+-            Promote to {target?.ring.label ?? "the next ring"}?
++            Promote to {ringDisplayLabel(target)}?
+           </AlertDialogTitle>
+           <AlertDialogDescription asChild>
+             <div className="space-y-2">
+diff --git a/web/src/components/dashboard/pipeline.tsx b/web/src/components/dashboard/pipeline.tsx
+index a20cdc3..6d1b034 100644
+--- a/web/src/components/dashboard/pipeline.tsx
++++ b/web/src/components/dashboard/pipeline.tsx
+@@ -42,7 +42,11 @@ import {
+   useProdProtection,
+ } from "@/lib/queries";
+ import { useUiStore } from "@/lib/ui-store";
+-import type { RingView } from "@/lib/types";
++import {
++  ringDisplayLabel,
++  ringDisplaySubtitle,
++  type RingView,
++} from "@/lib/types";
+ import { cn } from "@/lib/utils";
+ 
+ // The dashboard cards are optimized for scanning: ring, health, version,
+@@ -122,7 +126,7 @@ export function Pipeline({
+                 // into the NEXT ring, or a plain chevron when it is ungated.
+                 (gateVerdict(rings[i + 1]) ? (
+                   <GrafanaGate
+-                    targetLabel={rings[i + 1].ring.label}
++                    targetLabel={ringDisplayLabel(rings[i + 1])}
+                     verdict={gateVerdict(rings[i + 1])!}
+                   />
+                 ) : (
+@@ -175,11 +179,17 @@ function RingCard({
+   const setPendingAction = useUiStore((s) => s.setPendingAction);
+   const health = ringHealth(view);
+   const { ring } = view;
++  const title = ringDisplayLabel(view);
++  const subtitle = ringDisplaySubtitle(view);
++  const nextTitle = next ? ringDisplayLabel(next) : undefined;
+ 
+   if (!view.configured) {
+     return (
+       <div className="flex min-w-0 flex-1 basis-0 flex-col justify-center gap-1 rounded-xl border border-dashed p-5 text-center">
+-        <p className="text-sm text-muted-foreground">{ring.label}</p>
++        <p className="text-sm text-muted-foreground">{title}</p>
++        {subtitle ? (
++          <p className="text-xs text-muted-foreground/70">{subtitle}</p>
++        ) : null}
+         <p className="text-xs text-muted-foreground/70">Not configured</p>
+       </div>
+     );
+@@ -202,17 +212,17 @@ function RingCard({
+     : !view.can_promote_from
+       ? "Target ring not available"
+       : inSync
+-        ? `${next!.ring.label} already has ${view.current_version}`
++        ? `${nextTitle} already has ${view.current_version}`
+         : noGo
+-          ? `${next!.ring.label} is NO-GO on ${gateVerdict(next)?.dashboard || "Grafana"} — open this card to override`
+-          : `Promote ${view.current_version} to ${next!.ring.label}`;
++          ? `${nextTitle} is NO-GO on ${gateVerdict(next)?.dashboard || "Grafana"} — open this card to override`
++          : `Promote ${view.current_version} to ${nextTitle}`;
+ 
+   return (
+     <div
+       data-testid={`ring-card-${ring.name}`}
+       role="button"
+       tabIndex={0}
+-      aria-label={`${ring.label} details`}
++      aria-label={`${title} details`}
+       onClick={onOpenDetails}
+       onKeyDown={(e) => {
+         // Only when the card itself is focused — Enter/Space on the inner
+@@ -232,7 +242,12 @@ function RingCard({
+       )}
+     >
+       <div className="flex items-center justify-between gap-2">
+-        <p className="min-w-0 truncate text-sm font-semibold">{ring.label}</p>
++        <div className="min-w-0">
++          <p className="truncate text-sm font-semibold">{title}</p>
++          {subtitle ? (
++            <p className="truncate text-[11px] text-muted-foreground">{subtitle}</p>
++          ) : null}
++        </div>
+         <span className="flex shrink-0 items-center gap-1">
+           {gatesActive(view) && (
+             <Tooltip>
+@@ -243,7 +258,7 @@ function RingCard({
+                 />
+               </TooltipTrigger>
+               <TooltipContent>
+-                Promotion into {ring.label} is gated
++                Promotion into {title} is gated
+               </TooltipContent>
+             </Tooltip>
+           )}
+@@ -296,7 +311,7 @@ function RingCard({
+                     setPendingAction({ type: "promote", app, fromRing: ring.name })
+                   }
+                 >
+-                  Promote to {next.ring.label}
++                  Promote to {nextTitle}
+                 </Button>
+               </span>
+             </TooltipTrigger>
+@@ -345,9 +360,12 @@ function RingDetailsSheet({
+   const setPendingAction = useUiStore((s) => s.setPendingAction);
+   const autoPromote = useAutoPromoteMutation(app);
+   const { prodProtected, prodRing } = useProdProtection();
+-  const title = useAppTitle();
++  const appTitle = useAppTitle();
+   const health = ringHealth(view);
+   const { ring } = view;
++  const title = ringDisplayLabel(view);
++  const subtitle = ringDisplaySubtitle(view);
++  const nextTitle = next ? ringDisplayLabel(next) : undefined;
+ 
+   // Every configured ring with a configured next ring gets the switch — the
+   // FIRST ring included, so a seed into int can carry on to test hands-free
+@@ -387,7 +405,12 @@ function RingDetailsSheet({
+       >
+         <SheetHeader>
+           <div className="flex items-center gap-3">
+-            <SheetTitle className="text-base">{ring.label}</SheetTitle>
++            <div className="min-w-0">
++              <SheetTitle className="text-base">{title}</SheetTitle>
++              {subtitle ? (
++                <p className="text-xs text-muted-foreground">{subtitle}</p>
++              ) : null}
++            </div>
+             <HealthBadge
+               health={health}
+               detail={
+@@ -397,7 +420,7 @@ function RingDetailsSheet({
+               }
+             />
+           </div>
+-          <SheetDescription>{title(app)}</SheetDescription>
++          <SheetDescription>{appTitle(app)}</SheetDescription>
+         </SheetHeader>
+ 
+         <div className="flex-1 space-y-6 overflow-y-auto p-4 pt-2">
+@@ -473,7 +496,7 @@ function RingDetailsSheet({
+               )}
+             >
+               <GateDetail
+-                targetLabel={next.ring.label}
++                targetLabel={nextTitle!}
+                 verdict={gateVerdict(next)!}
+               />
+               {gateBlocks(next) && (
+@@ -492,7 +515,7 @@ function RingDetailsSheet({
+                 Promotion gates
+               </p>
+               <p className="mt-1.5 text-xs text-muted-foreground">
+-                Entering {ring.label} requires:
++                Entering {title} requires:
+               </p>
+               <ul className="mt-2 space-y-1 text-sm">
+                 {view.gates.maintenance_window && (
+@@ -531,7 +554,7 @@ function RingDetailsSheet({
+           {showAutoPromote && (
+             <section className="rounded-lg border p-3">
+               <label className="flex cursor-pointer items-center justify-between gap-3 text-sm font-medium">
+-                Auto-promote to {next!.ring.label}
++                Auto-promote to {nextTitle}
+                 <Switch
+                   checked={view.auto_promote}
+                   onCheckedChange={toggleAutoPromote}
+@@ -550,7 +573,7 @@ function RingDetailsSheet({
+                 ) : (
+                   <>
+                     When a version lands here and is healthy, promote it to{" "}
+-                    {next!.ring.label} automatically. Turn off to stop a
++                    {nextTitle} automatically. Turn off to stop a
+                     promotion chain at this ring.
+                   </>
+                 )}
+@@ -579,8 +602,8 @@ function RingDetailsSheet({
+             >
+               <ArrowUpRight aria-hidden className="size-4" />
+               {gateBlocks(next)
+-                ? `Override and promote to ${next.ring.label}`
+-                : `Promote to ${next.ring.label}`}
++                ? `Override and promote to ${nextTitle}`
++                : `Promote to ${nextTitle}`}
+             </Button>
+           )}
+           <Button
+diff --git a/web/src/lib/types.ts b/web/src/lib/types.ts
+index 9f55c21..0d08152 100644
+--- a/web/src/lib/types.ts
++++ b/web/src/lib/types.ts
+@@ -100,6 +100,14 @@ export interface RingView {
+   latency_ms?: number;
+   /** Time to first byte of the live health check, when the transport reported it. */
+   ttfb_ms?: number;
++  /**
++   * Optional per-app ring title from config `display_name`
++   * (e.g. "region-a · Manchester"). When set, the promotion pipeline prefers
++   * it over the shared ring.label.
++   */
++  display_name?: string;
++  /** Deployer environment from config `target_env` (e.g. "region-a"). */
++  target_env?: string;
+   auto_promote: boolean;
+   /** Config owns this ring's auto-promote switch, so the API toggle returns 409. */
+   auto_promote_managed: boolean;
+@@ -108,6 +116,24 @@ export interface RingView {
+   gates: RingGates;
+ }
+ 
++/** Primary label for a ring card / promote target in the pipeline UI. */
++export function ringDisplayLabel(view: RingView | undefined): string {
++  if (!view) return "the next ring";
++  const custom = view.display_name?.trim();
++  if (custom) return custom;
++  return view.ring.label;
++}
++
++/** Secondary cue under a custom display_name (shared ring + optional target_env). */
++export function ringDisplaySubtitle(view: RingView): string | undefined {
++  if (!view.display_name?.trim()) {
++    return view.target_env?.trim() || undefined;
++  }
++  const bits = [view.ring.label];
++  if (view.target_env?.trim()) bits.push(view.target_env.trim());
++  return bits.join(" · ");
++}
++
+ /** One effective dependency edge in the fleet topology. */
+ export interface TopologyEdge {
+   from: string;
+-- 
+2.43.0
+

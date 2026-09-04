@@ -313,6 +313,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # the only job that writes to the repo
+    outputs:
+      tag_created: ${{ steps.create_tag.outputs.tag_created }}
+      version: ${{ needs.compute-version.outputs.next_version }}
     steps:
       # Create the tag via the GitHub API, NOT `git push`. A GITHUB_TOKEN push
       # of a ref whose commit contains workflow files is rejected ("refusing to
@@ -348,3 +351,105 @@ jobs:
           tag_name: ${{ needs.compute-version.outputs.next_version }}
           name: Release ${{ needs.compute-version.outputs.next_version }}
           generate_release_notes: true
+
+  # ─── seed Ring Promoter with the tagged version ────────────────────
+  # Same pattern as jobshout: CI builds + tags, then seeds int on
+  # https://rp.workstation.co.uk. RP's k8sjob clones this repo at the tag and
+  # helm-upgrades region-a; auto_promote carries the version to region-b.
+  # The seed carries vX.Y.Z, never a commit SHA — `git clone --branch` needs a tag.
+  seed-ring-promoter:
+    name: Seed Ring Promoter (int → region-a)
+    needs: [compute-version, auto-tag]
+    if: needs.auto-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Seed wslvault int and wait until healthy
+        env:
+          RP_API_TOKEN: ${{ secrets.RP_API_TOKEN }}
+          RP_URL: ${{ secrets.RP_URL }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.compute-version.outputs.next_version }}"
+          RP="${RP_URL:-https://rp.workstation.co.uk}"
+          if [ -z "${RP_API_TOKEN:-}" ]; then
+            echo "::error::RP_API_TOKEN is not set — cannot seed Ring Promoter."
+            echo "::error::Add the token from workstation-ring-promoter secret ring-promoter/RP_API_TOKEN."
+            exit 1
+          fi
+          echo "Seeding wslvault int @ ${TAG} via ${RP}…"
+          echo "Track: ${RP}/?app=wslvault"
+          code=$(curl -sS -o /tmp/seed.out -w '%{http_code}' \
+            -X POST "${RP}/api/apps/wslvault/seed?async=1" \
+            -H "Authorization: Bearer ${RP_API_TOKEN}" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"ring":"int","version":"%s"}' "$TAG")" || echo 000)
+          echo "seed -> HTTP ${code} :: $(cat /tmp/seed.out)"
+          case "${code}" in
+            200|202) ;;
+            *) echo "::error::Ring Promoter seed failed (HTTP ${code})"; exit 1 ;;
+          esac
+
+          JOB_ID=$(python3 -c 'import json; print(json.load(open("/tmp/seed.out")).get("job_id") or "")')
+          if [ -z "$JOB_ID" ]; then
+            echo "::error::seed response had no job_id — cannot wait for rollout"
+            exit 1
+          fi
+          echo "Waiting for Ring Promoter job ${JOB_ID} (version ${TAG})…"
+
+          python3 - "$RP" "$RP_API_TOKEN" "$JOB_ID" "$TAG" <<'PY'
+          import json, sys, time, urllib.error, urllib.request
+
+          rp, token, job_id, tag = sys.argv[1:5]
+          url = f"{rp}/api/apps/wslvault/jobs/{job_id}"
+          deadline = time.time() + 40 * 60
+          last = None
+
+          def dump_logs(body):
+              for step in body.get("steps") or []:
+                  print(f"--- step {step.get('id')} status={step.get('status')} ---")
+                  for line in step.get("logs") or []:
+                      print(line)
+
+          while time.time() < deadline:
+              req = urllib.request.Request(
+                  url, headers={"Authorization": f"Bearer {token}"}
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      body = json.load(resp)
+              except urllib.error.HTTPError as e:
+                  print(f"::warning::job poll HTTP {e.code}")
+                  time.sleep(15)
+                  continue
+              status = (body.get("status") or "").lower()
+              if body != last:
+                  print(f"RP job {job_id} status={status}")
+                  last = {k: body.get(k) for k in ("status", "finished_at")}
+              if status == "success":
+                  result = body.get("result") or {}
+                  state = result.get("state") or {}
+                  current = state.get("current_version") or ""
+                  dump_logs(body)
+                  if result.get("success") is False:
+                      print("::error::RP job marked success but result.success is false")
+                      sys.exit(1)
+                  if current and current != tag:
+                      print(f"::error::int current_version={current} != seeded {tag}")
+                      sys.exit(1)
+                  if not current:
+                      print("::warning::RP did not return current_version; trusting job success")
+                  print(f"Deployed {tag} to int (region-a); auto_promote should roll region-b")
+                  print(f"current_version={current or tag}")
+                  sys.exit(0)
+              if status in ("failed", "failure", "error"):
+                  dump_logs(body)
+                  msg = (body.get("result") or {}).get("message") or status
+                  print(f"::error::Ring Promoter deploy failed: {msg}")
+                  sys.exit(1)
+              time.sleep(15)
+          print("::error::timed out waiting for Ring Promoter job")
+          sys.exit(1)
+          PY

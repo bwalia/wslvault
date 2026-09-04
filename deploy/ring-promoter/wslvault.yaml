@@ -1,0 +1,101 @@
+# Ring Promoter app config — helm-deploy WSLVault HA regions on k3s1.
+#
+# Paste the `apps:` entry into the workstation Ring Promoter ConfigMap
+# (ring-promoter repo: deploy/k8s/configmap.yaml → namespace
+# workstation-ring-promoter), then:
+#   kubectl apply -f deploy/ring-promoter/rbac.yaml
+#   kubectl apply -f <configmap>
+#   kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter
+#
+# Pipeline (matches Argo sync waves: A then B):
+#   int  → region-a (wslvault / cloud001 / Manchester)
+#   test → region-b (wslvault-b / cloud003 / London)
+# Seed int after a release tag; with auto_promote on int, RP continues to test.
+#
+# Version = a git tag (v1.0.x). The k8sjob clones this public repo at that tag
+# and helm-upgrades with every image pin overridden to RP_VERSION.
+#
+# Requires: ring-exec + ring-deploy-job SA (shared platform), rbac.yaml applied.
+apps:
+  - name: wslvault
+    display_name: "WSLVault (k3s1 HA)"
+    location: { lat: 53.4808, lng: -2.2426, city: Manchester, region: GB }
+    deployer: k8sjob
+    k8sjob:
+      namespace: ring-exec
+      image: docker.io/dtzar/helm-kubectl:3.15.4
+      service_account: ring-deploy-job
+      # CNI overlay egress to github.com is flaky on some nodes; hostNetwork
+      # uses the node's path (same as jobshout).
+      host_network: true
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          env="${RP_TARGET_ENV}"
+          ver="${RP_VERSION}"
+          case "${env}" in
+            region-a)
+              ns="wslvault"
+              values="deploy/gitops/regions/region-a.values.yaml"
+              ;;
+            region-b)
+              ns="wslvault-b"
+              values="deploy/gitops/regions/region-b.values.yaml"
+              ;;
+            *)
+              echo "unknown RP_TARGET_ENV=${env} (expected region-a|region-b)"
+              exit 1
+              ;;
+          esac
+          echo "deploy wslvault ${ver} -> ns ${ns} (${env}, ring ${RP_RING})"
+          rm -rf /src
+          n=0
+          until git clone --depth 1 --branch "${ver}" https://github.com/bwalia/wslvault /src; do
+            n=$((n+1))
+            if [ "$n" -ge 5 ]; then exit 1; fi
+            echo "git clone failed (attempt $n), retrying..."
+            sleep $((n*5))
+          done
+          cd /src
+          # Region values pin explicit per-service tags; --set overrides all of
+          # them plus global.imageTag so lease-manager / sync-scheduler (which
+          # fall back to global) cannot lag behind.
+          # No --create-namespace: wslvault / wslvault-b already exist; the
+          # ring-deploy-job SA has no cluster-scoped namespace rights.
+          helm upgrade --install wslvault ./deploy/helm/wslvault \
+            --namespace "${ns}" \
+            -f "${values}" \
+            --set global.imageTag="${ver}" \
+            --set ui.image.tag="${ver}" \
+            --set identityService.image.tag="${ver}" \
+            --set regionHealth.image.tag="${ver}" \
+            --set secretEngine.image.tag="${ver}" \
+            --set policyEngine.image.tag="${ver}" \
+            --set transitEngine.image.tag="${ver}" \
+            --set auditService.image.tag="${ver}" \
+            --set pkiEngine.image.tag="${ver}" \
+            --set mcpServer.image.tag="${ver}" \
+            --set cryptoService.image.tag="${ver}" \
+            --set replicationAgent.image.tag="${ver}" \
+            --wait --timeout 15m
+          echo "wslvault ${ver} live in ${ns}"
+      resources: { cpu_request: 100m, memory_limit: 512Mi }
+      timeout: 20m
+      retries: 0
+      ttl_after_finished: 1h
+    rings:
+      # Wave 0 — Manchester. Auto-promote onward so a seed rolls London too.
+      int:
+        target_env: region-a
+        display_name: "region-a · Manchester"
+        health_url: "https://vault-ui.workstation.co.uk/api/version"
+        health_version_field: version
+        auto_promote: true
+      # Wave 1 — London. Stop here; higher rings are unused for this app.
+      test:
+        target_env: region-b
+        display_name: "region-b · London"
+        health_url: "https://vault-ha.workstation.co.uk/api/version"
+        health_version_field: version
+        auto_promote: false
