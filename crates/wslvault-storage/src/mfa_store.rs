@@ -231,6 +231,29 @@ pub async fn replace_recovery_codes(
 ///
 /// Single-use is enforced by `used_at IS NULL` in the UPDATE rather than a
 /// read-then-write, so two requests racing the same code cannot both succeed.
+/// How many recovery codes a key holds, and how many are still usable.
+///
+/// Counts only — the codes themselves are unrecoverable by design, and a hash
+/// of a sixteen-character secret from a known alphabet is the secret, so
+/// neither ever leaves this table.
+pub async fn count_recovery_codes(
+    conn: &mut PgConnection,
+    api_key_id: Uuid,
+) -> Result<(i64, i64), VaultError> {
+    let row = sqlx::query(
+        "SELECT count(*) AS total, count(*) FILTER (WHERE used_at IS NULL) AS unused
+         FROM shared.mfa_recovery_codes WHERE api_key_id = $1",
+    )
+    .bind(api_key_id)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: format!("could not count recovery codes: {e}"),
+    })?;
+
+    Ok((row.get("total"), row.get("unused")))
+}
+
 pub async fn consume_recovery_code(
     conn: &mut PgConnection,
     api_key_id: Uuid,

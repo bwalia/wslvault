@@ -2413,6 +2413,101 @@ pub async fn handle_mfa_confirm(
         .into_response()
 }
 
+/// `GET /v1/auth/mfa/totp/status` — is the calling key already enrolled?
+///
+/// The console could not answer this. The MFA page offered "Set up
+/// authenticator" unconditionally, to everyone, including keys that finished
+/// enrolling weeks ago — because enrolment is authorised by a pasted key rather
+/// than by the session, so the page had nothing to check. A user who had
+/// already configured MFA was shown the setup form and reasonably concluded
+/// something had gone wrong.
+///
+/// Answered for the caller's *own* key, taken from the verified token's
+/// subject, which is the api_key_id the token was issued for. There is
+/// deliberately no way to ask about somebody else's key: enrolment state says
+/// whether an account has a second factor, and whether its backstop is running
+/// low, which is reconnaissance rather than something a peer needs.
+pub async fn handle_mfa_status(
+    State(state): State<ApiKeyState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let identity = match wslvault_core::auth::resolve_identity(&headers).await {
+        Ok(i) => i,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "message": e.to_string() })),
+            )
+                .into_response()
+        }
+    };
+
+    let Ok(key_id) = Uuid::parse_str(&identity.principal_id) else {
+        // A bootstrap or gateway principal is not an API key, so it has no
+        // enrolment to report. Not an error: the page simply has nothing to
+        // show, and saying so beats a 500.
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "enrolled": false, "confirmed": false })),
+        )
+            .into_response();
+    };
+
+    let Some(pool) = state.mfa_pool.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let mut scope = match mfa_scope(pool, &identity.tenant_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not scope the MFA lookup");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "MFA is temporarily unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(scope.conn(), key_id).await {
+        Ok(e) => e,
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment" })),
+            )
+                .into_response();
+        }
+    };
+
+    let confirmed_at = enrolment.as_ref().and_then(|e| e.confirmed_at);
+    let (total, unused) = if confirmed_at.is_some() {
+        wslvault_storage::mfa_store::count_recovery_codes(scope.conn(), key_id)
+            .await
+            .unwrap_or((0, 0))
+    } else {
+        (0, 0)
+    };
+
+    // Read-only; dropping rolls back nothing there was to write.
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "enrolled": enrolment.is_some(),
+            "confirmed": confirmed_at.is_some(),
+            "confirmed_at": confirmed_at,
+            "recovery_codes_total": total,
+            "recovery_codes_remaining": unused,
+        })),
+    )
+        .into_response()
+}
+
 /// `POST /v1/auth/mfa/totp/recovery-codes` — issue a fresh set.
 ///
 /// ## Why this has to exist
@@ -2672,6 +2767,9 @@ pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
             "/v1/auth/mfa/totp/recovery-codes",
             post(handle_mfa_recovery_codes),
         )
+        // Status is about the caller's own key, so it is the one MFA route
+        // authorised by the session token rather than by a pasted key.
+        .route("/v1/auth/mfa/totp/status", get(handle_mfa_status))
         .with_state(state);
 
     management.merge(exchange)

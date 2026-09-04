@@ -206,6 +206,26 @@
      legible. Set once here so no input has to remember it. */
   ::placeholder { color: var(--ink-faint); opacity: 1; }
 
+  /* Autofill.
+     Chrome paints its own near-white background on an autofilled field and
+     will not let `background-color` override it — so a saved API key rendered
+     as a white slab in the middle of a dark form, which reads as a rendering
+     fault rather than as a convenience. The inset shadow is the documented way
+     round it: it covers the browser's fill without touching the property the
+     browser is defending. The long transition keeps it covered, because the
+     fill is re-applied on a delay after the field is touched. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: var(--ink);
+    -webkit-box-shadow: 0 0 0 1000px var(--surface) inset;
+    box-shadow: 0 0 0 1000px var(--surface) inset;
+    caret-color: var(--ink);
+    transition: background-color 100000s ease-in-out 0s;
+  }
+
   /* Counts, sizes, and durations line up in tables. */
   .tabular { font-variant-numeric: tabular-nums; }
 

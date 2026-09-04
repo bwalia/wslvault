@@ -78,7 +78,15 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   )
 }
 
-export function TwoFactorSetup() {
+export function TwoFactorSetup({
+  title = 'Two-factor authentication',
+  description = 'Add a time-based code from an authenticator app — Authy, Google Authenticator, 1Password, or any other TOTP app — to an API key. Once confirmed, that key needs a code as well as the key itself to sign in.',
+}: {
+  /** Overridden when this session's own key is already enrolled, so the card
+      says what it is actually for rather than repeating the page title. */
+  title?: string
+  description?: string
+} = {}) {
   const [stage, setStage] = useState<Stage>('start')
   const [apiKey, setApiKey] = useState('')
   const [enrolment, setEnrolment] = useState<EnrolResponse | null>(null)
@@ -147,7 +155,7 @@ export function TwoFactorSetup() {
         <CardTitle>
           <span className="inline-flex items-center gap-2">
             <ShieldCheck className="w-4 h-4" />
-            Two-factor authentication
+            {title}
           </span>
         </CardTitle>
       </CardHeader>
@@ -165,12 +173,7 @@ export function TwoFactorSetup() {
 
         {stage === 'start' && (
           <>
-            <p className="text-sm text-ink-muted">
-              Add a time-based code from an authenticator app — Authy, Google
-              Authenticator, 1Password, or any other TOTP app — to an API key.
-              Once confirmed, that key needs a code as well as the key itself to
-              sign in.
-            </p>
+            <p className="text-sm text-ink-muted leading-relaxed">{description}</p>
             <Input
               label="API key"
               type="password"

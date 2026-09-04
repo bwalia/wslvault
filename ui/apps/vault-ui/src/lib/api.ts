@@ -73,6 +73,13 @@ export const api = {
      * The API key alone is deliberately not enough — it is the *first* factor.
      */
     mfaRecoveryCodes: () => '/api/identity/v1/auth/mfa/totp/recovery-codes',
+    /**
+     * GET — whether the signed-in key already has an authenticator.
+     *
+     * The only MFA route authorised by the session token rather than a pasted
+     * key, because it answers about the caller's own key and nothing else.
+     */
+    mfaStatus: () => '/api/identity/v1/auth/mfa/totp/status',
 
     /** GET/POST — invitations for a tenant. Requires an administrator. */
     tenantInvitations: (tenantId: string) =>
