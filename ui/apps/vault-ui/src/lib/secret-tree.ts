@@ -19,6 +19,13 @@ export interface TreeNode {
   path: string
   /** True when a secret exists at exactly this path (vs. an implied folder). */
   isLeaf: boolean
+  /**
+   * Secrets at or below this node — what a folder row displays.
+   *
+   * Accumulated during the sort pass rather than counted per row at render
+   * time, which would walk the subtree again for every folder on screen.
+   */
+  leafCount: number
   children: TreeNode[]
 }
 
@@ -28,7 +35,7 @@ interface MutableNode extends TreeNode {
 }
 
 function makeNode(name: string, path: string): MutableNode {
-  return { name, path, isLeaf: false, children: [], childIndex: new Map() }
+  return { name, path, isLeaf: false, leafCount: 0, children: [], childIndex: new Map() }
 }
 
 /**
@@ -78,12 +85,18 @@ function sortAndStrip(nodes: MutableNode[]): TreeNode[] {
       if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1
       return a.name.localeCompare(b.name)
     })
-    .map(node => ({
-      name: node.name,
-      path: node.path,
-      isLeaf: node.isLeaf,
-      children: sortAndStrip(node.children),
-    }))
+    .map(node => {
+      const children = sortAndStrip(node.children)
+      return {
+        name: node.name,
+        path: node.path,
+        isLeaf: node.isLeaf,
+        // A node that is both folder and secret counts itself too.
+        leafCount:
+          (node.isLeaf ? 1 : 0) + children.reduce((sum, child) => sum + child.leafCount, 0),
+        children,
+      }
+    })
 }
 
 /** Every ancestor path of `path`, nearest-first. `a/b/c` → ["a/b", "a"]. */
