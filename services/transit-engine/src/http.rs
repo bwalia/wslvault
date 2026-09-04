@@ -20,7 +20,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -33,7 +33,7 @@ use wslvault_core::VaultError;
 use crate::audit_client::AuditClient;
 use crate::key_store::TransitKeyStoreBackend;
 use crate::operations::{decrypt, encrypt, rewrap, sign_data, verify_data};
-use crate::policy_client::{extract_policies, extract_principal_id, PolicyClient};
+use crate::policy_client::PolicyClient;
 
 /// Shared application state threaded through axum.
 ///
@@ -55,6 +55,23 @@ pub struct AppState {
 
 // ---------------------------------------------------------------------------
 // Request / Response types
+
+/// One key in a listing. Metadata only — key material never crosses this
+/// boundary, which is why it is built from `TransitKeySummary` and not from
+/// `TransitKey`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct TransitKeyView {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub key_type: String,
+    pub latest_version: u32,
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ListKeysResponse {
+    pub keys: Vec<TransitKeyView>,
+}
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -150,8 +167,11 @@ struct ErrorResponse {
         rewrap_handler,
         create_key_handler,
         rotate_key_handler,
+        list_keys_handler,
     ),
     components(schemas(
+        ListKeysResponse,
+        TransitKeyView,
         EncryptRequest,
         EncryptResponse,
         DecryptRequest,
@@ -178,21 +198,33 @@ struct ErrorResponse {
 pub struct ApiDoc;
 
 // ---------------------------------------------------------------------------
-// Helper: extract tenant_id from request headers
+// Helper: resolve the calling identity
 // ---------------------------------------------------------------------------
 
-fn extract_tenant_id(headers: &HeaderMap) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    headers
-        .get("x-tenant-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .ok_or_else(|| {
+/// Resolve tenant, principal and policies from the caller's signed token.
+///
+/// This service used to read all three out of `X-Tenant-Id`, `X-Principal-Id`
+/// and `X-Policies`, which the browser sends and nothing verified. The proxy
+/// that once wrote those headers decoded the JWT *without checking its
+/// signature*, and has since been deleted — so transit was simultaneously
+/// unreachable in practice and, had anything reached it, willing to encrypt or
+/// decrypt under any tenant named by the caller.
+///
+/// [`wslvault_core::auth::resolve_identity`] is the same verified path
+/// secret-engine uses; the header contract survives only behind an explicit
+/// `VAULT_TRUST_GATEWAY_HEADERS` opt-in.
+#[allow(clippy::result_large_err)]
+async fn authenticate(headers: &HeaderMap) -> Result<wslvault_core::auth::Identity, Response> {
+    wslvault_core::auth::resolve_identity(headers)
+        .await
+        .map_err(|e| {
             (
-                StatusCode::BAD_REQUEST,
+                StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
-                    error: "missing X-Tenant-Id header".into(),
+                    error: e.to_string(),
                 }),
             )
+                .into_response()
         })
 }
 
@@ -254,15 +286,13 @@ pub async fn encrypt_handler(
     headers: HeaderMap,
     Json(body): Json<EncryptRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before accessing the key store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/encrypt/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -393,15 +423,13 @@ pub async fn decrypt_handler(
     headers: HeaderMap,
     Json(body): Json<DecryptRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before accessing the key store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/decrypt/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -512,15 +540,13 @@ pub async fn sign_handler(
     headers: HeaderMap,
     Json(body): Json<SignRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before accessing the key store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/sign/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -633,15 +659,13 @@ pub async fn verify_handler(
     headers: HeaderMap,
     Json(body): Json<VerifyRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before accessing the key store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/verify/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -755,15 +779,13 @@ pub async fn rewrap_handler(
     headers: HeaderMap,
     Json(body): Json<RewrapRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before accessing the key store.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/rewrap/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -842,6 +864,71 @@ pub async fn rewrap_handler(
     }
 }
 
+/// GET /v1/transit/keys — list the calling tenant's keys
+///
+/// Metadata only. The tenant comes from the verified token, never from a
+/// parameter, so there is no shape of this request that lists another tenant.
+#[utoipa::path(
+    get,
+    path = "/v1/transit/keys",
+    responses(
+        (status = 200, description = "Keys for the calling tenant", body = ListKeysResponse),
+        (status = 401, description = "Missing or invalid token"),
+        (status = 403, description = "Authorization denied by policy-engine"),
+    ),
+    tag = "keys"
+)]
+pub async fn list_keys_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
+    };
+    let client_ip = extract_client_ip(&headers);
+
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "read", "transit/keys")
+        .await
+    {
+        state
+            .audit_client
+            .emit(
+                &tenant_id,
+                &principal_id,
+                "transit.key.list",
+                "",
+                "failure",
+                &e.to_string(),
+                "",
+                &client_ip,
+            )
+            .await;
+        return vault_error_response(e).into_response();
+    }
+
+    match state.key_store.list_keys(&tenant_id).await {
+        Ok(keys) => (
+            StatusCode::OK,
+            Json(ListKeysResponse {
+                keys: keys
+                    .into_iter()
+                    .map(|k| TransitKeyView {
+                        name: k.name,
+                        key_type: k.algorithm.as_str().to_string(),
+                        latest_version: k.current_version,
+                        created_at: k.created_at.to_rfc3339(),
+                    })
+                    .collect(),
+            }),
+        )
+            .into_response(),
+        Err(e) => vault_error_response(e).into_response(),
+    }
+}
+
 /// POST /v1/transit/keys/:key_name  — create a new named key
 ///
 /// Creates a new AES-256-GCM transit key scoped to the tenant.
@@ -865,15 +952,13 @@ pub async fn create_key_handler(
     Path(key_name): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before creating the key.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/keys/{}", key_name);
     if let Err(e) = state
         .policy_client
@@ -963,15 +1048,13 @@ pub async fn rotate_key_handler(
     Path(key_name): Path<String>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let tenant_id = match extract_tenant_id(&headers) {
-        Ok(t) => t,
-        Err(e) => return e.into_response(),
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
     };
     let client_ip = extract_client_ip(&headers);
 
     // Authorize before rotating the key.
-    let principal_id = extract_principal_id(&headers);
-    let policies = extract_policies(&headers);
     let resource = format!("transit/keys/{}/rotate", key_name);
     if let Err(e) = state
         .policy_client

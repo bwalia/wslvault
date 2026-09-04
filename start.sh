@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Drive the local WSLVault stack: start | stop | restart | status | logs.
 #
-# The local stack is eight containers created by hand with `docker run` against
+# The local stack is nine containers created by hand with `docker run` against
 # bind-mounted source — not a compose project. `docker compose ps` prints
 # nothing for it, and `docker compose up` would create a *second*, differently
 # named set rather than adopting these. So this drives them by name, and
@@ -18,7 +18,7 @@ set -euo pipefail
 
 # Start order: Postgres first because every service connects to it on boot, and
 # the UI last because it is the only thing a person waits on.
-CONTAINERS=(wv-pg wv-crypto wv-identity wv-secret wv-policy wv-lease wv-audit wv-ui)
+CONTAINERS=(wv-pg wv-crypto wv-identity wv-secret wv-policy wv-lease wv-transit wv-audit wv-ui)
 
 UI_URL="http://127.0.0.1:3012/login"
 

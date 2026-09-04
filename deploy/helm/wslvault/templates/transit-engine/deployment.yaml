@@ -71,6 +71,12 @@ spec:
                   name: {{ include "wslvault.rootKeySecretName" . }}
                   key: {{ include "wslvault.rootKeySecretKey" . }}
                   optional: false
+            # Public keys for verifying per-tenant Ed25519 tokens. transit-engine
+            # now resolves identity from the caller's signed token rather than
+            # from X-Tenant-Id / X-Policies headers; without this it rejects
+            # every request with 401 "VAULT_JWKS_URL is not configured".
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
             - name: POLICY_ENGINE_ENDPOINT
               value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "policy-engine" "context" $))

@@ -1656,8 +1656,6 @@ pub async fn handle_rotate_api_key(
     }
 }
 
-/// Whether this key has a confirmed authenticator enrolled.
-
 /// Open a tenant scope for the MFA tables.
 ///
 /// MFA rows belong to one key, which belongs to one tenant, so every operation

@@ -132,38 +132,3 @@ impl PolicyClient {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Header extraction helpers
-// ---------------------------------------------------------------------------
-
-/// Extract the `X-Principal-Id` header value from an HTTP `HeaderMap`.
-///
-/// Defaults to `"anonymous"` when the header is absent or non-UTF-8.
-pub fn extract_principal_id(headers: &axum::http::HeaderMap) -> String {
-    headers
-        .get("x-principal-id")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("anonymous")
-        .to_string()
-}
-
-/// Extract the `X-Policies` header value and split it into individual policy
-/// names.
-///
-/// The header value is expected to be a comma-separated list, e.g.
-/// `"default,transit-read"`.  Whitespace around each name is trimmed.
-/// Returns an empty `Vec` when the header is absent.
-pub fn extract_policies(headers: &axum::http::HeaderMap) -> Vec<String> {
-    headers
-        .get("x-policies")
-        .and_then(|v| v.to_str().ok())
-        .map(|raw| {
-            raw.split(',')
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}

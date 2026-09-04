@@ -55,7 +55,7 @@ use wslvault_storage::pool::DbPool;
 
 use crate::key_store::{
     generate_key_material, KeyAlgorithm, KeyVersion, SharedKeyStore, TransitKey,
-    TransitKeyStoreBackend,
+    TransitKeyStoreBackend, TransitKeySummary,
 };
 
 // ---------------------------------------------------------------------------
@@ -395,6 +395,22 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
             .ok_or_else(|| VaultError::KeyNotFound {
                 key_id: format!("{}/{}", tenant_id, key_name),
             })
+    }
+
+    /// Served from the same warm cache as `get_key`.
+    ///
+    /// Not a `SELECT`: a descriptor row whose material failed to unwrap is
+    /// skipped by `load_from_pg`, so querying PG directly would advertise keys
+    /// this process cannot actually use.
+    async fn list_keys(&self, tenant_id: &str) -> Result<Vec<TransitKeySummary>, VaultError> {
+        let guard = self.cache.read().await;
+        let mut keys: Vec<TransitKeySummary> = guard
+            .iter()
+            .filter(|((owner, _), _)| owner == tenant_id)
+            .map(|(_, key)| TransitKeySummary::from(key))
+            .collect();
+        keys.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(keys)
     }
 
     /// Rotate a transit key by appending a new version.

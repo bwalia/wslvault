@@ -58,9 +58,12 @@ pub struct TenantStoreState {
 /// including listing their own secrets. That is what shipped first, and it
 /// looked like a permissions bug rather than a missing row.
 ///
-/// Scoped to `secret/**` deliberately. It does not grant policy management,
-/// key management or anything cross-tenant — those are separate decisions an
-/// operator makes deliberately, not defaults a tenant inherits by existing.
+/// Scoped to the tenant's own secrets and its own transit keys. It does not
+/// grant policy management or anything cross-tenant — those are separate
+/// decisions an operator makes deliberately, not defaults a tenant inherits by
+/// existing. Transit is in because the console shows it to every member, not
+/// only administrators; without the grant the page is advertised and then
+/// refuses every request.
 const DEFAULT_TENANT_POLICY: &str = "default";
 
 /// Create the tenant's baseline policy.
@@ -73,12 +76,22 @@ const DEFAULT_TENANT_POLICY: &str = "default";
 async fn seed_default_policy(pool: &wslvault_storage::pool::DbPool, tenant_id: &Uuid) {
     let document = serde_json::json!({
         "name": DEFAULT_TENANT_POLICY,
-        "rules": [{
-            // `secret/**` covers both shapes the engine checks: `secret/list`
-            // and `secret/data/<path>`.
-            "paths": ["secret/**"],
-            "capabilities": ["read", "write", "list", "delete"],
-        }],
+        "rules": [
+            {
+                // `secret/**` covers both shapes the engine checks:
+                // `secret/list` and `secret/data/<path>`.
+                "paths": ["secret/**"],
+                "capabilities": ["read", "write", "list", "delete"],
+            },
+            {
+                // transit-engine scopes every store call to the tenant from the
+                // verified token, so these paths can only name the tenant's own
+                // keys. Covers `transit/keys`, `transit/keys/<name>` and the
+                // encrypt / decrypt / sign / verify / rewrap forms.
+                "paths": ["transit/**"],
+                "capabilities": ["read", "write", "list"],
+            },
+        ],
     });
 
     match wslvault_storage::policy_store::put_policy(

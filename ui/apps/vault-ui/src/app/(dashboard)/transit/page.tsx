@@ -3,6 +3,7 @@ import { useState } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { mutate } from '@/lib/fetcher'
+import { api } from '@/lib/api'
 import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
@@ -46,7 +47,7 @@ interface TransitResult {
   valid?: boolean
 }
 
-const TRANSIT_KEY = '/api/transit/v1/keys'
+const TRANSIT_KEY = '/api/transit/v1/transit/keys'
 
 const opConfig: Record<Operation, { label: string; icon: React.ElementType; inputLabel: string; inputField: keyof OperationForm; endpoint: (name: string) => string; bodyField: string }> = {
   encrypt: {
@@ -54,7 +55,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: Lock,
     inputLabel: 'Plaintext (base64)',
     inputField: 'plaintext',
-    endpoint: name => `/api/transit/v1/encrypt/${name}`,
+    endpoint: api.transit.encrypt,
     bodyField: 'plaintext',
   },
   decrypt: {
@@ -62,7 +63,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: Unlock,
     inputLabel: 'Ciphertext',
     inputField: 'ciphertext',
-    endpoint: name => `/api/transit/v1/decrypt/${name}`,
+    endpoint: api.transit.decrypt,
     bodyField: 'ciphertext',
   },
   sign: {
@@ -70,7 +71,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: FileSignature,
     inputLabel: 'Data (base64)',
     inputField: 'data',
-    endpoint: name => `/api/transit/v1/sign/${name}`,
+    endpoint: api.transit.sign,
     bodyField: 'input',
   },
   verify: {
@@ -78,7 +79,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: CheckCircle,
     inputLabel: 'Data (base64)',
     inputField: 'data',
-    endpoint: name => `/api/transit/v1/verify/${name}`,
+    endpoint: api.transit.verify,
     bodyField: 'input',
   },
 }
@@ -108,7 +109,7 @@ export default function TransitPage() {
     setCreating(true)
     setCreateError('')
     try {
-      await mutate(TRANSIT_KEY, 'POST', values, token)
+      await mutate(api.transit.key(values.name), 'POST', values, token)
       await swrMutate(TRANSIT_KEY)
       setCreateOpen(false)
       reset()

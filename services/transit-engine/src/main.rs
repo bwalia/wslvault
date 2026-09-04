@@ -52,8 +52,8 @@ use wslvault_storage::pool::DbPool;
 
 use crate::audit_client::AuditClient;
 use crate::http::{
-    create_key_handler, decrypt_handler, encrypt_handler, rewrap_handler, rotate_key_handler,
-    sign_handler, verify_handler, ApiDoc, AppState,
+    create_key_handler, decrypt_handler, encrypt_handler, list_keys_handler, rewrap_handler,
+    rotate_key_handler, sign_handler, verify_handler, ApiDoc, AppState,
 };
 use crate::key_store::{InMemoryTransitKeyStore, TransitKeyStoreBackend};
 use crate::pg_store::PgTransitKeyBackend;
@@ -136,9 +136,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         audit_client,
     };
 
-    // Transit operations trust tenant-identity headers, so they are gated on
-    // gateway-origin authentication (shared X-Gateway-Auth secret). The health
-    // probe is left open for orchestrators.
+    // Every handler resolves the caller from their signed token
+    // (`http::authenticate`), so the shared-secret gateway gate that used to
+    // wrap these routes is gone: it demanded an `X-Gateway-Auth` header that
+    // nothing in the deployed system issues, which made the whole mount
+    // unreachable rather than protected. The health probe stays open for
+    // orchestrators.
     let transit_routes = Router::new()
         // Transit encryption operations
         .route("/v1/transit/encrypt/:key_name", post(encrypt_handler))
@@ -147,16 +150,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/transit/verify/:key_name", post(verify_handler))
         .route("/v1/transit/rewrap/:key_name", post(rewrap_handler))
         // Key management
+        .route("/v1/transit/keys", get(list_keys_handler))
         .route("/v1/transit/keys/:key_name", post(create_key_handler))
         .route(
             "/v1/transit/keys/:key_name/rotate",
             post(rotate_key_handler),
         )
-        .with_state(state)
-        .layer(axum::middleware::from_fn_with_state(
-            wslvault_core::middleware::GatewayAuth::from_env(),
-            wslvault_core::middleware::require_gateway_auth,
-        ));
+        .with_state(state);
 
     let router = Router::new()
         // Health probe
