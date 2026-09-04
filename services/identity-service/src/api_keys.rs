@@ -2076,6 +2076,12 @@ async fn verify_second_factor(
                 .await
                 .map_err(|e| e.to_string())?;
         scope.commit().await.map_err(|e| e.to_string())?;
+        if !ok {
+            info!(
+                key_id = %pending.api_key_id,
+                "TOTP code was valid but already used for its step"
+            );
+        }
         return Ok(ok);
     }
 
@@ -2090,6 +2096,23 @@ async fn verify_second_factor(
     .await
     .map_err(|e| e.to_string())?;
     scope.commit().await.map_err(|e| e.to_string())?;
+
+    if !ok {
+        // Say which factor missed. "authenticator code rejected" alone cannot
+        // distinguish a mistyped TOTP from a recovery code issued for a
+        // *different* key — the likeliest cause by far for anyone who belongs
+        // to more than one tenant, and one that costs a single-use challenge
+        // per guess to diagnose from the outside.
+        //
+        // The code is never logged, and neither is a hash of it: a hash of a
+        // 16-character secret from a known alphabet is the secret.
+        info!(
+            key_id = %pending.api_key_id,
+            tenant_id = %pending.tenant_id,
+            "not a valid TOTP code, and no recovery code for THIS key matched it — a code \
+             issued for a different key is the usual cause"
+        );
+    }
     Ok(ok)
 }
 
@@ -2390,6 +2413,222 @@ pub async fn handle_mfa_confirm(
         .into_response()
 }
 
+/// `POST /v1/auth/mfa/totp/recovery-codes` — issue a fresh set.
+///
+/// ## Why this has to exist
+///
+/// Recovery codes were only ever minted during enrolment, and enrolment
+/// refuses to run twice: `upsert_pending` updates only
+/// `WHERE confirmed_at IS NULL`. So once eight codes were spent — or simply
+/// lost, which is likelier — the holder had no route to more. Their key still
+/// worked, their authenticator still worked, and the backstop for losing the
+/// authenticator was gone with no way to restore it short of an operator
+/// editing the database.
+///
+/// ## Why it is not a bypass
+///
+/// It demands the second factor it is replacing: a current TOTP code, or one
+/// of the remaining recovery codes. Presenting the API key alone is not
+/// enough, because the API key is the *first* factor — accepting it here would
+/// let anyone holding a leaked key mint themselves a permanent way past MFA.
+///
+/// A recovery code spent proving identity here is consumed like any other, so
+/// this cannot be used to farm codes from a single one indefinitely: each pass
+/// costs the code it used.
+///
+/// The old set is replaced, not extended. Codes the holder can no longer
+/// account for — the reason most people ask for new ones — must stop working,
+/// and `replace_recovery_codes` deletes before it inserts.
+pub async fn handle_mfa_recovery_codes(
+    State(state): State<ApiKeyState>,
+    Json(req): Json<MfaConfirmRequest>,
+) -> impl IntoResponse {
+    let validated = match state.manager.validate_key(&req.api_key).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+
+    let (Some(pool), Some(crypto)) = (state.mfa_pool.as_ref(), state.crypto.as_ref()) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "MFA is not configured" })),
+        )
+            .into_response();
+    };
+
+    let tenant_uuid = match Uuid::parse_str(&validated.tenant_id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "malformed tenant on this key" })),
+            )
+                .into_response()
+        }
+    };
+
+    let mut scope = match mfa_scope(pool, &validated.tenant_id).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!(error = %e, "could not scope the MFA lookup");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "MFA is temporarily unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let enrolment = match wslvault_storage::mfa_store::find(scope.conn(), validated.key_id).await {
+        Ok(Some(e)) if e.confirmed_at.is_some() => e,
+        Ok(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "message": "this key has no confirmed authenticator, so it has no recovery \
+                                codes to replace"
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "MFA lookup failed");
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment" })),
+            )
+                .into_response();
+        }
+    };
+
+    let secret = match crypto
+        .unwrap(
+            enrolment.tenant_id.to_string(),
+            &enrolment.wrapped_secret,
+            totp_aad(validated.key_id),
+        )
+        .await
+        .map(String::from_utf8)
+    {
+        Ok(Ok(s)) => s,
+        _ => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({ "message": "could not read the enrolment secret" })),
+            )
+                .into_response()
+        }
+    };
+
+    // Prove the second factor. TOTP first, then a recovery code, exactly as at
+    // sign-in — and consuming whichever was used, so neither can be replayed.
+    let now = chrono::Utc::now().timestamp();
+    let proved = if let Some(step) = crate::mfa::verify_code(&secret, &req.code, now) {
+        match wslvault_storage::mfa_store::try_consume_step(scope.conn(), validated.key_id, step)
+            .await
+        {
+            Ok(ok) => ok,
+            Err(e) => {
+                error!(error = %e, "could not record the TOTP step");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "message": "could not verify the code" })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        let candidates = crate::mfa::recovery_code_hash_candidates(&req.code);
+        match wslvault_storage::mfa_store::consume_recovery_code(
+            scope.conn(),
+            validated.key_id,
+            &candidates,
+        )
+        .await
+        {
+            Ok(ok) => ok,
+            Err(e) => {
+                error!(error = %e, "could not consume a recovery code");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    Json(serde_json::json!({ "message": "could not verify the code" })),
+                )
+                    .into_response();
+            }
+        }
+    };
+
+    if !proved {
+        warn!(
+            key_id = %validated.key_id,
+            "refused to reissue recovery codes: second factor not proved"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "message": "that code was not accepted — supply a current code from your \
+                            authenticator app, or one of your remaining recovery codes"
+            })),
+        )
+            .into_response();
+    }
+
+    let codes = match crate::mfa::generate_recovery_codes(8) {
+        Ok(c) => c,
+        Err(e) => {
+            error!(error = %e, "recovery code generation failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "message": "could not generate recovery codes" })),
+            )
+                .into_response();
+        }
+    };
+    let hashes: Vec<String> = codes.iter().map(|(_, h)| h.clone()).collect();
+    if let Err(e) = wslvault_storage::mfa_store::replace_recovery_codes(
+        scope.conn(),
+        validated.key_id,
+        tenant_uuid,
+        &hashes,
+    )
+    .await
+    {
+        error!(error = %e, "could not store the new recovery codes");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not store the new recovery codes" })),
+        )
+            .into_response();
+    }
+
+    // Consuming the proof and replacing the set commit together. Rolled back
+    // separately, the holder could be shown eight codes that were never stored
+    // — and told the old ones no longer work.
+    if let Err(e) = scope.commit().await {
+        error!(error = %e, "could not commit the reissued recovery codes");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "message": "could not store the new recovery codes" })),
+        )
+            .into_response();
+    }
+
+    warn!(
+        key_id = %validated.key_id,
+        "recovery codes reissued — every previous code is now invalid"
+    );
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "recovery_codes": codes.into_iter().map(|(c, _)| c).collect::<Vec<_>>(),
+            "warning": "These replace your previous codes, which no longer work. Shown once and \
+                        stored only as hashes: keep them somewhere you can reach without this \
+                        vault, and without the phone they stand in for.",
+        })),
+    )
+        .into_response()
+}
+
 /// Builds an [`axum::Router`] containing all API-key routes.
 ///
 /// The four management routes sit behind [`require_admin`]; `/v1/auth/api-key`
@@ -2427,6 +2666,12 @@ pub fn router(state: ApiKeyState, admin_auth: AdminAuth) -> Router {
         .route("/v1/auth/mfa/totp", post(handle_mfa_verify))
         .route("/v1/auth/mfa/totp/enroll", post(handle_mfa_enroll))
         .route("/v1/auth/mfa/totp/confirm", post(handle_mfa_confirm))
+        // Reissue: authorised by the second factor it replaces, not by a
+        // session token — a key whose codes are gone still needs to reach this.
+        .route(
+            "/v1/auth/mfa/totp/recovery-codes",
+            post(handle_mfa_recovery_codes),
+        )
         .with_state(state);
 
     management.merge(exchange)

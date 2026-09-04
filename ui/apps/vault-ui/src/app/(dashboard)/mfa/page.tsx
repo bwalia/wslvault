@@ -3,6 +3,7 @@
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { TwoFactorSetup } from '@/components/TwoFactorSetup'
+import { RecoveryCodeReissue } from '@/components/RecoveryCodeReissue'
 import { ShieldCheck, Smartphone, LifeBuoy, ExternalLink } from 'lucide-react'
 
 /**
@@ -84,6 +85,8 @@ export default function MfaPage() {
       </Card>
 
       <TwoFactorSetup />
+
+      <RecoveryCodeReissue />
 
       <Card>
         <CardHeader>
