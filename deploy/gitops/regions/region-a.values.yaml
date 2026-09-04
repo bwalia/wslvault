@@ -12,7 +12,7 @@ global:
   # exactly what happened on the v1.0.8 rollout: lease-manager stayed on
   # v1.0.6 and its HTTP router (added after that build) stayed missing,
   # so /leases answered 404 in production.
-  imageTag: v1.0.8
+  imageTag: v1.0.14
   region:
     id: region-a
     displayName: Manchester
@@ -61,10 +61,9 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    # v1.0.11: client clock-skew login fix (session TTL from the token's own
-    # iat/exp against the local clock). Ahead of the other services, which stay
-    # at global.imageTag until a full deploy of the newer main.
-    tag: v1.0.11
+    # Promoted with the rest of the mesh to release v1.0.14 (vault redesign,
+    # RLS on api_keys / MFA, invitations). Keep in lockstep with region B.
+    tag: v1.0.14
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -155,32 +154,32 @@ identityService:
     username: tenthmatrix.mailer@gmail.com
     from: "WSLVault <tenthmatrix.mailer@gmail.com>"
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 regionHealth:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 secretEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 policyEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 transitEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 auditService:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 pkiEngine:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 mcpServer:
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 cryptoService:
   replicaCount: 1
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 
 # The three shared keys arrive from a Secret provisioned out-of-band and
 # replicated to every region's namespace — never from Git. Populate it with
@@ -196,7 +195,7 @@ replicationAgent:
   # re-pushed with the same code, but imagePullPolicy: IfNotPresent means nodes
   # keep the cached pre-auth layer — only a new tag actually pulls it.
   image:
-    tag: v1.0.8
+    tag: v1.0.14
 
 secrets:
   existingSecret: wslvault-mesh-keys
