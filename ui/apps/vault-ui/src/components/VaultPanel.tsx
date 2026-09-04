@@ -35,12 +35,12 @@ export function VaultPanel({
     // Hidden below lg: on a phone this would be a screen of decoration between
     // the user and the form they came for.
     //
-    // `items-center` with a capped inner column is what keeps this working on a
-    // wide monitor. Without it the content sat against the far-left padding
-    // edge and the rest of the panel — most of it, at 2500px — was empty. The
-    // three rows share one max-width so they stay a column rather than three
-    // things independently floating.
-    <div className="hidden lg:flex flex-col items-center justify-between bg-steel px-10 py-12 xl:py-16 relative overflow-hidden">
+    // The mark and the footprint stay in their corners — a wordmark belongs at
+    // the top-left of the panel, not floating in the middle of it. Only the
+    // hero centres, which is what fills a wide monitor: at 2500px the whole
+    // block used to sit against the left padding edge with the rest of the
+    // panel empty beside it.
+    <div className="hidden lg:flex flex-col justify-between bg-steel px-10 py-12 xl:py-16 relative overflow-hidden">
       <ParticleField />
 
       {/* Rings: depth without a texture file, and they anchor the particles to
@@ -58,7 +58,7 @@ export function VaultPanel({
         className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[32rem] h-[32rem] rounded-full border border-steel-line opacity-25"
       />
 
-      <div className="w-full max-w-lg flex items-center gap-3 relative">
+      <div className="flex items-center gap-3 relative">
         <div className="w-9 h-9 rounded-lg bg-primary-700 flex items-center justify-center ring-1 ring-brass/30">
           <Lock className="w-[18px] h-[18px] text-brass" aria-hidden="true" />
         </div>
@@ -71,7 +71,7 @@ export function VaultPanel({
         variants={stagger}
         initial="hidden"
         animate="visible"
-        className="w-full max-w-lg relative py-10"
+        className="w-full max-w-lg mx-auto relative py-10"
       >
         {/* The door grows with the panel. At a fixed 176px it was a small badge
             adrift in a very large dark rectangle on anything above 1600px. */}
@@ -94,7 +94,7 @@ export function VaultPanel({
         </motion.p>
       </motion.div>
 
-      <div className="w-full max-w-lg relative">
+      <div className="relative">
         <p className="font-mono text-xs text-steel-ink-dim">
           AES-256-GCM · per-tenant KEK · multi-region
         </p>
