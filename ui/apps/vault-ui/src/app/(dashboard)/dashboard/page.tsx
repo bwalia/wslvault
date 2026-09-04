@@ -131,16 +131,16 @@ export default function DashboardPage() {
               <table className="w-full text-sm">
                 <thead className="bg-surface-2 border-b border-line-strong">
                   <tr>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Action
                     </th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Resource
                     </th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Outcome
                     </th>
-                    <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-[0.08em] text-ink-faint">
                       Time
                     </th>
                   </tr>
@@ -152,7 +152,7 @@ export default function DashboardPage() {
                       className="transition-colors hover:bg-surface-2 hover:shadow-[inset_2px_0_0_0_var(--brass)]"
                     >
                       <td className="px-4 py-3">
-                        <span className="font-mono text-[13px] text-ink">{e.action}</span>
+                        <span className="font-mono text-sm text-ink">{e.action}</span>
                       </td>
                       <td className="px-4 py-3 max-w-xs truncate">
                         <CodeChip value={e.resource} truncate={48} />

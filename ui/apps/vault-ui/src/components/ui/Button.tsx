@@ -22,10 +22,17 @@ const variants = {
   ghost: 'text-ink-muted hover:bg-surface-2 hover:text-ink',
 }
 
+/**
+ * Every size is a step taller than it was.
+ *
+ * `md` was 36px and `sm` 32px, both under the 44px a finger actually needs and
+ * both reading as chips rather than controls. `lg` now hits 44 outright; the
+ * smaller two stay compact for table rows but no longer look like labels.
+ */
 const sizes = {
-  sm: 'px-3 text-xs h-8',
-  md: 'px-4 text-sm h-9',
-  lg: 'px-5 text-sm h-10',
+  sm: 'px-3 text-xs h-9',
+  md: 'px-4 text-sm h-10',
+  lg: 'px-5 text-[0.9375rem] h-11',
 }
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
@@ -41,8 +48,13 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
       disabled={disabled || loading}
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-lg font-medium transition-colors focus-ring',
-        'disabled:opacity-50 disabled:cursor-not-allowed',
-        variants[variant],
+        // Disabled drops out of the variant's colour entirely rather than
+        // fading it. A brass button at 50% opacity is still a mid-yellow
+        // button — it reads as pressable and simply looks poorly printed,
+        // which is how the disabled "Create secret" was landing.
+        disabled || loading
+          ? 'bg-surface-2 text-ink-faint border border-line cursor-not-allowed shadow-none'
+          : variants[variant],
         sizes[size],
         className,
       )}

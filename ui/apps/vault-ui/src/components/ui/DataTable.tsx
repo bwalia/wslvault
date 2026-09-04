@@ -127,7 +127,7 @@ export function DataTable<T extends Record<string, unknown>>({
                       : undefined
                   }
                   className={cn(
-                    'px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-ink-faint',
+                    'px-4 py-3 text-xs font-semibold uppercase tracking-[0.08em] text-ink-muted',
                     col.align === 'right' ? 'text-right' : 'text-left',
                     col.sortable && 'cursor-pointer select-none hover:text-ink',
                   )}
@@ -180,7 +180,7 @@ export function DataTable<T extends Record<string, unknown>>({
                       className={cn(
                         'px-4 py-3 text-ink',
                         col.align === 'right' && 'text-right tabular',
-                        col.mono && 'font-mono text-[13px]',
+                        col.mono && 'font-mono text-sm',
                       )}
                     >
                       {col.render ? col.render(row) : String(row[col.field] ?? '—')}

@@ -24,7 +24,7 @@ export function Badge({ variant = 'default', size = 'md', className, children }:
     <span
       className={cn(
         'inline-flex items-center gap-1 rounded-md border font-medium',
-        size === 'sm' ? 'px-1.5 py-px text-[11px]' : 'px-2 py-0.5 text-xs',
+        size === 'sm' ? 'px-1.5 py-px text-xs' : 'px-2 py-0.5 text-xs',
         variants[variant],
         className,
       )}

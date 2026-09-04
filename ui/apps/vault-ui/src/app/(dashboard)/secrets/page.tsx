@@ -153,16 +153,16 @@ const TreeRow = memo(function TreeRow({
           ) : (
             <Lock className="w-4 h-4 shrink-0 text-ink-faint" aria-hidden="true" />
           )}
-          <span className="truncate font-mono text-[13px]">{node.name}</span>
+          <span className="truncate font-mono text-sm">{node.name}</span>
           {isFolder && node.isLeaf && (
-            <span className="text-[10px] text-ink-faint shrink-0" title="Also a secret">
+            <span className="text-[11px] text-ink-faint shrink-0" title="Also a secret">
               ●
             </span>
           )}
           {/* How much is under a folder, so a collapsed branch still says
               whether it holds two secrets or two hundred. */}
           {isFolder && (
-            <span className="ml-auto pl-1.5 shrink-0 text-[11px] tabular-nums text-ink-faint">
+            <span className="ml-auto pl-1.5 shrink-0 text-xs tabular-nums text-ink-faint">
               {node.leafCount}
             </span>
           )}
@@ -227,7 +227,7 @@ const FieldRow = memo(function FieldRow({
         onChange={e => onChange(field.id, { k: e.target.value })}
         placeholder="key"
         aria-label={`Field ${index + 1} key`}
-        className="w-1/3 min-w-0 px-3 py-2 text-[13px] font-mono bg-transparent text-ink placeholder:text-ink-faint border-r border-line focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
+        className="w-1/3 min-w-0 px-3 py-2 text-sm font-mono bg-transparent text-ink placeholder:text-ink-faint border-r border-line focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
       />
       <div className="relative flex-1 min-w-0 flex">
         <input
@@ -238,7 +238,7 @@ const FieldRow = memo(function FieldRow({
           aria-label={`Field ${index + 1} value`}
           autoComplete="off"
           spellCheck={false}
-          className="w-full px-3 py-2 pr-8 text-[13px] font-mono bg-transparent text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
+          className="w-full px-3 py-2 pr-8 text-sm font-mono bg-transparent text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
         />
         <button
           type="button"
@@ -310,14 +310,14 @@ function FieldEditor({
   return (
     <div>
       <div className="rounded-xl border border-line overflow-hidden">
-        <div className="flex bg-surface-2 border-b border-line text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
+        <div className="flex bg-surface-2 border-b border-line text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
           <span className="w-1/3 px-3 py-2 border-r border-line">Key</span>
           <span className="flex-1 px-3 py-2">Value</span>
           <span className="w-[34px]" aria-hidden="true" />
         </div>
         <div className="divide-y divide-line">
           {fields.length === 0 && (
-            <p className="px-3 py-4 text-[13px] text-ink-faint">
+            <p className="px-3 py-4 text-sm text-ink-faint">
               No fields yet — add one below.
             </p>
           )}
@@ -460,7 +460,7 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
             a lock so the secret itself is distinguishable at a glance from the
             path leading to it. */}
         <nav aria-label="Secret path" className="min-w-0">
-          <ol className="flex items-center flex-wrap gap-x-1 gap-y-0.5 font-mono text-[13px]">
+          <ol className="flex items-center flex-wrap gap-x-1 gap-y-0.5 font-mono text-sm">
             {path.split('/').map((part, i, all) => {
               const last = i === all.length - 1
               return (
@@ -501,12 +501,12 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
         <dl className="flex gap-4">
           <div>
             <dt className="text-xs text-ink-faint">Version</dt>
-            <dd className="font-mono text-[13px] text-ink tabular">{data.version}</dd>
+            <dd className="font-mono text-sm text-ink tabular">{data.version}</dd>
           </div>
           {data.created_at && (
             <div>
               <dt className="text-xs text-ink-faint">Created</dt>
-              <dd className="font-mono text-[13px] text-ink tabular">
+              <dd className="font-mono text-sm text-ink tabular">
                 {new Date(data.created_at).toLocaleString()}
               </dd>
             </div>
@@ -528,7 +528,7 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
           rows={12}
           aria-label="JSON editor"
           spellCheck={false}
-          className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+          className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
         />
       ) : (
         <FieldEditor fields={fields} setFields={setFields} />
@@ -608,18 +608,27 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
           placeholder="myapp/database"
           autoComplete="off"
           spellCheck={false}
-          className="w-full px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+          className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
         />
-        <p className="text-xs text-ink-faint">Slashes create folders in the tree.</p>
+        <p className="text-xs text-ink-muted">
+          Slashes create folders — <span className="font-mono text-ink">prod/db/password</span>{' '}
+          files it under <span className="font-mono text-ink">prod</span> ›{' '}
+          <span className="font-mono text-ink">db</span>.
+        </p>
       </div>
 
       <FieldEditor fields={fields} setFields={setFields} />
 
       <ErrorBanner message={create.error} onDismiss={create.clearError} />
 
-      <Button size="sm" loading={create.pending} onClick={onCreate} disabled={!secretPath.trim()}>
-        Create secret
-      </Button>
+      <div className="flex items-center gap-3">
+        <Button loading={create.pending} onClick={onCreate} disabled={!secretPath.trim()}>
+          Create secret
+        </Button>
+        {!secretPath.trim() && (
+          <span className="text-xs text-ink-muted">Give it a path first.</span>
+        )}
+      </div>
     </div>
   )
 }
@@ -709,7 +718,7 @@ export default function SecretsPage() {
     <div className="max-w-7xl space-y-6">
       <PageHeader
         title="Secrets"
-        description="Browse and manage secret key-value pairs"
+        description="Every password, key and certificate your organisation stores, encrypted and organised into folders."
         guide={
           <>
             <p>
@@ -745,7 +754,7 @@ export default function SecretsPage() {
             <div className="flex items-center justify-between">
               <CardTitle>Secret paths</CardTitle>
               {paths.length > 0 && (
-                <span className="text-[11px] font-mono text-ink-faint tabular-nums">
+                <span className="text-xs font-mono text-ink-faint tabular-nums">
                   {filter.trim() ? `${filtered.length}/${paths.length}` : paths.length}
                 </span>
               )}
@@ -756,7 +765,7 @@ export default function SecretsPage() {
             {paths.length > 0 && (
               <div className="relative">
                 <Search
-                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-faint"
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
                   aria-hidden="true"
                 />
                 <input
@@ -765,7 +774,7 @@ export default function SecretsPage() {
                   onChange={e => setFilter(e.target.value)}
                   placeholder="Filter paths…"
                   aria-label="Filter secret paths"
-                  className="w-full pl-8 pr-2.5 py-1.5 text-[13px] rounded-lg border border-line-strong bg-surface-2 text-ink placeholder:text-ink-faint transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                  className="w-full pl-9 pr-2.5 py-2 text-sm rounded-lg border border-line-strong bg-surface-2 text-ink placeholder:text-ink-faint transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
                 />
               </div>
             )}

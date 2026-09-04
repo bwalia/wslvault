@@ -31,7 +31,7 @@ export function StatCard({ label, value, trend, detail }: StatCardProps) {
         className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-brass/70 via-brass/30 to-transparent"
         aria-hidden="true"
       />
-      <p className="text-[11px] font-medium uppercase tracking-[0.08em] text-ink-faint">
+      <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">
         {label}
       </p>
       {/* tabular-nums so a figure changing from 9 to 10 does not shift the

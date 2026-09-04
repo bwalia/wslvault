@@ -243,7 +243,7 @@ function UsersTab() {
       label: 'Username',
       sortable: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink">{row.userName}</span>
+        <span className="font-mono text-sm text-ink">{row.userName}</span>
       ),
     },
     {
@@ -256,7 +256,7 @@ function UsersTab() {
       field: 'email',
       label: 'Email',
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted">{primaryEmail(row)}</span>
+        <span className="font-mono text-sm text-ink-muted">{primaryEmail(row)}</span>
       ),
     },
     {
@@ -592,7 +592,7 @@ function GroupsTab() {
         return (
           <div className="flex flex-wrap gap-1">
             {displayed.map(m => (
-              <Badge key={m.value} variant="default" size="sm" className="font-mono text-[13px]">
+              <Badge key={m.value} variant="default" size="sm" className="font-mono text-sm">
                 {m.display ?? m.value}
               </Badge>
             ))}

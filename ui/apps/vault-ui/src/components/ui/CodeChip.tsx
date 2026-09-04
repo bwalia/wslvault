@@ -42,7 +42,7 @@ export function CodeChip({ value, truncate, copyable = false, className }: CodeC
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 font-mono text-[13px] text-ink bg-surface-2 border border-line rounded px-1.5 py-0.5',
+        'inline-flex items-center gap-1.5 font-mono text-sm text-ink bg-surface-2 border border-line rounded px-1.5 py-0.5',
         className,
       )}
       title={truncate ? value : undefined}

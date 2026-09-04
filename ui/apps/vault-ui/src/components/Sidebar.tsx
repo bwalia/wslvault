@@ -128,7 +128,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
           return (
           <div key={group.label}>
             {open && (
-              <p className="mb-2 px-2 font-display text-[10px] font-semibold uppercase tracking-[0.14em] text-steel-ink-dim">
+              <p className="mb-2 px-2 font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-steel-ink-dim">
                 {group.label}
               </p>
             )}
@@ -179,7 +179,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
       >
         {open ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
       </button>
-      <BuildStamp collapsed={!open} className={open ? 'mx-3 mb-3 text-[10px]' : 'mx-1 mb-3 text-[9px]'} />
+      <BuildStamp collapsed={!open} className={open ? 'mx-3 mb-3 text-[11px]' : 'mx-1 mb-3 text-[10px]'} />
     </aside>
   )
 }

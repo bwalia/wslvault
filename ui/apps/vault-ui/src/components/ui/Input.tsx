@@ -26,9 +26,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy}
           className={cn(
-            'w-full px-3 py-2 rounded-lg border bg-surface text-ink text-sm',
+            'w-full px-3 py-2.5 rounded-lg border bg-surface text-ink text-sm',
             'placeholder:text-ink-faint transition-colors',
-            mono && 'font-mono text-[13px]',
+            mono && 'font-mono text-sm',
             error
               ? 'border-danger-500 focus:ring-danger-500/50 focus:border-danger-500'
               : 'border-line-strong focus:border-primary-500',
@@ -42,7 +42,7 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             {error}
           </p>
         ) : hint ? (
-          <p id={`${inputId}-hint`} className="text-xs text-ink-faint">
+          <p id={`${inputId}-hint`} className="text-xs text-ink-muted leading-relaxed">
             {hint}
           </p>
         ) : null}

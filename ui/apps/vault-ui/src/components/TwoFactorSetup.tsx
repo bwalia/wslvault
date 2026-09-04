@@ -156,7 +156,7 @@ export function TwoFactorSetup() {
         {error && (
           <div
             role="alert"
-            className="flex gap-2 items-start rounded-md border border-danger-600/40 bg-danger-600/10 p-3 text-[13px] text-ink"
+            className="flex gap-2 items-start rounded-md border border-danger-600/40 bg-danger-600/10 p-3 text-sm text-ink"
           >
             <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0 text-danger-600" />
             <span>{error}</span>
@@ -165,7 +165,7 @@ export function TwoFactorSetup() {
 
         {stage === 'start' && (
           <>
-            <p className="text-[13px] text-ink-muted">
+            <p className="text-sm text-ink-muted">
               Add a time-based code from an authenticator app — Authy, Google
               Authenticator, 1Password, or any other TOTP app — to an API key.
               Once confirmed, that key needs a code as well as the key itself to
@@ -191,7 +191,7 @@ export function TwoFactorSetup() {
           <>
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">1. Scan this code</h3>
-              <p className="text-[13px] text-ink-muted mb-3">
+              <p className="text-sm text-ink-muted mb-3">
                 Open your authenticator app and scan the QR code, or enter the
                 key below by hand.
               </p>
@@ -208,7 +208,7 @@ export function TwoFactorSetup() {
                 Or enter this key manually
               </label>
               <div className="flex items-center gap-1">
-                <code className="flex-1 font-mono text-[13px] break-all rounded-md bg-surface-2 border border-line px-3 py-2 text-ink">
+                <code className="flex-1 font-mono text-sm break-all rounded-md bg-surface-2 border border-line px-3 py-2 text-ink">
                   {enrolment.secret}
                 </code>
                 <CopyButton value={enrolment.secret} label="Copy setup key" />
@@ -217,10 +217,10 @@ export function TwoFactorSetup() {
 
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">2. Save your recovery codes</h3>
-              <p className="text-[13px] text-ink-muted mb-3">{enrolment.warning}</p>
+              <p className="text-sm text-ink-muted mb-3">{enrolment.warning}</p>
               <div className="grid grid-cols-2 gap-2 rounded-md bg-surface-2 border border-line p-3">
                 {enrolment.recovery_codes.map((c) => (
-                  <code key={c} className="font-mono text-[13px] text-ink">
+                  <code key={c} className="font-mono text-sm text-ink">
                     {c}
                   </code>
                 ))}
@@ -234,7 +234,7 @@ export function TwoFactorSetup() {
                   value={enrolment.recovery_codes.join('\n')}
                   label="Copy recovery codes"
                 />
-                <label className="flex items-center gap-2 text-[13px] text-ink-muted ml-1">
+                <label className="flex items-center gap-2 text-sm text-ink-muted ml-1">
                   <input
                     type="checkbox"
                     checked={savedCodes}
@@ -248,7 +248,7 @@ export function TwoFactorSetup() {
 
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">3. Confirm it works</h3>
-              <p className="text-[13px] text-ink-muted mb-3">
+              <p className="text-sm text-ink-muted mb-3">
                 Enrolment stays inactive until a generated code proves the app is
                 set up, so a half-finished attempt cannot lock you out.
               </p>
@@ -288,7 +288,7 @@ export function TwoFactorSetup() {
                 </Button>
               </div>
               {!savedCodes && code.length === 6 && (
-                <p className="text-[13px] text-ink-muted mt-2">
+                <p className="text-sm text-ink-muted mt-2">
                   Confirm you have saved the recovery codes to continue.
                 </p>
               )}
@@ -303,7 +303,7 @@ export function TwoFactorSetup() {
             </div>
             <div>
               <h3 className="text-sm font-medium text-ink">Authenticator enabled</h3>
-              <p className="text-[13px] text-ink-muted mt-1">
+              <p className="text-sm text-ink-muted mt-1">
                 Signing in with this key now asks for a code. Keep the recovery
                 codes somewhere you can reach without this vault.
               </p>

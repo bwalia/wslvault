@@ -152,7 +152,7 @@ export default function PoliciesPage() {
               <span
                 key={c}
                 className={cn(
-                  'inline-flex px-1.5 py-0.5 rounded text-[11px] font-mono font-medium border',
+                  'inline-flex px-1.5 py-0.5 rounded text-xs font-mono font-medium border',
                   c === 'deny'
                     ? 'bg-danger-50 text-danger-700 border-danger-100 dark:bg-danger-600/15 dark:text-danger-400 dark:border-danger-600/30'
                     : 'bg-surface-2 text-ink-muted border-line',
@@ -350,7 +350,7 @@ export default function PoliciesPage() {
                           type="button"
                           onClick={() => toggleCap(rIdx, cap)}
                           className={cn(
-                            'px-2.5 py-1 text-[11px] rounded border font-mono font-medium transition-colors focus-ring',
+                            'px-2.5 py-1 text-xs rounded border font-mono font-medium transition-colors focus-ring',
                             rule.capabilities.includes(cap)
                               ? cap === 'deny'
                                 ? 'bg-danger-600 text-white border-danger-600'

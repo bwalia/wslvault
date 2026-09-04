@@ -143,7 +143,7 @@ export default function TransitPage() {
       field: 'name',
       label: 'Name',
       sortable: true,
-      render: row => <span className="font-mono text-[13px] text-ink">{row.name}</span>,
+      render: row => <span className="font-mono text-sm text-ink">{row.name}</span>,
     },
     {
       field: 'type',
@@ -208,7 +208,7 @@ export default function TransitPage() {
             <CardHeader>
               <CardTitle>
                 {selectedKey
-                  ? <>Playground — <span className="font-mono text-[13px] font-normal">{selectedKey.name}</span></>
+                  ? <>Playground — <span className="font-mono text-sm font-normal">{selectedKey.name}</span></>
                   : 'Playground'}
               </CardTitle>
             </CardHeader>
@@ -264,7 +264,7 @@ export default function TransitPage() {
                       onChange={e => setOpInput(e.target.value)}
                       rows={4}
                       placeholder="Enter input…"
-                      className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                     />
                   </div>
 
@@ -282,7 +282,7 @@ export default function TransitPage() {
                         onChange={e => setSigInput(e.target.value)}
                         rows={3}
                         placeholder="vault:v1:…"
-                        className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+                        className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                       />
                     </div>
                   )}
@@ -311,7 +311,7 @@ export default function TransitPage() {
                           </span>
                         </div>
                       ) : (
-                        <pre className="text-[13px] font-mono bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all text-ink">
+                        <pre className="text-sm font-mono bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all text-ink">
                           {opResult.ciphertext ?? opResult.plaintext ?? opResult.signature}
                         </pre>
                       )}

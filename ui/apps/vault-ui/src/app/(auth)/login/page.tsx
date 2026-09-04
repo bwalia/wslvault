@@ -197,7 +197,7 @@ export default function LoginPage() {
                   placeholder="wslv_…"
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full pl-9 pr-11 py-3 rounded-xl border border-line-strong bg-surface text-ink font-mono text-[13px] placeholder:text-ink-faint transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
+                  className="w-full pl-9 pr-11 py-3 rounded-xl border border-line-strong bg-surface text-ink font-mono text-sm placeholder:text-ink-faint transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
                   required
                 />
                 <button

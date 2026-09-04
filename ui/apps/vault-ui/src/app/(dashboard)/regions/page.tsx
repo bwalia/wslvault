@@ -30,7 +30,7 @@ interface Region {
 type RegionsResponse = Region[]
 
 function LagCell({ lagMs }: { lagMs: number | null }) {
-  if (lagMs === null) return <span className="font-mono text-[13px] text-ink-faint">—</span>
+  if (lagMs === null) return <span className="font-mono text-sm text-ink-faint">—</span>
   const variant: 'success' | 'warning' | 'danger' =
     lagMs < 100 ? 'success' : lagMs < 1000 ? 'warning' : 'danger'
   return (
@@ -150,7 +150,7 @@ export default function RegionsPage() {
                     <td className="px-4 py-2.5 text-ink">
                       <span className="font-medium">{region.display_name ?? region.id}</span>
                       {region.display_name && region.display_name !== region.id && (
-                        <span className="block font-mono text-[13px] text-ink-faint mt-0.5">
+                        <span className="block font-mono text-sm text-ink-faint mt-0.5">
                           {region.id}
                         </span>
                       )}
@@ -163,12 +163,12 @@ export default function RegionsPage() {
                     </td>
                     <td className="px-4 py-2.5">
                       {region.is_local ? (
-                        <span className="font-mono text-[13px] text-ink-faint">—</span>
+                        <span className="font-mono text-sm text-ink-faint">—</span>
                       ) : (
                         <LagCell lagMs={region.replication_lag_ms} />
                       )}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-[13px] text-ink-faint">
+                    <td className="px-4 py-2.5 font-mono text-sm text-ink-faint">
                       {region.last_seen
                         ? new Date(region.last_seen).toLocaleString('en-GB', {
                             day: '2-digit',
@@ -179,7 +179,7 @@ export default function RegionsPage() {
                           })
                         : '—'}
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-[13px] text-ink-faint">
+                    <td className="px-4 py-2.5 font-mono text-sm text-ink-faint">
                       {region.endpoint ?? '—'}
                     </td>
                   </tr>

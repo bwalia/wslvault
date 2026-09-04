@@ -39,7 +39,7 @@ export function PageHeader({ title, description, actions, guide }: PageHeaderPro
           <div className="flex items-center gap-2">
             {/* Display face and a step up in size: on a page of dense tables the
                 title is the only thing establishing where you are. */}
-            <h1 className="font-display text-[1.6rem] leading-tight font-semibold tracking-tight text-ink">
+            <h1 className="font-display text-[1.75rem] leading-tight font-semibold tracking-tight text-ink">
               {title}
             </h1>
             {guide && (
@@ -48,10 +48,10 @@ export function PageHeader({ title, description, actions, guide }: PageHeaderPro
                 onClick={() => setOpen(o => !o)}
                 aria-expanded={open}
                 className={cn(
-                  'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium transition-colors focus-ring',
+                  'inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors focus-ring',
                   open
                     ? 'bg-brass/15 text-brass-dim dark:text-brass'
-                    : 'text-ink-faint hover:bg-surface-2 hover:text-ink-muted',
+                    : 'text-ink-muted hover:bg-surface-2 hover:text-ink',
                 )}
               >
                 <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />
@@ -64,7 +64,7 @@ export function PageHeader({ title, description, actions, guide }: PageHeaderPro
             )}
           </div>
           {description && (
-            <p className="text-sm text-ink-muted mt-1.5 max-w-2xl leading-relaxed">
+            <p className="text-[0.9375rem] text-ink-muted mt-2 max-w-2xl leading-relaxed">
               {description}
             </p>
           )}
@@ -86,8 +86,8 @@ export function PageHeader({ title, description, actions, guide }: PageHeaderPro
             transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
             className="overflow-hidden"
           >
-            <div className="mt-4 rounded-xl border border-brass/25 bg-brass/[0.06] px-4 py-3.5">
-              <div className="text-[13px] leading-relaxed text-ink-muted [&_strong]:text-ink [&_strong]:font-medium space-y-2">
+            <div className="mt-4 rounded-xl border border-brass/30 bg-brass/[0.07] px-5 py-4">
+              <div className="text-sm leading-[1.65] text-ink-muted [&_strong]:text-ink [&_strong]:font-semibold space-y-2.5">
                 {guide}
               </div>
             </div>

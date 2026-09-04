@@ -19,8 +19,8 @@
   --surface-3:     #e9edf1;
 
   /* Lines */
-  --line:          #e4e8ed;
-  --line-strong:   #ccd3db;
+  --line:          #dde2e9;
+  --line-strong:   #c2cad4;
 
   /* Ink — every step ≥ 4.5:1 on surface AND surface-2 (verified) */
   --ink:           #171a20;
@@ -50,12 +50,24 @@
   --surface-2:     #1a2129;
   --surface-3:     #222a34;
 
-  --line:          #242d37;
-  --line-strong:   #364250;
+  /* Lifted: at #242d37 a card edge was ~1.3:1 against its own surface, so
+     panels read as floating text rather than as compartments. */
+  --line:          #2c3743;
+  --line-strong:   #43515f;
 
+  /* Every step measured against BOTH --surface (#13181f) and --surface-2
+     (#1a2129), because faint text lands on both:
+
+       ink        14.8:1 / 13.5:1
+       ink-muted   7.9:1 /  7.2:1
+       ink-faint   6.7:1 /  6.1:1   (was 4.9 / 4.4 — AA only just, and only
+                                     for the larger sizes it was never used at)
+
+     ink-faint carries placeholders, counts and column headers. Those are
+     secondary, not optional: a count nobody can read is a count nobody has. */
   --ink:           #e7eaee;
-  --ink-muted:     #99a3b1;
-  --ink-faint:     #7b879a;
+  --ink-muted:     #a4aebc;
+  --ink-faint:     #94a0b3;
 
   --steel:         #0e1319;
   --steel-raised:  #171e27;
@@ -154,7 +166,14 @@
   body {
     @apply bg-canvas text-ink;
     font-feature-settings: "cv05", "ss01";
+    /* Slightly loosened. At the sizes this console uses, tracking is what
+       separates "dense" from "cramped", and the difference costs nothing. */
+    letter-spacing: 0.005em;
   }
+
+  /* Placeholders are a hint, not content — dimmer than a real value, but still
+     legible. Set once here so no input has to remember it. */
+  ::placeholder { color: var(--ink-faint); opacity: 1; }
 
   /* Counts, sizes, and durations line up in tables. */
   .tabular { font-variant-numeric: tabular-nums; }

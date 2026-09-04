@@ -70,7 +70,7 @@ function OneTimeKeyReveal({ value }: { value: string }) {
       </p>
       <div className="flex items-start gap-2">
         <pre
-          className="flex-1 font-mono text-[13px] text-ink break-all whitespace-pre-wrap select-all leading-relaxed"
+          className="flex-1 font-mono text-sm text-ink break-all whitespace-pre-wrap select-all leading-relaxed"
           aria-label="One-time API key"
         >
           {value}
@@ -214,15 +214,15 @@ export default function SettingsPage() {
           <dl className="space-y-3">
             <div className="flex items-center justify-between gap-4">
               <dt className="text-sm text-ink-muted">Tenant ID</dt>
-              <dd className="font-mono text-[13px] text-ink">{tenantId ?? '—'}</dd>
+              <dd className="font-mono text-sm text-ink">{tenantId ?? '—'}</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
               <dt className="text-sm text-ink-muted">Policies</dt>
-              <dd className="font-mono text-[13px] text-ink">{policies.join(', ') || '—'}</dd>
+              <dd className="font-mono text-sm text-ink">{policies.join(', ') || '—'}</dd>
             </div>
             <div className="flex items-center justify-between gap-4">
               <dt className="text-sm text-ink-muted">Expires</dt>
-              <dd className="font-mono text-[13px] text-ink tabular">
+              <dd className="font-mono text-sm text-ink tabular">
                 {expiresAt ? formatDateTime(new Date(expiresAt)) : '—'}
               </dd>
             </div>
@@ -268,7 +268,7 @@ export default function SettingsPage() {
               <div className="space-y-3">
                 <div className="space-y-1">
                   <p className="text-xs font-medium text-ink-muted uppercase tracking-wide">Tenant ID</p>
-                  <p className="font-mono text-[13px] text-ink">{bootstrapResult.tenant_id}</p>
+                  <p className="font-mono text-sm text-ink">{bootstrapResult.tenant_id}</p>
                 </div>
                 <div className="space-y-1">
                   <p className="text-xs font-medium text-ink-muted uppercase tracking-wide">API Key</p>

@@ -58,7 +58,7 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
             className="w-1.5 h-1.5 rounded-full bg-accent-500"
             aria-hidden="true"
           />
-          <span className="text-[13px] text-ink-muted">
+          <span className="text-sm text-ink-muted">
             <span className="text-ink-faint">Vault</span>{' '}
             <span className="font-medium text-ink">{tenantLabel}</span>
           </span>
@@ -122,7 +122,7 @@ export default function AppBar({ onMenuClick }: { onMenuClick(): void }) {
           <div className="absolute right-0 mt-1 w-60 bg-surface rounded-xl shadow-2xl border border-line py-1 z-50">
             <div className="px-3 py-2 border-b border-line">
               <p className="text-xs text-ink-faint">Tenant</p>
-              <p className="text-[13px] font-mono truncate text-ink" title={tenantId ?? undefined}>
+              <p className="text-sm font-mono truncate text-ink" title={tenantId ?? undefined}>
                 {tenantId ?? '—'}
               </p>
             </div>

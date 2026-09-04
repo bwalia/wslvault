@@ -314,7 +314,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
           lede="This is shown once and can never be shown again. Copy it somewhere safe now — a password manager is ideal."
         >
           <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2 mb-3">
-            <code className="flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed">
+            <code className="flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed">
               {accepted.api_key}
             </code>
             <CopyButton value={accepted.api_key} label="access key" />
@@ -396,7 +396,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
                 In your app, choose to enter a setup key by hand, then type this in:
               </p>
               <div className="flex items-start gap-2">
-                <code className="flex-1 font-mono text-[13px] text-ink break-all select-all">
+                <code className="flex-1 font-mono text-sm text-ink break-all select-all">
                   {enrolment.secret}
                 </code>
                 <CopyButton value={enrolment.secret} label="setup key" />

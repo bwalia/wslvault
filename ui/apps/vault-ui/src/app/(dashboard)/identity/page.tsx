@@ -531,7 +531,7 @@ function KeyRevealModal({
         <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
           <code
             className={cn(
-              'flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed',
+              'flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed',
             )}
           >
             {keyValue}
@@ -555,7 +555,7 @@ function KeyRevealModal({
           <div className="pt-1 space-y-2">
             <p className="text-sm font-medium text-ink">Send the holder both of these</p>
             <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
-              <code className="flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed">
+              <code className="flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed">
                 {enrolmentUrl}
               </code>
               <button

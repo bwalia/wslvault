@@ -65,7 +65,7 @@ export default function AuditPage() {
       label: 'Action',
       sortable: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink">{row.action}</span>
+        <span className="font-mono text-sm text-ink">{row.action}</span>
       ),
     },
     {
@@ -73,14 +73,14 @@ export default function AuditPage() {
       label: 'Principal',
       sortable: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted">{row.principal ?? '—'}</span>
+        <span className="font-mono text-sm text-ink-muted">{row.principal ?? '—'}</span>
       ),
     },
     {
       field: 'resource',
       label: 'Resource',
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted truncate max-w-xs block">
+        <span className="font-mono text-sm text-ink-muted truncate max-w-xs block">
           {row.resource}
         </span>
       ),
@@ -96,7 +96,7 @@ export default function AuditPage() {
       sortable: true,
       render: row => (
         <span
-          className="font-mono text-[13px] tabular text-ink-faint"
+          className="font-mono text-sm tabular text-ink-faint"
           title={formatDateTime(row.timestamp)}
         >
           {formatRelativeTime(row.timestamp)}
@@ -302,7 +302,7 @@ function DetailRow({
         {children ?? (
           <span
             className={cn(
-              'text-[13px] text-ink break-all',
+              'text-sm text-ink break-all',
               mono && 'font-mono',
             )}
           >
