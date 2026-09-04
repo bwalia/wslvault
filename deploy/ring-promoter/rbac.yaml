@@ -1,0 +1,84 @@
+# RBAC so Ring Promoter's k8sjob runner can helm-deploy WSLVault on k3s1.
+#
+# Apply against k3s1 (once):
+#   export KUBECONFIG=~/.kube/k3s1.yaml
+#   kubectl apply -f deploy/ring-promoter/rbac.yaml
+#
+# Assumes the shared platform already exists (owned by ring-promoter /
+# diy-tax-return-uk, not this file):
+#   * namespace ring-exec
+#   * ServiceAccount ring-exec/ring-deploy-job
+#
+# This file adds namespaced helm-deploy rights in the two HA region
+# namespaces (wslvault = region-a, wslvault-b = region-b). Namespaces are
+# NOT created here — they already run the live releases.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rp-deploy-wslvault
+  labels:
+    app.kubernetes.io/part-of: wslvault
+    app.kubernetes.io/managed-by: ring-promoter
+rules:
+  - apiGroups: [""]
+    resources:
+      - services
+      - configmaps
+      - secrets
+      - serviceaccounts
+      - pods
+      - persistentvolumeclaims
+      - events
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # edgeIngress Middleware (traefik-edge)
+  - apiGroups: ["traefik.io"]
+    resources: ["middlewares"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rp-deploy-wslvault
+  namespace: wslvault
+  labels:
+    app.kubernetes.io/part-of: wslvault
+subjects:
+  - kind: ServiceAccount
+    name: ring-deploy-job
+    namespace: ring-exec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rp-deploy-wslvault
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rp-deploy-wslvault
+  namespace: wslvault-b
+  labels:
+    app.kubernetes.io/part-of: wslvault
+subjects:
+  - kind: ServiceAccount
+    name: ring-deploy-job
+    namespace: ring-exec
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rp-deploy-wslvault
