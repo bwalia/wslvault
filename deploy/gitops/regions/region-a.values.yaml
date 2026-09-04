@@ -61,7 +61,10 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: v1.0.8
+    # v1.0.11: client clock-skew login fix (session TTL from the token's own
+    # iat/exp against the local clock). Ahead of the other services, which stay
+    # at global.imageTag until a full deploy of the newer main.
+    tag: v1.0.11
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
