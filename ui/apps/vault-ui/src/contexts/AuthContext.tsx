@@ -68,6 +68,36 @@ function clearStoredSession(): void {
 }
 
 /** Read a session back from storage, or null if absent/expired/corrupt. */
+/**
+ * The token's own lifetime in milliseconds, from its `iat`/`exp` claims.
+ *
+ * Both are stamped by the same server clock, so their difference is the true
+ * TTL no matter how far this device's clock sits from the server's. Callers
+ * start the countdown at the moment of receipt, so session validity is measured
+ * entirely in local time — immune to clock skew between browser and server.
+ * Comparing the server's *absolute* `expires_at` to `Date.now()` was not: a
+ * browser clock running ahead of the server made a freshly issued token look
+ * already expired, and the dashboard guard bounced the user back to /login.
+ *
+ * Returns null for a malformed token, so the caller can fall back to the
+ * absolute expiry rather than fail login outright.
+ */
+function jwtLifetimeMs(token: string): number | null {
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    let b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    b64 += '='.repeat((4 - (b64.length % 4)) % 4)
+    const claims = JSON.parse(atob(b64)) as { iat?: unknown; exp?: unknown }
+    const iat = typeof claims.iat === 'number' ? claims.iat : null
+    const exp = typeof claims.exp === 'number' ? claims.exp : null
+    if (iat !== null && exp !== null && exp > iat) return (exp - iat) * 1000
+  } catch {
+    /* malformed payload — fall back to the absolute expiry */
+  }
+  return null
+}
+
 function readStoredSession(): AuthState | null {
   const token = safeStorage.get('vault_token')
   if (!token) return null
@@ -152,7 +182,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new ApiError('Malformed response from identity-service', 502)
       }
 
-      const expiresAt = new Date(data.expires_at).getTime()
+      // Count the session down from the token's own lifetime against THIS
+      // device's clock, not the server's absolute expiry against our clock —
+      // otherwise a browser clock ahead of the server makes a fresh token look
+      // expired and the dashboard guard bounces the user back to /login. See
+      // jwtLifetimeMs. Falls back to the absolute expiry for a malformed token.
+      const lifetimeMs = jwtLifetimeMs(data.token)
+      const expiresAt =
+        lifetimeMs !== null ? Date.now() + lifetimeMs : new Date(data.expires_at).getTime()
       if (!Number.isFinite(expiresAt)) {
         throw new ApiError('Identity-service returned an invalid expiry', 502)
       }
