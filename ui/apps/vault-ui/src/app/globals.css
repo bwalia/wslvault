@@ -33,6 +33,12 @@
   --steel-line:    #29323e;
   --steel-ink:     #b7c0cc;
   --steel-ink-dim: #828da0;
+
+  /* Brass: the lock on the door. One warm accent against all that navy, used
+     only for the vault mark and the locked/sealed state — if it appeared
+     anywhere else it would stop reading as "this is secured". */
+  --brass:         #c9a227;
+  --brass-dim:     #8a6f1a;
 }
 
 .dark {
@@ -53,6 +59,9 @@
   --steel-line:    #232c37;
   --steel-ink:     #b7c0cc;
   --steel-ink-dim: #828da0;
+
+  --brass:         #e3bd45;
+  --brass-dim:     #a98c22;
 }
 
 @theme inline {
@@ -70,22 +79,37 @@
   --color-steel-line:    var(--steel-line);
   --color-steel-ink:     var(--steel-ink);
   --color-steel-ink-dim: var(--steel-ink-dim);
+  --color-brass:         var(--brass);
+  --color-brass-dim:     var(--brass-dim);
 }
 
 @theme {
-  /* Primary — custom deep teal ("cryptographic" green-cyan, not stock indigo).
-     600 on white = 5.0:1 contrast; 300 on dark surfaces = 7.2:1. */
-  --color-primary-50:  #eefaf8;
-  --color-primary-100: #d5f1ec;
-  --color-primary-200: #aee3dc;
-  --color-primary-300: #79cdc4;
-  --color-primary-400: #43b0a7;
-  --color-primary-500: #26948c;
-  --color-primary-600: #157a74;
-  --color-primary-700: #12615d;
-  --color-primary-800: #114e4b;
-  --color-primary-900: #10403e;
-  --color-primary-950: #052a29;
+  /* Primary — "vault navy". The colour of a safe door, not a stock indigo.
+     600 on white = 4.8:1; 300 on dark surfaces = 7.6:1. Verified, not guessed. */
+  --color-primary-50:  #f0f5fa;
+  --color-primary-100: #dde9f4;
+  --color-primary-200: #c0d6ea;
+  --color-primary-300: #94badb;
+  --color-primary-400: #6199c8;
+  --color-primary-500: #3f7cb2;
+  --color-primary-600: #2e6296;
+  --color-primary-700: #27507a;
+  --color-primary-800: #1e3a5f;
+  --color-primary-900: #1b3252;
+  --color-primary-950: #122237;
+
+  /* Accent — "unlocked green". Reserved for the moment something opens or
+     succeeds, so it keeps its meaning; never used as decoration. */
+  --color-accent-50:  #ecfdf5;
+  --color-accent-100: #d1fae5;
+  --color-accent-200: #a7f3d0;
+  --color-accent-300: #6ee7b7;
+  --color-accent-400: #34d399;
+  --color-accent-500: #10b981;
+  --color-accent-600: #059669;
+  --color-accent-700: #047857;
+  --color-accent-800: #065f46;
+  --color-accent-900: #064e3b;
 
   /* Status — functional, reserved for state (never decoration). */
   --color-success-50:  #ecfdf3;
@@ -114,7 +138,10 @@
   --color-accent-600: #0d8544;
   --color-accent-700: #0b6a38;
 
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Headings and UI chrome. Applied via `font-display`, not globally — body
+     copy stays on the humanist face, which is more comfortable at 14-16px. */
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 

@@ -4,6 +4,9 @@ import { Lock, Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
 import BuildStamp from '@/components/BuildStamp'
+import { VaultDoor } from '@/components/VaultDoor'
+import { motion } from 'framer-motion'
+import { panel, staggerItem, stagger } from '@/lib/motion'
 
 export default function LoginPage() {
   const { login, verifyMfa } = useAuth()
@@ -76,33 +79,59 @@ export default function LoginPage() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-canvas">
-      {/* Left panel — vault steel, the brand moment */}
-      <div className="hidden lg:flex flex-col justify-between bg-steel p-10">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-primary-600 flex items-center justify-center">
-            <Lock className="w-4.5 h-4.5 text-white" aria-hidden="true" />
+      {/* Left panel — the vault itself. Hidden below lg: on a phone this is
+          320px of decoration between the user and the form they came for. */}
+      <div className="hidden lg:flex flex-col justify-between bg-steel p-10 relative overflow-hidden">
+        {/* Concentric rings, barely visible — depth without a texture file. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-32 top-1/2 -translate-y-1/2 w-[36rem] h-[36rem] rounded-full border border-steel-line opacity-40"
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-20 top-1/2 -translate-y-1/2 w-[26rem] h-[26rem] rounded-full border border-steel-line opacity-30"
+        />
+
+        <div className="flex items-center gap-3 relative">
+          <div className="w-9 h-9 rounded-lg bg-primary-700 flex items-center justify-center ring-1 ring-brass/30">
+            <Lock className="w-4.5 h-4.5 text-brass" aria-hidden="true" />
           </div>
-          <span className="text-lg font-semibold tracking-tight text-white">
-            WSL<span className="text-primary-300">Vault</span>
+          <span className="font-display text-lg font-semibold tracking-tight text-white">
+            WSL<span className="text-brass">Vault</span>
           </span>
         </div>
 
-        <div>
-          <p className="font-mono text-sm text-steel-ink-dim mb-3">
-            $ wslvault kv get prod/db/creds
-          </p>
-          <h1 className="text-3xl font-semibold tracking-tight text-white leading-tight max-w-md">
-            Secrets, encrypted per tenant.
-            <br />
-            Rotated on schedule.
-          </h1>
-          <p className="mt-4 text-sm text-steel-ink max-w-sm leading-relaxed">
-            Envelope encryption with a per-tenant key hierarchy, automated
-            rotation, and a full audit trail — replicated across regions.
-          </p>
-        </div>
+        <motion.div
+          variants={stagger}
+          initial="hidden"
+          animate="visible"
+          className="relative"
+        >
+          <motion.div variants={staggerItem} className="mb-8">
+            <VaultDoor className="w-28 h-28" />
+          </motion.div>
 
-        <div>
+          <motion.h1
+            variants={staggerItem}
+            className="font-display text-[2.5rem] leading-[1.1] font-semibold tracking-tight text-white max-w-md text-balance"
+          >
+            Your secrets,
+            <br />
+            behind a door
+            <br />
+            <span className="text-brass">only you open.</span>
+          </motion.h1>
+
+          <motion.p
+            variants={staggerItem}
+            className="mt-5 text-[15px] text-steel-ink max-w-sm leading-relaxed"
+          >
+            Every tenant gets its own key. Nothing is stored in the clear, and
+            every read is written to an audit trail you can inspect.
+          </motion.p>
+        </motion.div>
+
+        <div className="relative">
           <p className="font-mono text-xs text-steel-ink-dim">
             AES-256-GCM · per-tenant KEK · multi-region
           </p>
@@ -112,7 +141,12 @@ export default function LoginPage() {
 
       {/* Right panel — the form */}
       <div className="flex items-center justify-center p-6">
-        <div className="w-full max-w-sm">
+        <motion.div
+          variants={panel}
+          initial="hidden"
+          animate="visible"
+          className="w-full max-w-sm"
+        >
           {/* Compact logo for small screens */}
           <div className="lg:hidden flex items-center gap-3 mb-8">
             <div className="w-9 h-9 rounded-lg bg-primary-600 flex items-center justify-center">
@@ -245,7 +279,7 @@ export default function LoginPage() {
             </Button>
           </form>
           )}
-        </div>
+        </motion.div>
       </div>
     </div>
   )
