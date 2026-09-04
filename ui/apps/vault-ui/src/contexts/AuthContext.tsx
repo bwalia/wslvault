@@ -40,6 +40,9 @@ interface AuthContextType extends AuthState {
   login(apiKey: string): Promise<MfaChallenge | null>
   /** Complete a login by answering its challenge with a code. */
   verifyMfa(challenge: string, code: string): Promise<void>
+  /** True from the moment a sign-in succeeds until the dashboard is reached.
+   *  The auth layout renders the vault-opening sequence while it holds. */
+  unlocking: boolean
   logout(): void
   isAuthenticated: boolean
 }
@@ -53,6 +56,11 @@ const STORAGE_KEYS = [
   'vault_expires_at',
   'vault_lease_id',
 ] as const
+
+/** How long the vault-opening sequence runs before the dashboard replaces it.
+ *  Must stay in step with VaultOpening's choreography — the confirmation lands
+ *  at ~1.15s, and this leaves a beat to read it. */
+const UNLOCK_ANIMATION_MS = 1900
 
 const EMPTY_STATE: AuthState = {
   token: null,
@@ -149,6 +157,7 @@ function isChallenge(body: unknown): body is ChallengeResponse {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [isMounted, setIsMounted] = useState(false)
+  const [unlocking, setUnlocking] = useState(false)
   const [state, setState] = useState<AuthState>(EMPTY_STATE)
 
   // Restore on mount. This runs before any error boundary exists, so every
@@ -218,7 +227,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         expiresAt,
         leaseId,
       })
-      router.push('/dashboard')
+
+      // Hold on the opening sequence before navigating. The session is already
+      // live at this point, so nothing is being delayed except the view — and
+      // the pause covers the dashboard's first fetch, which would otherwise be
+      // a screen of skeletons.
+      //
+      // Skipped entirely under reduced motion: someone who has asked for less
+      // motion should not also be asked to wait for it.
+      const wantsMotion =
+        typeof window !== 'undefined' &&
+        !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+      if (!wantsMotion) {
+        router.push('/dashboard')
+        return
+      }
+
+      setUnlocking(true)
+      window.setTimeout(() => router.push('/dashboard'), UNLOCK_ANIMATION_MS)
     },
     [router],
   )
@@ -295,8 +322,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `logout` (e.g. useAsyncAction) gets a fresh identity each time, defeating
   // its own memoization.
   const value = useMemo<AuthContextType>(
-    () => ({ ...state, login, verifyMfa, logout, isAuthenticated }),
-    [state, login, verifyMfa, logout, isAuthenticated],
+    () => ({ ...state, login, verifyMfa, logout, isAuthenticated, unlocking }),
+    [state, login, verifyMfa, logout, isAuthenticated, unlocking],
   )
 
   if (!isMounted) return null

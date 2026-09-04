@@ -1,12 +1,11 @@
 'use client'
 import { useState } from 'react'
-import { Lock, Eye, EyeOff, AlertCircle, ShieldCheck } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle, ShieldCheck, KeyRound } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/Button'
-import BuildStamp from '@/components/BuildStamp'
-import { VaultDoor } from '@/components/VaultDoor'
 import { motion } from 'framer-motion'
-import { panel, staggerItem, stagger } from '@/lib/motion'
+import { panel } from '@/lib/motion'
+import { VaultDoor } from '@/components/VaultDoor'
 
 export default function LoginPage() {
   const { login, verifyMfa } = useAuth()
@@ -78,92 +77,28 @@ export default function LoginPage() {
   const needsEnrolment = error.includes('mfa/totp/enroll')
 
   return (
-    <div className="min-h-screen grid lg:grid-cols-2 bg-canvas">
-      {/* Left panel — the vault itself. Hidden below lg: on a phone this is
-          320px of decoration between the user and the form they came for. */}
-      <div className="hidden lg:flex flex-col justify-between bg-steel p-10 relative overflow-hidden">
-        {/* Concentric rings, barely visible — depth without a texture file. */}
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-32 top-1/2 -translate-y-1/2 w-[36rem] h-[36rem] rounded-full border border-steel-line opacity-40"
-        />
-        <div
-          aria-hidden="true"
-          className="pointer-events-none absolute -right-20 top-1/2 -translate-y-1/2 w-[26rem] h-[26rem] rounded-full border border-steel-line opacity-30"
-        />
-
-        <div className="flex items-center gap-3 relative">
-          <div className="w-9 h-9 rounded-lg bg-primary-700 flex items-center justify-center ring-1 ring-brass/30">
-            <Lock className="w-4.5 h-4.5 text-brass" aria-hidden="true" />
-          </div>
-          <span className="font-display text-lg font-semibold tracking-tight text-white">
-            WSL<span className="text-brass">Vault</span>
-          </span>
-        </div>
-
-        <motion.div
-          variants={stagger}
-          initial="hidden"
-          animate="visible"
-          className="relative"
-        >
-          <motion.div variants={staggerItem} className="mb-8">
-            <VaultDoor className="w-28 h-28" />
-          </motion.div>
-
-          <motion.h1
-            variants={staggerItem}
-            className="font-display text-[2.5rem] leading-[1.1] font-semibold tracking-tight text-white max-w-md text-balance"
-          >
-            Your secrets,
-            <br />
-            behind a door
-            <br />
-            <span className="text-brass">only you open.</span>
-          </motion.h1>
-
-          <motion.p
-            variants={staggerItem}
-            className="mt-5 text-[15px] text-steel-ink max-w-sm leading-relaxed"
-          >
-            Every tenant gets its own key. Nothing is stored in the clear, and
-            every read is written to an audit trail you can inspect.
-          </motion.p>
-        </motion.div>
-
-        <div className="relative">
-          <p className="font-mono text-xs text-steel-ink-dim">
-            AES-256-GCM · per-tenant KEK · multi-region
-          </p>
-          <BuildStamp className="mt-1.5 text-xs" />
-        </div>
-      </div>
-
-      {/* Right panel — the form */}
-      <div className="flex items-center justify-center p-6">
-        <motion.div
-          variants={panel}
-          initial="hidden"
-          animate="visible"
-          className="w-full max-w-sm"
-        >
-          {/* Compact logo for small screens */}
+    <motion.div
+      variants={panel}
+      initial="hidden"
+      animate="visible"
+      className="w-full max-w-sm"
+    >
+      {/* Below lg the vault panel is hidden, so this is the only mark the
+              user sees — the real door, small, rather than a generic padlock. */}
           <div className="lg:hidden flex items-center gap-3 mb-8">
-            <div className="w-9 h-9 rounded-lg bg-primary-600 flex items-center justify-center">
-              <Lock className="w-4.5 h-4.5 text-white" aria-hidden="true" />
-            </div>
-            <span className="text-lg font-semibold tracking-tight text-ink">
-              WSL<span className="text-primary-600">Vault</span>
+            <VaultDoor className="w-11 h-11" />
+            <span className="font-display text-lg font-semibold tracking-tight text-ink">
+              WSL<span className="text-brass-dim dark:text-brass">Vault</span>
             </span>
           </div>
 
-          <h2 className="text-2xl font-semibold tracking-tight text-ink">
-            {challenge ? 'Two-factor authentication' : 'Sign in'}
+          <h2 className="font-display text-[1.75rem] font-semibold tracking-tight text-ink">
+            {challenge ? 'One more step' : 'Sign in'}
           </h2>
-          <p className="text-sm text-ink-muted mt-1 mb-6">
+          <p className="text-[15px] text-ink-muted mt-1.5 mb-7 leading-relaxed">
             {challenge
-              ? 'Enter the 6-digit code from your authenticator app.'
-              : 'Use an API key issued by your vault operator.'}
+              ? 'Open your authenticator app and enter the 6-digit number it is showing.'
+              : 'Use the API key your vault operator gave you.'}
           </p>
 
           {error && (
@@ -220,7 +155,7 @@ export default function LoginPage() {
                     // field on this step; not autofocusing costs every user a click.
                     autoFocus
                     spellCheck={false}
-                    className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-line-strong bg-surface text-ink font-mono text-base tracking-[0.3em] placeholder:tracking-normal placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                    className="w-full pl-10 pr-3 py-3.5 rounded-xl border border-line-strong bg-surface text-ink font-mono text-xl tracking-[0.4em] text-center placeholder:tracking-[0.2em] placeholder:text-ink-faint transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
                     required
                   />
                 </div>
@@ -250,6 +185,10 @@ export default function LoginPage() {
                 API key
               </label>
               <div className="relative">
+                <KeyRound
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
+                  aria-hidden="true"
+                />
                 <input
                   id="api-key"
                   type={show ? 'text' : 'password'}
@@ -258,13 +197,13 @@ export default function LoginPage() {
                   placeholder="wslv_…"
                   autoComplete="off"
                   spellCheck={false}
-                  className="w-full px-3 py-2.5 pr-10 rounded-lg border border-line-strong bg-surface text-ink font-mono text-[13px] placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                  className="w-full pl-9 pr-11 py-3 rounded-xl border border-line-strong bg-surface text-ink font-mono text-[13px] placeholder:text-ink-faint transition-colors duration-200 focus:outline-none focus:border-brass focus:ring-4 focus:ring-brass/15"
                   required
                 />
                 <button
                   type="button"
                   onClick={() => setShow(s => !s)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink-muted focus-ring rounded"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 p-2.5 text-ink-faint hover:text-ink transition-colors focus-ring rounded-lg"
                   aria-label={show ? 'Hide API key' : 'Show API key'}
                 >
                   {show ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -279,8 +218,6 @@ export default function LoginPage() {
             </Button>
           </form>
           )}
-        </motion.div>
-      </div>
-    </div>
+    </motion.div>
   )
 }
