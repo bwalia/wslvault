@@ -81,7 +81,7 @@ export default function LoginPage() {
       variants={panel}
       initial="hidden"
       animate="visible"
-      className="w-full max-w-sm"
+      className="w-full max-w-md"
     >
       {/* Below lg the vault panel is hidden, so this is the only mark the
               user sees — the real door, small, rather than a generic padlock. */}

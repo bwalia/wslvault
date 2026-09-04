@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/Button'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { api } from '@/lib/api'
 import { errorMessage, mutate } from '@/lib/fetcher'
 
@@ -123,14 +124,14 @@ function StepShell({
         {Array.from({ length: total }, (_, i) => (
           <span
             key={i}
-            className={`h-1.5 flex-1 rounded-full ${i < n ? 'bg-primary-600' : 'bg-surface-3'}`}
+            className={`h-1.5 flex-1 rounded-full ${i < n ? 'bg-brass' : 'bg-surface-3'}`}
           />
         ))}
       </div>
 
       <div className="flex items-center gap-2.5 mb-2">
-        <Icon className="w-5 h-5 text-primary-600 shrink-0" aria-hidden="true" />
-        <h1 className="text-2xl font-semibold tracking-tight text-ink text-balance">{title}</h1>
+        <Icon className="w-5 h-5 text-brass-dim dark:text-brass shrink-0" aria-hidden="true" />
+        <h1 className="font-display text-2xl font-semibold tracking-tight text-ink text-balance">{title}</h1>
       </div>
       {lede && <p className="text-base leading-relaxed text-ink-muted mb-6 max-w-prose">{lede}</p>}
       {children}
@@ -245,7 +246,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
         <div className="flex items-start gap-3 p-4 rounded-xl border border-danger-100 bg-danger-50 dark:bg-danger-600/10 dark:border-danger-600/30">
           <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 text-danger-700 dark:text-danger-400" aria-hidden="true" />
           <div>
-            <h1 className="font-semibold text-ink mb-1">This link cannot be used</h1>
+            <h1 className="font-display text-lg font-semibold text-ink mb-1">This link cannot be used</h1>
             <p className="text-sm text-ink-muted leading-relaxed">{fatal}</p>
           </div>
         </div>
@@ -256,7 +257,19 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
   if (!preview) {
     return (
       <Centred>
-        <p className="text-ink-muted">Checking your invitation…</p>
+        <div aria-live="polite">
+          <p className="sr-only">Checking your invitation</p>
+          <div className="flex items-center gap-2 mb-6" aria-hidden="true">
+            {Array.from({ length: total }, (_, i) => (
+              <Skeleton key={i} className="h-1.5 flex-1 rounded-full" />
+            ))}
+          </div>
+          <Skeleton className="h-7 w-2/3 mb-3" />
+          <Skeleton className="h-5 w-full mb-1.5" />
+          <Skeleton className="h-5 w-4/5 mb-8" />
+          <Skeleton className="h-11 w-full rounded-lg" />
+          <p className="mt-6 text-sm text-ink-muted text-center">Checking your invitation…</p>
+        </div>
       </Centred>
     )
   }
@@ -283,15 +296,15 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
         >
           <ul className="space-y-3 mb-8 text-base text-ink-muted">
             <li className="flex gap-3">
-              <KeyRound className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <KeyRound className="w-5 h-5 text-brass-dim dark:text-brass shrink-0 mt-0.5" aria-hidden="true" />
               We will give you an access key — your password for this system.
             </li>
             <li className="flex gap-3">
-              <Smartphone className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <Smartphone className="w-5 h-5 text-brass-dim dark:text-brass shrink-0 mt-0.5" aria-hidden="true" />
               Then you will connect an app on your phone that produces a 6-digit code.
             </li>
             <li className="flex gap-3">
-              <LifeBuoy className="w-5 h-5 text-primary-600 shrink-0 mt-0.5" aria-hidden="true" />
+              <LifeBuoy className="w-5 h-5 text-brass-dim dark:text-brass shrink-0 mt-0.5" aria-hidden="true" />
               Finally we will give you backup codes, in case you lose the phone.
             </li>
           </ul>
@@ -299,7 +312,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
             Get started
             <ArrowRight className="w-4 h-4" />
           </Button>
-          <p className="mt-3 text-xs text-ink-faint text-center">
+          <p className="mt-3 text-sm text-ink-muted text-center">
             This link works once. Finish in one sitting if you can.
           </p>
         </StepShell>
@@ -325,7 +338,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
               type="checkbox"
               checked={savedKey}
               onChange={e => setSavedKey(e.target.checked)}
-              className="mt-0.5 w-4 h-4 rounded border-line-strong text-primary-600 focus-ring"
+              className="mt-0.5 w-4 h-4 rounded border-line-strong accent-brass focus-ring"
             />
             <span className="text-sm text-ink-muted leading-snug">
               I have saved my access key somewhere safe.
@@ -449,7 +462,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
               type="checkbox"
               checked={savedCodes}
               onChange={e => setSavedCodes(e.target.checked)}
-              className="mt-0.5 w-4 h-4 rounded border-line-strong text-primary-600 focus-ring"
+              className="mt-0.5 w-4 h-4 rounded border-line-strong accent-brass focus-ring"
             />
             <span className="text-sm text-ink-muted leading-snug">
               I have saved my backup codes. I understand they will not be shown again.
@@ -494,7 +507,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
               aria-label="Six-digit code from your authenticator app"
               className="w-full px-3 py-3 mb-2 rounded-lg border border-line-strong bg-surface text-ink font-mono text-lg tracking-[0.3em] text-center placeholder:tracking-normal placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
             />
-            <p className="text-xs text-ink-faint mb-6">
+            <p className="text-sm text-ink-muted mb-6 leading-relaxed">
               The number changes every 30 seconds — that is normal. If it is rejected, wait for a
               fresh one and type that.
             </p>
@@ -521,7 +534,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
         >
           <a
             href="/login"
-            className="inline-flex items-center justify-center gap-2 w-full px-4 py-3 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-medium transition-colors focus-ring"
+            className="inline-flex items-center justify-center gap-2 w-full h-11 px-5 rounded-lg bg-brass hover:bg-brass/90 active:bg-brass-dim text-steel font-semibold shadow-sm shadow-brass/20 transition-colors focus-ring"
           >
             Go to sign in
             <ArrowRight className="w-4 h-4" />
@@ -530,7 +543,7 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
       )}
 
       {stepIndex > 0 && step !== 'done' && (
-        <p className="mt-8 text-xs text-ink-faint text-center">
+        <p className="mt-8 text-sm text-ink-muted text-center tabular-nums">
           Step {stepIndex} of {total}
         </p>
       )}
@@ -538,20 +551,26 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
   )
 }
 
+/**
+ * The wizard's column.
+ *
+ * The wordmark and the page background come from the layout now, which is what
+ * makes this screen and the sign-in screen read as one product. On a phone the
+ * steel panel is hidden, so the mark is repeated here — otherwise a recipient
+ * on a phone gets a form with no indication of what it belongs to.
+ */
 function Centred({ children }: { children: React.ReactNode }) {
   return (
-    <main className="min-h-screen bg-canvas flex items-center justify-center p-6">
-      <div className="w-full max-w-md">
-        <div className="flex items-center gap-3 mb-8">
-          <div className="w-9 h-9 rounded-lg bg-primary-600 flex items-center justify-center">
-            <Lock className="w-4.5 h-4.5 text-white" aria-hidden="true" />
-          </div>
-          <span className="text-lg font-semibold tracking-tight text-ink">
-            WSL<span className="text-primary-600">Vault</span>
-          </span>
+    <div className="w-full max-w-lg">
+      <div className="flex lg:hidden items-center gap-3 mb-8">
+        <div className="w-9 h-9 rounded-lg bg-primary-700 ring-1 ring-brass/30 flex items-center justify-center">
+          <Lock className="w-[18px] h-[18px] text-brass" aria-hidden="true" />
         </div>
-        {children}
+        <span className="font-display text-lg font-semibold tracking-tight text-ink">
+          WSL<span className="text-brass">Vault</span>
+        </span>
       </div>
-    </main>
+      {children}
+    </div>
   )
 }
