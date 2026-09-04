@@ -5,10 +5,9 @@
 //! hashes for the same reason API keys are: neither table should be a
 //! credential store.
 
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
-use crate::pool::DbPool;
 use wslvault_core::VaultError;
 
 /// A TOTP enrolment.
@@ -35,13 +34,16 @@ impl TotpEnrolment {
     }
 }
 
-pub async fn find(pool: &DbPool, api_key_id: Uuid) -> Result<Option<TotpEnrolment>, VaultError> {
+pub async fn find(
+    conn: &mut PgConnection,
+    api_key_id: Uuid,
+) -> Result<Option<TotpEnrolment>, VaultError> {
     let row = sqlx::query(
         "SELECT api_key_id, tenant_id, wrapped_secret, last_used_step, confirmed_at
          FROM shared.mfa_totp WHERE api_key_id = $1",
     )
     .bind(api_key_id)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("mfa lookup failed: {e}"),
@@ -62,7 +64,7 @@ pub async fn find(pool: &DbPool, api_key_id: Uuid) -> Result<Option<TotpEnrolmen
 /// holding the API key silently swap out the second factor, which defeats the
 /// point of having one. Removing MFA is a deliberate act via [`delete`].
 pub async fn upsert_pending(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     api_key_id: Uuid,
     tenant_id: Uuid,
     wrapped_secret: &str,
@@ -79,7 +81,7 @@ pub async fn upsert_pending(
     .bind(api_key_id)
     .bind(tenant_id)
     .bind(wrapped_secret)
-    .execute(pool.inner())
+    .execute(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("could not start MFA enrolment: {e}"),
@@ -114,15 +116,11 @@ pub async fn upsert_pending(
 ///
 /// Setting `mfa_required` true can never violate `superuser_requires_mfa`
 /// (025_superuser.sql) — that constraint only forbids the false case.
-pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), VaultError> {
-    let mut tx = pool
-        .inner()
-        .begin()
-        .await
-        .map_err(|e| VaultError::Database {
-            reason: format!("could not open transaction to confirm MFA enrolment: {e}"),
-        })?;
-
+pub async fn confirm(
+    conn: &mut PgConnection,
+    api_key_id: Uuid,
+    step: i64,
+) -> Result<(), VaultError> {
     let confirmed = sqlx::query(
         "UPDATE shared.mfa_totp
          SET confirmed_at = now(), last_used_step = $2
@@ -130,7 +128,7 @@ pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), V
     )
     .bind(api_key_id)
     .bind(step)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("could not confirm MFA enrolment: {e}"),
@@ -145,15 +143,11 @@ pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), V
 
     sqlx::query("UPDATE shared.api_keys SET mfa_required = true WHERE id = $1")
         .bind(api_key_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: format!("could not enable MFA on the key: {e}"),
         })?;
-
-    tx.commit().await.map_err(|e| VaultError::Database {
-        reason: format!("could not commit MFA enrolment: {e}"),
-    })?;
 
     Ok(())
 }
@@ -166,7 +160,7 @@ pub async fn confirm(pool: &DbPool, api_key_id: Uuid, step: i64) -> Result<(), V
 /// Rust and then writing would let both through. Here the second update matches
 /// no row and the caller sees `false`.
 pub async fn try_consume_step(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     api_key_id: Uuid,
     step: i64,
 ) -> Result<bool, VaultError> {
@@ -176,7 +170,7 @@ pub async fn try_consume_step(
     )
     .bind(api_key_id)
     .bind(step)
-    .execute(pool.inner())
+    .execute(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("could not record the MFA step: {e}"),
@@ -186,10 +180,10 @@ pub async fn try_consume_step(
 }
 
 /// Remove an enrolment and its recovery codes.
-pub async fn delete(pool: &DbPool, api_key_id: Uuid) -> Result<(), VaultError> {
+pub async fn delete(conn: &mut PgConnection, api_key_id: Uuid) -> Result<(), VaultError> {
     sqlx::query("DELETE FROM shared.mfa_totp WHERE api_key_id = $1")
         .bind(api_key_id)
-        .execute(pool.inner())
+        .execute(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: format!("could not remove MFA enrolment: {e}"),
@@ -199,22 +193,17 @@ pub async fn delete(pool: &DbPool, api_key_id: Uuid) -> Result<(), VaultError> {
 
 /// Replace this key's recovery codes with a fresh set.
 pub async fn replace_recovery_codes(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     api_key_id: Uuid,
     tenant_id: Uuid,
     hashes: &[String],
 ) -> Result<(), VaultError> {
-    let mut tx = pool
-        .inner()
-        .begin()
-        .await
-        .map_err(|e| VaultError::Database {
-            reason: format!("could not begin the recovery-code transaction: {e}"),
-        })?;
-
+    // No transaction of its own: the caller's ScopedTx already makes the
+    // delete and the re-insert one atomic unit, and nesting one inside it
+    // would be a savepoint pretending to be a transaction.
     sqlx::query("DELETE FROM shared.mfa_recovery_codes WHERE api_key_id = $1")
         .bind(api_key_id)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: format!("could not clear old recovery codes: {e}"),
@@ -228,16 +217,13 @@ pub async fn replace_recovery_codes(
         .bind(api_key_id)
         .bind(tenant_id)
         .bind(hash)
-        .execute(&mut *tx)
+        .execute(&mut *conn)
         .await
         .map_err(|e| VaultError::Database {
             reason: format!("could not store a recovery code: {e}"),
         })?;
     }
 
-    tx.commit().await.map_err(|e| VaultError::Database {
-        reason: format!("could not commit recovery codes: {e}"),
-    })?;
     Ok(())
 }
 
@@ -246,7 +232,7 @@ pub async fn replace_recovery_codes(
 /// Single-use is enforced by `used_at IS NULL` in the UPDATE rather than a
 /// read-then-write, so two requests racing the same code cannot both succeed.
 pub async fn consume_recovery_code(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     api_key_id: Uuid,
     code_hash: &str,
 ) -> Result<bool, VaultError> {
@@ -256,7 +242,7 @@ pub async fn consume_recovery_code(
     )
     .bind(api_key_id)
     .bind(code_hash)
-    .execute(pool.inner())
+    .execute(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: format!("could not consume a recovery code: {e}"),

@@ -217,6 +217,21 @@ jobs:
             ('aaaaaaaa-0000-0000-0000-000000000001',1,'ACME','dek-a'),
             ('bbbbbbbb-0000-0000-0000-000000000002',1,'GLOBEX','dek-b')
           ON CONFLICT DO NOTHING;
+          INSERT INTO shared.api_keys
+            (id, tenant_id, name, key_hash, key_prefix, path_prefixes, policies, created_by) VALUES
+            ('dddddddd-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111',
+             'acme-key', '\\x01'::bytea, 'acme', '{}', '{default}', 'ci'),
+            ('eeeeeeee-0000-0000-0000-000000000002','22222222-2222-2222-2222-222222222222',
+             'globex-key', '\\x02'::bytea, 'glbx', '{}', '{default}', 'ci')
+          ON CONFLICT DO NOTHING;
+          INSERT INTO shared.mfa_totp (api_key_id, tenant_id, wrapped_secret, confirmed_at) VALUES
+            ('dddddddd-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','ACME-SECRET', now()),
+            ('eeeeeeee-0000-0000-0000-000000000002','22222222-2222-2222-2222-222222222222','GLOBEX-SECRET', now())
+          ON CONFLICT DO NOTHING;
+          INSERT INTO shared.mfa_recovery_codes (api_key_id, tenant_id, code_hash) VALUES
+            ('dddddddd-0000-0000-0000-000000000001','11111111-1111-1111-1111-111111111111','acme-hash'),
+            ('eeeeeeee-0000-0000-0000-000000000002','22222222-2222-2222-2222-222222222222','globex-hash')
+          ON CONFLICT DO NOTHING;
           SEED
 
           # -tAq -f - : tuples only, unaligned, quiet. Without -q the BEGIN/SET/
@@ -278,6 +293,82 @@ jobs:
           Q
           )
           [ "$n" = "2" ] || { echo "::error::bypass scope saw $n secrets, expected 2"; exit 1; }
+
+          echo "--- api_keys: an unscoped session must see no credentials"
+          n=$(printf 'SELECT count(*) FROM shared.api_keys;\n' | app)
+          [ "$n" = "0" ] || { echo "::error::unscoped session saw $n api keys; RLS is not failing closed"; exit 1; }
+
+          echo "--- api_keys: a tenant sees only its own"
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+          SELECT string_agg(name, ',' ORDER BY name) FROM shared.api_keys;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "acme-key" ] || { echo "::error::cross-tenant api keys visible: got '$n', expected 'acme-key'"; exit 1; }
+
+          echo "--- api_keys: authentication by key_hash is the cross-tenant path"
+          # find_by_hash cannot be tenant-scoped — the lookup is what determines
+          # the tenant. It runs under the bypass, so assert the bypass reaches
+          # both tenants; if this ever fails, every login fails.
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.bypass_rls = 'true';
+          SELECT count(*) FROM shared.api_keys;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "2" ] || { echo "::error::the authentication bypass saw $n keys, expected 2 — logins would fail"; exit 1; }
+
+          echo "--- api_keys: a tenant cannot revoke another tenant's key"
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+          UPDATE shared.api_keys SET revoked_at = now()
+           WHERE id = 'eeeeeeee-0000-0000-0000-000000000002';
+          SELECT count(*) FROM shared.api_keys WHERE revoked_at IS NOT NULL;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "0" ] || { echo "::error::a tenant revoked another tenant's api key"; exit 1; }
+
+          echo "--- mfa: an unscoped session sees no TOTP secrets"
+          n=$(printf 'SELECT count(*) FROM shared.mfa_totp;\n' | app)
+          [ "$n" = "0" ] || { echo "::error::unscoped session saw $n TOTP enrolments"; exit 1; }
+
+          echo "--- mfa: a tenant sees only its own second factor"
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+          SELECT string_agg(wrapped_secret, ',') FROM shared.mfa_totp;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "ACME-SECRET" ] || { echo "::error::cross-tenant TOTP secret visible: got '$n'"; exit 1; }
+
+          echo "--- mfa: and only its own recovery codes"
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+          SELECT string_agg(code_hash, ',') FROM shared.mfa_recovery_codes;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "acme-hash" ] || { echo "::error::cross-tenant recovery codes visible: got '$n'"; exit 1; }
+
+          echo "--- mfa: a tenant cannot burn another tenant's recovery code"
+          # Burning someone else's codes is a denial-of-access attack: it does
+          # not grant entry, it removes their way back in after losing a phone.
+          n=$(app <<'Q'
+          BEGIN;
+          SET LOCAL app.current_tenant_id = '11111111-1111-1111-1111-111111111111';
+          UPDATE shared.mfa_recovery_codes SET used_at = now() WHERE code_hash = 'globex-hash';
+          SELECT count(*) FROM shared.mfa_recovery_codes WHERE used_at IS NOT NULL;
+          COMMIT;
+          Q
+          )
+          [ "$n" = "0" ] || { echo "::error::a tenant burned another tenant's recovery code"; exit 1; }
 
           echo "--- SET LOCAL does not leak onto a pooled connection"
           n=$(printf 'SELECT count(*) FROM shared.secrets;\n' | app)

@@ -18,7 +18,7 @@
 //! revoked rows so the caller can distinguish "revoked" from "never existed"
 //! and log the difference.
 
-use sqlx::{FromRow, Row};
+use sqlx::{FromRow, PgConnection, Row};
 use uuid::Uuid;
 
 use crate::pool::DbPool;
@@ -107,12 +107,31 @@ pub async fn resolve_tenant_id(pool: &DbPool, reference: &str) -> Result<Uuid, V
 ///
 /// Returns revoked and expired rows too; the caller decides what those mean so
 /// it can log a revoked-key use attempt rather than treating it as a miss.
-pub async fn find_by_hash(pool: &DbPool, key_hash: &[u8]) -> Result<Option<ApiKeyRow>, VaultError> {
+///
+/// # Why this one is not tenant-scoped
+///
+/// It cannot be. This is the authentication path: the caller presents a key and
+/// this lookup is what *determines* which tenant they are. There is no tenant
+/// to scope to until it returns, so the query must run outside any
+/// `app.current_tenant_id`.
+///
+/// That is safe because the predicate is a 256-bit hash of a secret nobody can
+/// enumerate — unlike a listing, it cannot be used to discover another tenant's
+/// keys. Callers must open the scope from the row this returns before touching
+/// anything else.
+///
+/// Under an enforcing role this therefore needs
+/// [`crate::tenant_scope::TenantScope::begin_cross_tenant`], with
+/// "api key authentication precedes tenant identity" as the reason.
+pub async fn find_by_hash(
+    conn: &mut PgConnection,
+    key_hash: &[u8],
+) -> Result<Option<ApiKeyRow>, VaultError> {
     sqlx::query_as::<_, ApiKeyRow>(&format!(
         "SELECT {COLUMNS} FROM shared.api_keys WHERE key_hash = $1"
     ))
     .bind(key_hash)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| db_err("find_by_hash", e))
 }
@@ -122,7 +141,7 @@ pub async fn find_by_hash(pool: &DbPool, key_hash: &[u8]) -> Result<Option<ApiKe
 /// The tenant predicate is what stops a leaked key UUID from being revoked or
 /// rotated by a different tenant.
 pub async fn find_by_id(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     key_id: Uuid,
     tenant_id: Uuid,
 ) -> Result<Option<ApiKeyRow>, VaultError> {
@@ -131,7 +150,7 @@ pub async fn find_by_id(
     ))
     .bind(key_id)
     .bind(tenant_id)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| db_err("find_by_id", e))
 }
@@ -139,7 +158,7 @@ pub async fn find_by_id(
 /// Lists a tenant's active keys — not revoked, not past their expiry —
 /// newest first.
 pub async fn list_active_for_tenant(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: Uuid,
 ) -> Result<Vec<ApiKeyRow>, VaultError> {
     sqlx::query_as::<_, ApiKeyRow>(&format!(
@@ -150,7 +169,7 @@ pub async fn list_active_for_tenant(
           ORDER BY created_at DESC"
     ))
     .bind(tenant_id)
-    .fetch_all(pool.inner())
+    .fetch_all(&mut *conn)
     .await
     .map_err(|e| db_err("list_active", e))
 }
@@ -161,7 +180,7 @@ pub async fn list_active_for_tenant(
 /// actually enforces it under concurrency; this check exists to return a clean
 /// 409 instead of a constraint violation on the common path.
 pub async fn active_name_exists(
-    pool: &DbPool,
+    conn: &mut PgConnection,
     tenant_id: Uuid,
     name: &str,
 ) -> Result<bool, VaultError> {
@@ -172,7 +191,7 @@ pub async fn active_name_exists(
     )
     .bind(tenant_id)
     .bind(name)
-    .fetch_optional(pool.inner())
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|e| db_err("active_name_exists", e))?;
 
@@ -188,23 +207,8 @@ pub async fn active_name_exists(
 /// A unique violation on the active-name index surfaces as
 /// `ValidationError { field: "name" }` so the handler can map it to 409
 /// without inspecting sqlx error codes itself.
-pub async fn insert(pool: &DbPool, row: &ApiKeyRow) -> Result<(), VaultError> {
-    let result = insert_query(row).execute(pool.inner()).await;
-    map_insert_result(result, &row.name)
-}
-
-/// [`insert`], inside a caller-supplied transaction.
-///
-/// Exists so minting a key can be made atomic with another write. Redeeming an
-/// invitation is the case that needs it: marking the invitation spent and
-/// creating the key it grants must commit together, or a failure between them
-/// leaves the recipient with a spent invitation and no key — locked out, with
-/// nothing to retry.
-pub async fn insert_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    row: &ApiKeyRow,
-) -> Result<(), VaultError> {
-    let result = insert_query(row).execute(&mut **tx).await;
+pub async fn insert(conn: &mut PgConnection, row: &ApiKeyRow) -> Result<(), VaultError> {
+    let result = insert_query(row).execute(&mut *conn).await;
     map_insert_result(result, &row.name)
 }
 
@@ -255,7 +259,11 @@ fn map_insert_result(
 
 /// Marks a key revoked. Returns `false` when no active row matched, which
 /// covers both "no such key for this tenant" and "already revoked".
-pub async fn revoke(pool: &DbPool, key_id: Uuid, tenant_id: Uuid) -> Result<bool, VaultError> {
+pub async fn revoke(
+    conn: &mut PgConnection,
+    key_id: Uuid,
+    tenant_id: Uuid,
+) -> Result<bool, VaultError> {
     let result = sqlx::query(
         "UPDATE shared.api_keys
             SET revoked_at = now()
@@ -263,7 +271,7 @@ pub async fn revoke(pool: &DbPool, key_id: Uuid, tenant_id: Uuid) -> Result<bool
     )
     .bind(key_id)
     .bind(tenant_id)
-    .execute(pool.inner())
+    .execute(&mut *conn)
     .await
     .map_err(|e| db_err("revoke", e))?;
 
@@ -274,12 +282,24 @@ pub async fn revoke(pool: &DbPool, key_id: Uuid, tenant_id: Uuid) -> Result<bool
 ///
 /// Deliberately best-effort at the call site: a failure here must not fail an
 /// otherwise valid authentication, so callers log and continue.
-pub async fn touch_last_used(pool: &DbPool, key_id: Uuid) -> Result<(), VaultError> {
-    sqlx::query("UPDATE shared.api_keys SET last_used_at = now() WHERE id = $1")
-        .bind(key_id)
-        .execute(pool.inner())
-        .await
-        .map_err(|e| db_err("touch_last_used", e))?;
+///
+/// Takes the tenant so it can run inside the caller's own scope. Every call
+/// site has just authenticated and therefore knows it; a cross-tenant bypass
+/// here would be a permanent hole opened for a bookkeeping update.
+pub async fn touch_last_used(
+    conn: &mut PgConnection,
+    key_id: Uuid,
+    tenant_id: Uuid,
+) -> Result<(), VaultError> {
+    sqlx::query(
+        "UPDATE shared.api_keys SET last_used_at = now()
+          WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(key_id)
+    .bind(tenant_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| db_err("touch_last_used", e))?;
 
     Ok(())
 }
