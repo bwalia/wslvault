@@ -234,14 +234,22 @@ pub async fn replace_recovery_codes(
 pub async fn consume_recovery_code(
     conn: &mut PgConnection,
     api_key_id: Uuid,
-    code_hash: &str,
+    code_hashes: &[String],
 ) -> Result<bool, VaultError> {
+    // Several candidate hashes, not one: a code typed today is hashed in the
+    // canonical form, while rows written before separators were normalised hold
+    // the hyphenated hash and cannot be recomputed. Matching any of them is
+    // what keeps existing recovery codes working across that change.
+    //
+    // Still exactly one row: `used_at IS NULL` and the unique code, so a single
+    // statement both finds and spends it and two concurrent attempts cannot
+    // both succeed.
     let result = sqlx::query(
         "UPDATE shared.mfa_recovery_codes SET used_at = now()
-         WHERE api_key_id = $1 AND code_hash = $2 AND used_at IS NULL",
+         WHERE api_key_id = $1 AND code_hash = ANY($2) AND used_at IS NULL",
     )
     .bind(api_key_id)
-    .bind(code_hash)
+    .bind(code_hashes)
     .execute(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {

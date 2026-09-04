@@ -57,6 +57,13 @@ spec:
               containerPort: {{ .Values.identityService.grpcPort }}
               protocol: TCP
           env:
+            # Its own JWKS. `GET /v1/tenants/:id` lets a member read the tenant
+            # it belongs to, which means resolving the caller's Ed25519 token
+            # through the shared verifier rather than the admin gate — and that
+            # verifier fetches public keys over HTTP like every other service.
+            # Self-referential, but the keys it needs are the ones it publishes.
+            - name: VAULT_JWKS_URL
+              value: "http://127.0.0.1:{{ .Values.identityService.httpPort }}/v1/identity/.well-known/jwks.json"
             - name: VAULT_HTTP_ADDR
               value: {{ printf "0.0.0.0:%v" .Values.identityService.httpPort | quote }}
             - name: VAULT_LISTEN_ADDR

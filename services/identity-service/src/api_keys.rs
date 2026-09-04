@@ -1184,7 +1184,7 @@ impl AdminAuth {
     /// administrator policy was silently ejected the moment any page fetched an
     /// admin-gated resource. The dashboard fetches one on load, so those users
     /// could not stay signed in at all.
-    async fn authenticate(&self, headers: &HeaderMap) -> Result<AdminIdentity, AdminRejection> {
+    pub async fn authenticate(&self, headers: &HeaderMap) -> Result<AdminIdentity, AdminRejection> {
         // 1. Bootstrap token, compared in constant time.
         if let Some(expected) = &self.bootstrap_token {
             if let Some(provided) = headers.get(ADMIN_TOKEN_HEADER).map(|v| v.as_bytes()) {
@@ -2079,11 +2079,19 @@ async fn verify_second_factor(
         return Ok(ok);
     }
 
-    let hash = crate::mfa::hash_recovery_code(code);
-    let ok =
-        wslvault_storage::mfa_store::consume_recovery_code(scope.conn(), pending.api_key_id, &hash)
-            .await
-            .map_err(|e| e.to_string())?;
+    // Canonical first, then the pre-normalisation form for codes issued before
+    // separators were folded out. See `mfa::legacy_hash_recovery_code`.
+    let candidates = vec![
+        crate::mfa::hash_recovery_code(code),
+        crate::mfa::legacy_hash_recovery_code(code),
+    ];
+    let ok = wslvault_storage::mfa_store::consume_recovery_code(
+        scope.conn(),
+        pending.api_key_id,
+        &candidates,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     scope.commit().await.map_err(|e| e.to_string())?;
     Ok(ok)
 }

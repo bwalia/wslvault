@@ -18,6 +18,7 @@ import {
 
 import { Button } from '@/components/ui/Button'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { OtpInput } from '@/components/ui/OtpInput'
 import { api } from '@/lib/api'
 import { errorMessage, mutate } from '@/lib/fetcher'
 
@@ -495,18 +496,21 @@ export default function InvitePage({ params }: { params: Promise<{ token: string
               void confirm()
             }}
           >
-            <input
-              // text with a numeric inputMode: `number` renders spinners and
-              // strips a leading zero, and codes can start with one.
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              value={code}
-              onChange={e => setCode(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
-              placeholder="123456"
-              aria-label="Six-digit code from your authenticator app"
-              className="w-full px-3 py-3 mb-2 rounded-lg border border-line-strong bg-surface text-ink font-mono text-lg tracking-[0.3em] text-center placeholder:tracking-normal placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
-            />
+            <div className="mb-3">
+              <OtpInput
+                value={code}
+                onChange={setCode}
+                // Finishes itself on the sixth digit. This is the last step of
+                // the wizard and the code expires in 30 seconds — a button
+                // press between typing and submitting is time the user does not
+                // have much of.
+                onComplete={() => void confirm()}
+                disabled={busy}
+                autoFocus
+                invalid={Boolean(error)}
+                ariaLabel="Six-digit code from your authenticator app"
+              />
+            </div>
             <p className="text-sm text-ink-muted mb-6 leading-relaxed">
               The number changes every 30 seconds — that is normal. If it is rejected, wait for a
               fresh one and type that.

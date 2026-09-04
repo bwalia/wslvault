@@ -5,6 +5,7 @@ import QRCode from 'react-qr-code'
 import { Check, Copy, Download, KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/Button'
+import { OtpInput } from '@/components/ui/OtpInput'
 import { Input } from '@/components/ui/Input'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { api } from '@/lib/api'
@@ -252,15 +253,16 @@ export function TwoFactorSetup() {
                 Enrolment stays inactive until a generated code proves the app is
                 set up, so a half-finished attempt cannot lock you out.
               </p>
-              <Input
-                label="6-digit code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="000000"
-                mono
-                maxLength={6}
+              <OtpInput
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                onChange={setCode}
+                disabled={busy}
+                // No auto-submit here, deliberately. The button is gated on the
+                // recovery codes being acknowledged, and submitting the moment
+                // the sixth digit lands would either fire a request that is
+                // refused or quietly bypass the acknowledgement — both worse
+                // than one press.
+                ariaLabel="Six-digit code from your authenticator app"
               />
               <div className="flex items-center gap-2 mt-3">
                 <Button

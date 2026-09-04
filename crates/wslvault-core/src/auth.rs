@@ -300,9 +300,15 @@ fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
             "{JWT_SECRET_ENV} is empty; token authentication is unavailable"
         )));
     }
-    // Defaults already require and validate `exp`; issuer/audience are not
-    // enforced so tokens from any configured identity provider are accepted.
-    let validation = Validation::new(Algorithm::HS256);
+    // Defaults already require and validate `exp`. Audience is deliberately not
+    // enforced, so tokens from any configured identity provider are accepted —
+    // but `Validation::new` turns `validate_aud` ON with an empty allow-list,
+    // which rejects every token that *carries* an `aud` at all. Every HS256
+    // token this system issues carries `aud: "wslvault"`, so the comment
+    // described the intent and the code did the opposite: `InvalidAudience` on
+    // its own tokens. The EdDSA path beside it has always cleared the flag.
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_aud = false;
     decode::<TokenClaims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),

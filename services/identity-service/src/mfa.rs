@@ -256,13 +256,41 @@ pub fn generate_recovery_codes(count: usize) -> Result<Vec<(String, String)>, St
 
 /// SHA-256 of a recovery code, hex. Only the hash is ever stored.
 ///
-/// Trims and upper-cases first. These codes are written on paper and typed back
-/// months later, often on a phone that lower-cases or auto-capitalises without
-/// being asked — and the generated alphabet (RFC 4648 base32) is upper-case
-/// only, so folding case cannot make two distinct codes collide. Without this,
-/// a correctly-transcribed code is rejected on the strength of its case, at the
-/// exact moment the user has already lost their phone.
+/// Normalises first, because these codes are written on paper and typed back
+/// months later by someone who has just lost their phone — the least forgiving
+/// moment in the product to be strict about punctuation.
+///
+/// Case folding was already here and is safe: the generated alphabet
+/// (RFC 4648 base32) is upper-case only, so folding cannot make two distinct
+/// codes collide.
+///
+/// Separators are now dropped too, and that was a real failure. A code is
+/// *displayed* as `ABCD1234-EFGH5678` — the hyphen is grouping, added so the
+/// thing can be read off paper — but it was hashed with the hyphen in it. So a
+/// user who typed the sixteen characters without it, or put a space where the
+/// hyphen was, got "invalid or already-used code" for a perfectly good code,
+/// and burnt a single-use login challenge finding out. The alphabet contains no
+/// separators, so removing them cannot collide either.
 pub fn hash_recovery_code(code: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let normalised: String = code
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    hex::encode(Sha256::digest(normalised.as_bytes()))
+}
+
+/// How a recovery code was hashed before separators were normalised away.
+///
+/// Kept solely so codes issued under the old scheme keep working: their stored
+/// hashes cover the hyphenated string and cannot be recomputed, since the codes
+/// themselves were never stored. Verification tries this alongside the
+/// canonical form.
+///
+/// Remove once no enrolment predates that change — every enrolment written
+/// after it stores the canonical hash, so this only ever matches old rows.
+pub fn legacy_hash_recovery_code(code: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(code.trim().to_ascii_uppercase().as_bytes()))
 }
@@ -446,6 +474,44 @@ mod tests {
                 .all(|c| c.is_ascii_uppercase() || ('2'..='7').contains(&c)),
             "secret must be RFC 4648 base32 alphabet: {secret}"
         );
+    }
+
+    #[test]
+    fn a_recovery_code_typed_without_its_hyphen_still_verifies() {
+        let (code, stored) = generate_recovery_codes(1).unwrap().pop().unwrap();
+        assert!(code.contains('-'), "codes are displayed grouped: {code}");
+
+        // How people actually retype these: the hyphen is display grouping, and
+        // half of them will leave it out, add a space instead, or lower-case
+        // the lot. All four must reach the same hash as the stored one, or the
+        // credential fails at the exact moment its owner has lost the other.
+        let no_hyphen = code.replace('-', "");
+        let spaced = code.replace('-', " ");
+        let lower = code.to_lowercase();
+
+        assert_eq!(hash_recovery_code(&code), stored, "as displayed");
+        assert_eq!(hash_recovery_code(&lower), stored, "lower-cased");
+        assert_eq!(hash_recovery_code(&no_hyphen), stored, "hyphen omitted");
+        assert_eq!(hash_recovery_code(&spaced), stored, "space for hyphen");
+    }
+
+    /// Codes issued before separators were normalised are still reachable.
+    ///
+    /// Their stored hash covers the hyphenated string and cannot be recomputed,
+    /// because the code itself was never stored. `verify_second_factor` offers
+    /// both forms; this pins the legacy one to what those rows actually hold.
+    #[test]
+    fn the_legacy_hash_still_matches_pre_normalisation_rows() {
+        let code = "ABCD1234-EFGH5678";
+        let stored_the_old_way = {
+            use sha2::{Digest, Sha256};
+            hex::encode(Sha256::digest(code.to_ascii_uppercase().as_bytes()))
+        };
+
+        assert_eq!(legacy_hash_recovery_code(code), stored_the_old_way);
+        // ...and the canonical form deliberately does not, which is exactly why
+        // both are tried.
+        assert_ne!(hash_recovery_code(code), stored_the_old_way);
     }
 
     #[test]
