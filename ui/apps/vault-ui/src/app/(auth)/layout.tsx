@@ -67,7 +67,7 @@ export default function AuthLayout({ children }: { children: React.ReactNode }) 
 
           <motion.p
             variants={staggerItem}
-            className="mt-5 text-[15px] text-steel-ink max-w-sm leading-relaxed"
+            className="mt-5 text-base text-steel-ink max-w-sm leading-relaxed"
           >
             Every tenant gets its own key. Nothing is stored in the clear, and
             every read is written to an audit trail you can inspect.

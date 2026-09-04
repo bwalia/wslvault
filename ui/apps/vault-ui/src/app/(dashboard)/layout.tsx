@@ -22,7 +22,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     <div className="flex h-screen bg-canvas">
       <Sidebar open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
       <div
-        className={`flex flex-col flex-1 min-w-0 transition-all duration-200 ${sidebarOpen ? 'ml-60' : 'ml-16'}`}
+        className={`flex flex-col flex-1 min-w-0 transition-all duration-200 ${sidebarOpen ? 'ml-64' : 'ml-[4.5rem]'}`}
       >
         <AppBar onMenuClick={() => setSidebarOpen(o => !o)} />
         {/* The content plane. The faint radial wash lifts it off a flat fill —

@@ -153,6 +153,37 @@
   --color-accent-600: #0d8544;
   --color-accent-700: #0b6a38;
 
+  /* ---------------------------------------------------------------------
+     Type scale, raised.
+
+     Tailwind's default scale bottoms out at 12px for `text-xs` and 14px for
+     `text-sm`, and this console lives almost entirely in those two steps —
+     table cells, field labels, hints, counts, nav items. At a normal viewing
+     distance that is a size you decipher rather than read.
+
+     Overriding the scale here rather than editing components moves every
+     screen at once, and it moves ONLY type: Tailwind's spacing scale is a
+     separate set of variables, so padding, gaps and heights stay exactly
+     where they were and no layout shifts underneath the change.
+
+     Line heights go up with the sizes. Larger text on the same leading reads
+     as more crowded, not less, so the two have to move together.
+     --------------------------------------------------------------------- */
+  --text-xs:   0.8125rem;   /* 12 → 13 */
+  --text-xs--line-height:   1.5;
+  --text-sm:   0.9375rem;   /* 14 → 15 */
+  --text-sm--line-height:   1.55;
+  --text-base: 1.0625rem;   /* 16 → 17 */
+  --text-base--line-height: 1.6;
+  --text-lg:   1.1875rem;   /* 18 → 19 */
+  --text-lg--line-height:   1.55;
+  --text-xl:   1.3125rem;   /* 20 → 21 */
+  --text-xl--line-height:   1.5;
+  --text-2xl:  1.5625rem;   /* 24 → 25 */
+  --text-2xl--line-height:  1.35;
+  --text-3xl:  1.9375rem;   /* 30 → 31 */
+  --text-3xl--line-height:  1.25;
+
   --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   /* Headings and UI chrome. Applied via `font-display`, not globally — body
      copy stays on the humanist face, which is more comfortable at 14-16px. */
@@ -164,7 +195,7 @@
   html { @apply antialiased; }
 
   body {
-    @apply bg-canvas text-ink;
+    @apply bg-canvas text-ink text-base;
     font-feature-settings: "cv05", "ss01";
     /* Slightly loosened. At the sizes this console uses, tracking is what
        separates "dense" from "cramped", and the difference costs nothing. */

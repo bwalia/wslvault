@@ -102,16 +102,16 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
         'fixed left-0 top-0 h-full z-40 flex flex-col',
         'bg-steel border-r border-steel-line',
         'transition-all duration-200',
-        open ? 'w-60' : 'w-16',
+        open ? 'w-64' : 'w-[4.5rem]',
       )}
     >
       {/* Wordmark */}
-      <div className="flex items-center h-14 px-4 border-b border-steel-line gap-3">
-        <div className="shrink-0 w-8 h-8 rounded-lg bg-primary-700 ring-1 ring-brass/30 flex items-center justify-center">
-          <Lock className="w-4 h-4 text-brass" aria-hidden="true" />
+      <div className="flex items-center h-16 px-4 border-b border-steel-line gap-3">
+        <div className="shrink-0 w-9 h-9 rounded-lg bg-primary-700 ring-1 ring-brass/30 flex items-center justify-center">
+          <Lock className="w-[18px] h-[18px] text-brass" aria-hidden="true" />
         </div>
         {open && (
-          <span className="font-display font-semibold tracking-tight text-white truncate">
+          <span className="font-display text-lg font-semibold tracking-tight text-white truncate">
             WSL<span className="text-brass">Vault</span>
           </span>
         )}
@@ -128,7 +128,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
           return (
           <div key={group.label}>
             {open && (
-              <p className="mb-2 px-2 font-display text-[11px] font-semibold uppercase tracking-[0.14em] text-steel-ink-dim">
+              <p className="mb-2 px-2 font-display text-xs font-semibold uppercase tracking-[0.12em] text-steel-ink">
                 {group.label}
               </p>
             )}
@@ -143,7 +143,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
                       title={!open ? item.label : undefined}
                       aria-current={active ? 'page' : undefined}
                       className={cn(
-                        'relative flex items-center gap-3 px-2.5 py-2 rounded-lg text-sm transition-colors',
+                        'relative flex items-center gap-3 px-2.5 py-2.5 rounded-lg text-sm transition-colors',
                         active
                           ? 'bg-steel-raised text-white font-medium'
                           : 'text-steel-ink hover:bg-steel-raised hover:text-white',
@@ -157,7 +157,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
                         />
                       )}
                       <item.icon
-                        className={cn('w-[18px] h-[18px] shrink-0', active && 'text-brass')}
+                        className={cn('w-5 h-5 shrink-0', active && 'text-brass')}
                         aria-hidden="true"
                       />
                       {open && <span className="truncate">{item.label}</span>}
@@ -179,7 +179,7 @@ export default function Sidebar({ open, onToggle }: SidebarProps) {
       >
         {open ? <ChevronLeft className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
       </button>
-      <BuildStamp collapsed={!open} className={open ? 'mx-3 mb-3 text-[11px]' : 'mx-1 mb-3 text-[10px]'} />
+      <BuildStamp collapsed={!open} className={open ? 'mx-3 mb-3 text-xs' : 'mx-1 mb-3 text-[11px]'} />
     </aside>
   )
 }

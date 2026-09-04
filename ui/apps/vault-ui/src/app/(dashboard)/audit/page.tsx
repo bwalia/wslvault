@@ -269,7 +269,7 @@ export default function AuditPage() {
                         Metadata
                       </dt>
                       <dd>
-                        <pre className="font-mono text-[12px] text-ink bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap break-all">
+                        <pre className="font-mono text-xs text-ink bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap break-all">
                           {JSON.stringify(selectedEvent.metadata, null, 2)}
                         </pre>
                       </dd>

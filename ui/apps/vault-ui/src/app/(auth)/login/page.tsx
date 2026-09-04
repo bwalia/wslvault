@@ -92,10 +92,10 @@ export default function LoginPage() {
             </span>
           </div>
 
-          <h2 className="font-display text-[1.75rem] font-semibold tracking-tight text-ink">
+          <h2 className="font-display text-[2rem] font-semibold tracking-tight text-ink">
             {challenge ? 'One more step' : 'Sign in'}
           </h2>
-          <p className="text-[15px] text-ink-muted mt-1.5 mb-7 leading-relaxed">
+          <p className="text-base text-ink-muted mt-1.5 mb-7 leading-relaxed">
             {challenge
               ? 'Open your authenticator app and enter the 6-digit number it is showing.'
               : 'Use the API key your vault operator gave you.'}

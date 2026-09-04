@@ -155,7 +155,7 @@ const TreeRow = memo(function TreeRow({
           )}
           <span className="truncate font-mono text-sm">{node.name}</span>
           {isFolder && node.isLeaf && (
-            <span className="text-[11px] text-ink-faint shrink-0" title="Also a secret">
+            <span className="text-xs text-ink-faint shrink-0" title="Also a secret">
               ●
             </span>
           )}
@@ -310,7 +310,7 @@ function FieldEditor({
   return (
     <div>
       <div className="rounded-xl border border-line overflow-hidden">
-        <div className="flex bg-surface-2 border-b border-line text-[11px] font-semibold uppercase tracking-[0.12em] text-ink-muted">
+        <div className="flex bg-surface-2 border-b border-line text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">
           <span className="w-1/3 px-3 py-2 border-r border-line">Key</span>
           <span className="flex-1 px-3 py-2">Value</span>
           <span className="w-[34px]" aria-hidden="true" />

@@ -32,7 +32,7 @@ const variants = {
 const sizes = {
   sm: 'px-3 text-xs h-9',
   md: 'px-4 text-sm h-10',
-  lg: 'px-5 text-[0.9375rem] h-11',
+  lg: 'px-5 text-base h-11',
 }
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
