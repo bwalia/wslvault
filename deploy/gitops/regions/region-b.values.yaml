@@ -74,7 +74,10 @@ networkPolicies:
 ui:
   enabled: true
   image:
-    tag: v1.0.8
+    # v1.0.11: client clock-skew login fix (session TTL from the token's own
+    # iat/exp against the local clock). Ahead of the other services, which stay
+    # at global.imageTag until a full deploy of the newer main.
+    tag: v1.0.11
   # Renamed 2026-08-31 from vault-ui-b.workstation.co.uk (Chrome objected to
   # the old name on the login page). The old host stays as an alias so existing
   # bookmarks and links keep working; both CNAME to pop0 and share the
