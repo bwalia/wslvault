@@ -377,6 +377,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "lease-manager" "context" $) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
       ports:
         - port: {{ .Values.identityService.httpPort }}
           protocol: TCP
@@ -543,6 +546,15 @@ spec:
               app.kubernetes.io/name: postgresql
       ports:
         - port: 5432
+          protocol: TCP
+    # Fetches the Ed25519 JWKS from identity-service to verify tokens on the
+    # HTTP events API.
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
           protocol: TCP
 {{- end }}
 

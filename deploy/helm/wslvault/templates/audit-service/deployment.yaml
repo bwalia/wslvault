@@ -63,6 +63,12 @@ spec:
               value: {{ .Values.auditService.httpPort | quote }}
             - name: GRPC_PORT
               value: {{ .Values.auditService.grpcPort | quote }}
+            # Public keys for verifying per-tenant Ed25519 tokens on the HTTP
+            # events API. Without it audit rejects every read with 401
+            # "VAULT_JWKS_URL is not configured", the dashboard's audit widget
+            # 401s, and the UI logs the user straight back out.
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
             # Master key for the per-tenant audit signing chain. Byte-identical
             # across regions, like the rest of the mesh material: a record
             # replicated from a peer verifies with the receiving region's key.
