@@ -18,14 +18,29 @@ interface StatCardProps {
  */
 export function StatCard({ label, value, trend, detail }: StatCardProps) {
   return (
-    <div className="relative bg-surface rounded-xl border border-line px-5 pt-4 pb-4 overflow-hidden">
-      <div className="absolute top-0 left-5 right-5 h-px bg-primary-500/60" aria-hidden="true" />
-      <p className="text-xs font-medium uppercase tracking-wide text-ink-faint">{label}</p>
-      <p className={cn('mt-1.5 text-3xl font-semibold tracking-tight text-ink tabular')}>
+    <div
+      className={cn(
+        'group relative bg-surface rounded-xl border border-line px-5 pt-4 pb-4 overflow-hidden',
+        'shadow-[inset_0_1px_0_0_rgb(255_255_255/0.6)] dark:shadow-[inset_0_1px_0_0_rgb(255_255_255/0.04)]',
+        'transition-colors duration-200 hover:border-brass/40',
+      )}
+    >
+      {/* Brass rule along the top edge. These tiles are the first thing on the
+          dashboard, so they carry the accent; deeper cards stay quiet. */}
+      <div
+        className="absolute top-0 left-0 right-0 h-[2px] bg-gradient-to-r from-brass/70 via-brass/30 to-transparent"
+        aria-hidden="true"
+      />
+      <p className="text-xs font-medium uppercase tracking-[0.08em] text-ink-muted">
+        {label}
+      </p>
+      {/* tabular-nums so a figure changing from 9 to 10 does not shift the
+          layout of every tile beside it. */}
+      <p className="mt-2 font-display text-[2.25rem] leading-none font-semibold tracking-tight text-ink tabular-nums">
         {value}
       </p>
       {(trend || detail) && (
-        <p className="mt-1 text-xs text-ink-muted font-mono">{trend ?? detail}</p>
+        <p className="mt-2 text-xs text-ink-muted font-mono">{trend ?? detail}</p>
       )}
     </div>
   )

@@ -1,8 +1,12 @@
 'use client'
 
+import { useState } from 'react'
+
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { TwoFactorSetup } from '@/components/TwoFactorSetup'
+import { RecoveryCodeReissue } from '@/components/RecoveryCodeReissue'
+import { MfaStatus, type MfaState } from '@/components/MfaStatus'
 import { ShieldCheck, Smartphone, LifeBuoy, ExternalLink } from 'lucide-react'
 
 /**
@@ -20,6 +24,13 @@ import { ShieldCheck, Smartphone, LifeBuoy, ExternalLink } from 'lucide-react'
  * factor that has not been set up yet.
  */
 export default function MfaPage() {
+  // Reported by the status panel, which asks the server about the key this
+  // session belongs to. Undefined until it answers — and it may never, for a
+  // credential that is not an API key, so nothing below is gated on it being
+  // present, only reordered when it is.
+  const [state, setState] = useState<MfaState>()
+  const alreadyOn = state?.confirmed === true
+
   return (
     <div className="space-y-6">
       <PageHeader
@@ -27,6 +38,11 @@ export default function MfaPage() {
         description="Add an authenticator app to a key, so the key alone is not enough to sign in"
       />
 
+      {/* First, because the page's first job is to say whether the thing it
+          offers has already been done. */}
+      <MfaStatus onState={setState} />
+
+      {!alreadyOn && (
       <Card>
         <CardHeader>
           <CardTitle>How this works</CardTitle>
@@ -82,8 +98,26 @@ export default function MfaPage() {
           </p>
         </CardBody>
       </Card>
+      )}
 
-      <TwoFactorSetup />
+      {alreadyOn ? (
+        <>
+          {/* Reordered, not hidden. A key that is already enrolled makes the
+              reissue path the likely errand, but the setup form still has to be
+              reachable — one session can enrol any number of *other* keys, which
+              is the whole reason it takes a pasted key rather than the session. */}
+          <RecoveryCodeReissue />
+          <TwoFactorSetup
+            title="Set up another key"
+            description="This session's key is already protected. Paste a different key to add an authenticator to that one."
+          />
+        </>
+      ) : (
+        <>
+          <TwoFactorSetup />
+          <RecoveryCodeReissue />
+        </>
+      )}
 
       <Card>
         <CardHeader>

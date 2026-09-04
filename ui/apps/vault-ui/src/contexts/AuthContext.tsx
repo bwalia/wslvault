@@ -10,6 +10,7 @@ import {
 } from 'react'
 import { useRouter } from 'next/navigation'
 import { mutate as swrMutate } from 'swr'
+import type { VaultDirection } from '@/components/VaultTransition'
 import { safeStorage, safeJsonParse } from '@/lib/safe'
 import { api } from '@/lib/api'
 import { ApiError } from '@/lib/fetcher'
@@ -40,6 +41,10 @@ interface AuthContextType extends AuthState {
   login(apiKey: string): Promise<MfaChallenge | null>
   /** Complete a login by answering its challenge with a code. */
   verifyMfa(challenge: string, code: string): Promise<void>
+  /** Which end-of-session animation is running, if any. Rendered at the app
+   *  root so it covers whichever layout the user happens to be in — sign-out
+   *  starts from the dashboard, where the auth layout is not mounted. */
+  vaultTransition: VaultDirection | null
   logout(): void
   isAuthenticated: boolean
 }
@@ -53,6 +58,23 @@ const STORAGE_KEYS = [
   'vault_expires_at',
   'vault_lease_id',
 ] as const
+
+/** How long the vault-opening sequence runs before the dashboard replaces it.
+ *  Must stay in step with VaultOpening's choreography — the confirmation lands
+ *  at ~1.15s, and this leaves a beat to read it. */
+const UNLOCK_ANIMATION_MS = 1900
+
+/** Sign-out. Was 1500ms, which cut the "Vault sealed" line off mid-fade: it
+ *  finished appearing at 1650ms, so it never reached full opacity before the
+ *  route changed. Long enough now for the message to be read, and no longer. */
+const SEAL_ANIMATION_MS = 1950
+
+/** How long the overlay outlives the `router.push` that it is covering.
+ *
+ *  Navigation is not instantaneous, and unmounting the overlay the moment it is
+ *  requested reveals whatever is still underneath. This holds it for a few
+ *  frames past the push so the new route is what appears when it lifts. */
+const OVERLAP_MS = 350
 
 const EMPTY_STATE: AuthState = {
   token: null,
@@ -149,6 +171,7 @@ function isChallenge(body: unknown): body is ChallengeResponse {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const router = useRouter()
   const [isMounted, setIsMounted] = useState(false)
+  const [vaultTransition, setVaultTransition] = useState<VaultDirection | null>(null)
   const [state, setState] = useState<AuthState>(EMPTY_STATE)
 
   // Restore on mount. This runs before any error boundary exists, so every
@@ -172,7 +195,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // is one tenant's secrets appearing in another tenant's window.
     void swrMutate(() => true, undefined, { revalidate: false })
 
-    router.push('/login')
+    // The session is already gone by this point — the animation covers the
+    // navigation, it does not gate it. If anything here failed, the user would
+    // still be signed out.
+    const wantsMotion =
+      typeof window !== 'undefined' &&
+      !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (!wantsMotion) {
+      router.push('/login')
+      return
+    }
+
+    setVaultTransition('closing')
+    window.setTimeout(() => {
+      router.push('/login')
+      window.setTimeout(() => setVaultTransition(null), OVERLAP_MS)
+    }, SEAL_ANIMATION_MS)
   }, [router])
 
   /** Turn a successful auth response into a live session. */
@@ -218,7 +257,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         expiresAt,
         leaseId,
       })
-      router.push('/dashboard')
+
+      // Hold on the opening sequence before navigating. The session is already
+      // live at this point, so nothing is being delayed except the view — and
+      // the pause covers the dashboard's first fetch, which would otherwise be
+      // a screen of skeletons.
+      //
+      // Skipped entirely under reduced motion: someone who has asked for less
+      // motion should not also be asked to wait for it.
+      const wantsMotion =
+        typeof window !== 'undefined' &&
+        !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+      if (!wantsMotion) {
+        router.push('/dashboard')
+        return
+      }
+
+      setVaultTransition('opening')
+      window.setTimeout(() => {
+        // Navigate FIRST, clear after. Clearing first unmounted the overlay
+        // while the push was still in flight, uncovering the login form for a
+        // few frames — the flash of the page you just left, right at the end
+        // of an animation whose whole job is to hide the swap.
+        router.push('/dashboard')
+        window.setTimeout(() => setVaultTransition(null), OVERLAP_MS)
+      }, UNLOCK_ANIMATION_MS)
     },
     [router],
   )
@@ -295,8 +359,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // `logout` (e.g. useAsyncAction) gets a fresh identity each time, defeating
   // its own memoization.
   const value = useMemo<AuthContextType>(
-    () => ({ ...state, login, verifyMfa, logout, isAuthenticated }),
-    [state, login, verifyMfa, logout, isAuthenticated],
+    () => ({ ...state, login, verifyMfa, logout, isAuthenticated, vaultTransition }),
+    [state, login, verifyMfa, logout, isAuthenticated, vaultTransition],
   )
 
   if (!isMounted) return null

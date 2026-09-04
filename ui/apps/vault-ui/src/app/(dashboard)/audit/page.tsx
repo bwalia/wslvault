@@ -65,7 +65,7 @@ export default function AuditPage() {
       label: 'Action',
       sortable: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink">{row.action}</span>
+        <span className="font-mono text-sm text-ink">{row.action}</span>
       ),
     },
     {
@@ -73,14 +73,14 @@ export default function AuditPage() {
       label: 'Principal',
       sortable: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted">{row.principal ?? '—'}</span>
+        <span className="font-mono text-sm text-ink-muted">{row.principal ?? '—'}</span>
       ),
     },
     {
       field: 'resource',
       label: 'Resource',
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted truncate max-w-xs block">
+        <span className="font-mono text-sm text-ink-muted truncate max-w-xs block">
           {row.resource}
         </span>
       ),
@@ -96,7 +96,7 @@ export default function AuditPage() {
       sortable: true,
       render: row => (
         <span
-          className="font-mono text-[13px] tabular text-ink-faint"
+          className="font-mono text-sm tabular text-ink-faint"
           title={formatDateTime(row.timestamp)}
         >
           {formatRelativeTime(row.timestamp)}
@@ -111,7 +111,20 @@ export default function AuditPage() {
         <PageHeader
           title="Audit Log"
           description="Forensic event history across all services and principals"
-        />
+        guide={
+          <>
+            <p>
+              Every read, write and sign-in is recorded here — who did it, what
+              they touched, and whether it succeeded.
+            </p>
+            <p>
+              The records are chained together cryptographically, so an entry
+              cannot be quietly altered or removed after the fact. If one were,
+              the chain would no longer verify.
+            </p>
+          </>
+        }
+      />
 
         {/* Filter bar — single row above the table */}
         <div className="flex flex-wrap items-end gap-3 px-4 py-3 bg-surface rounded-xl border border-line">
@@ -256,7 +269,7 @@ export default function AuditPage() {
                         Metadata
                       </dt>
                       <dd>
-                        <pre className="font-mono text-[12px] text-ink bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap break-all">
+                        <pre className="font-mono text-xs text-ink bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-48 whitespace-pre-wrap break-all">
                           {JSON.stringify(selectedEvent.metadata, null, 2)}
                         </pre>
                       </dd>
@@ -289,7 +302,7 @@ function DetailRow({
         {children ?? (
           <span
             className={cn(
-              'text-[13px] text-ink break-all',
+              'text-sm text-ink break-all',
               mono && 'font-mono',
             )}
           >

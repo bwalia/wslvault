@@ -49,7 +49,7 @@ function TTLBar({ expiresAt, ttlSeconds }: { expiresAt: string; ttlSeconds: numb
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-[13px] font-mono tabular text-ink-muted w-16 text-right shrink-0">
+      <span className="text-sm font-mono tabular text-ink-muted w-16 text-right shrink-0">
         {remaining > 0 ? formatDuration(remaining) : 'Expired'}
       </span>
     </div>
@@ -115,10 +115,10 @@ export default function LeasesPage() {
       sortable: true,
       mono: true,
       render: row => (
-        <span className="font-mono text-[13px]">
+        <span className="font-mono text-sm">
           {row.target_label}
           {leaseId && row.id === leaseId && (
-            <span className="ml-2 text-[11px] font-sans font-medium text-primary-600 dark:text-primary-400">
+            <span className="ml-2 text-xs font-sans font-medium text-primary-600 dark:text-primary-400">
               this session
             </span>
           )}
@@ -137,7 +137,7 @@ export default function LeasesPage() {
       label: 'Lease ID',
       mono: true,
       render: row => (
-        <span className="font-mono text-[13px] text-ink-muted">{row.id}</span>
+        <span className="font-mono text-sm text-ink-muted">{row.id}</span>
       ),
     },
     { field: 'state', label: 'State', render: row => <StatusBadge status={row.state} /> },
@@ -196,6 +196,20 @@ export default function LeasesPage() {
       <PageHeader
         title="Leases"
         description="Token leases and remaining TTL. Revoking a lease immediately invalidates that JWT."
+        guide={
+          <>
+            <p>
+              A <strong>lease</strong> is a credential with an expiry date. Instead of a
+              password that works forever, the vault issues one that stops working
+              on its own after a set time.
+            </p>
+            <p>
+              That limits the damage if one is ever leaked: an expired lease is
+              useless to whoever found it. You can also <strong>revoke</strong> one here
+              to cut it off immediately.
+            </p>
+          </>
+        }
       />
 
       <div className="flex items-center gap-1 mb-6 p-1 rounded-lg bg-surface-2 border border-line w-fit">

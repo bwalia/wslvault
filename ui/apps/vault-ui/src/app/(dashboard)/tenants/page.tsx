@@ -439,7 +439,7 @@ export default function TenantsPage() {
             <div>
               <p className="text-sm font-medium text-ink mb-1.5">Invitation link</p>
               <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
-                <code className="flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed">
+                <code className="flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed">
                   {issued.invitation_url}
                 </code>
                 <button

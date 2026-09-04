@@ -5,9 +5,11 @@ import QRCode from 'react-qr-code'
 import { Check, Copy, Download, KeyRound, ShieldCheck, TriangleAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/Button'
+import { OtpInput } from '@/components/ui/OtpInput'
 import { Input } from '@/components/ui/Input'
 import { Card, CardHeader, CardTitle, CardBody } from '@/components/ui/Card'
 import { api } from '@/lib/api'
+import { keyLabel, recoveryCodeDocument, recoveryCodeFilename } from '@/lib/recovery-codes'
 import { errorMessage, mutate } from '@/lib/fetcher'
 
 /**
@@ -76,7 +78,15 @@ function CopyButton({ value, label }: { value: string; label: string }) {
   )
 }
 
-export function TwoFactorSetup() {
+export function TwoFactorSetup({
+  title = 'Two-factor authentication',
+  description = 'Add a time-based code from an authenticator app — Authy, Google Authenticator, 1Password, or any other TOTP app — to an API key. Once confirmed, that key needs a code as well as the key itself to sign in.',
+}: {
+  /** Overridden when this session's own key is already enrolled, so the card
+      says what it is actually for rather than repeating the page title. */
+  title?: string
+  description?: string
+} = {}) {
   const [stage, setStage] = useState<Stage>('start')
   const [apiKey, setApiKey] = useState('')
   const [enrolment, setEnrolment] = useState<EnrolResponse | null>(null)
@@ -125,17 +135,15 @@ export function TwoFactorSetup() {
 
   const downloadCodes = () => {
     if (!enrolment) return
-    const body = [
-      'WSLVault recovery codes',
-      'Each code works once. Store them where you can reach them without this vault.',
-      '',
-      ...enrolment.recovery_codes,
-      '',
-    ].join('\n')
+    // Named after the key, and the file says which key it is for. A generic
+    // "wslvault-recovery-codes.txt" tells a user with two accounts nothing, and
+    // a second download lands beside the first as "... (1).txt".
+    const account = keyLabel(apiKey)
+    const body = recoveryCodeDocument(account, enrolment.recovery_codes)
     const url = URL.createObjectURL(new Blob([body], { type: 'text/plain' }))
     const a = document.createElement('a')
     a.href = url
-    a.download = 'wslvault-recovery-codes.txt'
+    a.download = recoveryCodeFilename(account)
     a.click()
     URL.revokeObjectURL(url)
     setSavedCodes(true)
@@ -147,7 +155,7 @@ export function TwoFactorSetup() {
         <CardTitle>
           <span className="inline-flex items-center gap-2">
             <ShieldCheck className="w-4 h-4" />
-            Two-factor authentication
+            {title}
           </span>
         </CardTitle>
       </CardHeader>
@@ -156,7 +164,7 @@ export function TwoFactorSetup() {
         {error && (
           <div
             role="alert"
-            className="flex gap-2 items-start rounded-md border border-danger-600/40 bg-danger-600/10 p-3 text-[13px] text-ink"
+            className="flex gap-2 items-start rounded-md border border-danger-600/40 bg-danger-600/10 p-3 text-sm text-ink"
           >
             <TriangleAlert className="w-4 h-4 mt-0.5 shrink-0 text-danger-600" />
             <span>{error}</span>
@@ -165,12 +173,7 @@ export function TwoFactorSetup() {
 
         {stage === 'start' && (
           <>
-            <p className="text-[13px] text-ink-muted">
-              Add a time-based code from an authenticator app — Authy, Google
-              Authenticator, 1Password, or any other TOTP app — to an API key.
-              Once confirmed, that key needs a code as well as the key itself to
-              sign in.
-            </p>
+            <p className="text-sm text-ink-muted leading-relaxed">{description}</p>
             <Input
               label="API key"
               type="password"
@@ -191,7 +194,7 @@ export function TwoFactorSetup() {
           <>
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">1. Scan this code</h3>
-              <p className="text-[13px] text-ink-muted mb-3">
+              <p className="text-sm text-ink-muted mb-3">
                 Open your authenticator app and scan the QR code, or enter the
                 key below by hand.
               </p>
@@ -208,7 +211,7 @@ export function TwoFactorSetup() {
                 Or enter this key manually
               </label>
               <div className="flex items-center gap-1">
-                <code className="flex-1 font-mono text-[13px] break-all rounded-md bg-surface-2 border border-line px-3 py-2 text-ink">
+                <code className="flex-1 font-mono text-sm break-all rounded-md bg-surface-2 border border-line px-3 py-2 text-ink">
                   {enrolment.secret}
                 </code>
                 <CopyButton value={enrolment.secret} label="Copy setup key" />
@@ -217,13 +220,23 @@ export function TwoFactorSetup() {
 
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">2. Save your recovery codes</h3>
-              <p className="text-[13px] text-ink-muted mb-3">{enrolment.warning}</p>
-              <div className="grid grid-cols-2 gap-2 rounded-md bg-surface-2 border border-line p-3">
-                {enrolment.recovery_codes.map((c) => (
-                  <code key={c} className="font-mono text-[13px] text-ink">
-                    {c}
-                  </code>
-                ))}
+              <p className="text-sm text-ink-muted mb-3">{enrolment.warning}</p>
+              <div className="rounded-md bg-surface-2 border border-line overflow-hidden">
+                {/* Which key these belong to. They are looked up by
+                    `api_key_id`, so a code from another key is simply not
+                    present — and eight strings of base32 do not say which key
+                    that was once they leave the screen. */}
+                <p className="px-3 py-2 border-b border-line text-xs text-ink-muted">
+                  For <strong className="text-ink font-semibold">{keyLabel(apiKey) ?? 'this key'}</strong>
+                  {' — they will not work for any other key.'}
+                </p>
+                <div className="grid grid-cols-2 gap-2 p-3">
+                  {enrolment.recovery_codes.map((c) => (
+                    <code key={c} className="font-mono text-sm text-ink">
+                      {c}
+                    </code>
+                  ))}
+                </div>
               </div>
               <div className="flex items-center gap-2 mt-2">
                 <Button variant="secondary" size="sm" onClick={downloadCodes}>
@@ -231,10 +244,10 @@ export function TwoFactorSetup() {
                   Download
                 </Button>
                 <CopyButton
-                  value={enrolment.recovery_codes.join('\n')}
+                  value={recoveryCodeDocument(keyLabel(apiKey), enrolment.recovery_codes)}
                   label="Copy recovery codes"
                 />
-                <label className="flex items-center gap-2 text-[13px] text-ink-muted ml-1">
+                <label className="flex items-center gap-2 text-sm text-ink-muted ml-1">
                   <input
                     type="checkbox"
                     checked={savedCodes}
@@ -248,19 +261,20 @@ export function TwoFactorSetup() {
 
             <div>
               <h3 className="text-sm font-medium text-ink mb-1">3. Confirm it works</h3>
-              <p className="text-[13px] text-ink-muted mb-3">
+              <p className="text-sm text-ink-muted mb-3">
                 Enrolment stays inactive until a generated code proves the app is
                 set up, so a half-finished attempt cannot lock you out.
               </p>
-              <Input
-                label="6-digit code"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                placeholder="000000"
-                mono
-                maxLength={6}
+              <OtpInput
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                onChange={setCode}
+                disabled={busy}
+                // No auto-submit here, deliberately. The button is gated on the
+                // recovery codes being acknowledged, and submitting the moment
+                // the sixth digit lands would either fire a request that is
+                // refused or quietly bypass the acknowledgement — both worse
+                // than one press.
+                ariaLabel="Six-digit code from your authenticator app"
               />
               <div className="flex items-center gap-2 mt-3">
                 <Button
@@ -288,7 +302,7 @@ export function TwoFactorSetup() {
                 </Button>
               </div>
               {!savedCodes && code.length === 6 && (
-                <p className="text-[13px] text-ink-muted mt-2">
+                <p className="text-sm text-ink-muted mt-2">
                   Confirm you have saved the recovery codes to continue.
                 </p>
               )}
@@ -303,7 +317,7 @@ export function TwoFactorSetup() {
             </div>
             <div>
               <h3 className="text-sm font-medium text-ink">Authenticator enabled</h3>
-              <p className="text-[13px] text-ink-muted mt-1">
+              <p className="text-sm text-ink-muted mt-1">
                 Signing in with this key now asks for a code. Keep the recovery
                 codes somewhere you can reach without this vault.
               </p>

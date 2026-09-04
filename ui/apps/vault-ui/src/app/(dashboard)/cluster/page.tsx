@@ -124,7 +124,7 @@ export default function ClusterPage() {
             <div className="flex items-center gap-1.5 text-xs text-ink-muted shrink-0">
               <Crown className="w-3.5 h-3.5 text-warn-500" aria-hidden="true" />
               <span>Leader:</span>
-              <span className="font-mono text-[13px] text-ink">
+              <span className="font-mono text-sm text-ink">
                 {leaderNode.address ?? leaderNode.id}
               </span>
             </div>
@@ -192,12 +192,12 @@ export default function ClusterPage() {
                             aria-label="Leader node"
                           />
                         )}
-                        <span className="font-mono text-[13px] text-ink truncate max-w-[140px]">
+                        <span className="font-mono text-sm text-ink truncate max-w-[140px]">
                           {node.id}
                         </span>
                       </div>
                     </td>
-                    <td className="px-4 py-2.5 font-mono text-[13px] text-ink-faint">
+                    <td className="px-4 py-2.5 font-mono text-sm text-ink-faint">
                       {node.address ?? '—'}
                     </td>
                     <td className="px-4 py-2.5">
@@ -206,13 +206,13 @@ export default function ClusterPage() {
                     <td className="px-4 py-2.5">
                       <StatusBadge status={node.health} />
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-[13px] tabular text-ink-muted">
+                    <td className="px-4 py-2.5 text-right font-mono text-sm tabular text-ink-muted">
                       {node.raft_index?.toLocaleString() ?? '—'}
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-[13px] tabular text-ink-muted">
+                    <td className="px-4 py-2.5 text-right font-mono text-sm tabular text-ink-muted">
                       {node.commit_index?.toLocaleString() ?? '—'}
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-[13px] tabular text-ink-muted">
+                    <td className="px-4 py-2.5 text-right font-mono text-sm tabular text-ink-muted">
                       {node.last_contact_ms != null ? `${node.last_contact_ms} ms` : '—'}
                     </td>
                   </tr>

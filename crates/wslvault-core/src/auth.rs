@@ -300,9 +300,15 @@ fn verify_token(token: &str) -> Result<TokenClaims, AuthFailure> {
             "{JWT_SECRET_ENV} is empty; token authentication is unavailable"
         )));
     }
-    // Defaults already require and validate `exp`; issuer/audience are not
-    // enforced so tokens from any configured identity provider are accepted.
-    let validation = Validation::new(Algorithm::HS256);
+    // Defaults already require and validate `exp`. Audience is deliberately not
+    // enforced, so tokens from any configured identity provider are accepted —
+    // but `Validation::new` turns `validate_aud` ON with an empty allow-list,
+    // which rejects every token that *carries* an `aud` at all. Every HS256
+    // token this system issues carries `aud: "wslvault"`, so the comment
+    // described the intent and the code did the opposite: `InvalidAudience` on
+    // its own tokens. The EdDSA path beside it has always cleared the flag.
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_aud = false;
     decode::<TokenClaims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
@@ -378,6 +384,45 @@ pub fn act_as_tenant(identity: &Identity, headers: &HeaderMap) -> (String, bool)
         Some(t) if t != identity.tenant_id => (t.to_string(), true),
         _ => (identity.tenant_id.clone(), false),
     }
+}
+
+/// Environment variable naming the policy that confers platform administration.
+pub const ADMIN_POLICY_ENV: &str = "VAULT_ADMIN_POLICY";
+
+/// Policy required of a caller acting as a platform administrator when
+/// [`ADMIN_POLICY_ENV`] is unset.
+///
+/// Namespaced deliberately. This was once `"admin"` — the single most likely
+/// name a tenant gives its own administrator policy — and nothing about the
+/// check is tenant-scoped: carrying it grants authority over every tenant in
+/// the deployment. A tenant administrator and a platform administrator are
+/// different things, and the default name now says which one it means.
+pub const DEFAULT_ADMIN_POLICY: &str = "wslvault:platform-admin";
+
+/// The policy name this deployment treats as platform administration.
+pub fn admin_policy_name() -> String {
+    std::env::var(ADMIN_POLICY_ENV)
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| DEFAULT_ADMIN_POLICY.to_string())
+}
+
+/// Whether this identity may act on the platform as a whole.
+///
+/// Superusers qualify without carrying the policy: `is_superuser` is the
+/// database's own answer to the same question, and a superuser locked out of
+/// operator endpoints for a missing policy row has no way back in.
+///
+/// Lives here rather than beside identity-service's richer `AdminAuth` (which
+/// also accepts the bootstrap `X-Admin-Token`) so that every other service
+/// gating an operator endpoint asks the same question of the same name,
+/// instead of each growing its own copy of the string.
+pub fn is_platform_admin(identity: &Identity) -> bool {
+    if identity.superuser {
+        return true;
+    }
+    let required = admin_policy_name();
+    identity.policies.contains(&required)
 }
 
 /// Resolve the calling identity. See the module docs for the precedence order.
@@ -465,6 +510,54 @@ mod tests {
     /// and the harness runs tests in parallel, so every test that mutates them
     /// holds this lock for its full duration.
     pub(super) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn holder(policies: &[&str]) -> Identity {
+        Identity {
+            policies: policies.iter().map(|s| s.to_string()).collect(),
+            ..identity(false)
+        }
+    }
+
+    /// The default must not be `admin`.
+    ///
+    /// `admin` is the most likely name a tenant gives its own administrator
+    /// policy, and this check is not tenant-scoped: passing it grants authority
+    /// over the whole deployment. A tenant that named its own policy `admin`
+    /// would be handing its staff the estate.
+    #[test]
+    fn a_tenant_admin_is_not_a_platform_admin() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ADMIN_POLICY_ENV);
+
+        assert!(!is_platform_admin(&holder(&["admin"])));
+        assert!(!is_platform_admin(&holder(&[])));
+        assert!(is_platform_admin(&holder(&[DEFAULT_ADMIN_POLICY])));
+    }
+
+    /// A superuser passes without the policy: `is_superuser` is the database's
+    /// own answer to the same question, and one locked out for a missing policy
+    /// row has no way back in.
+    #[test]
+    fn a_superuser_needs_no_policy() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ADMIN_POLICY_ENV);
+
+        assert!(is_platform_admin(&identity(true)));
+    }
+
+    /// An operator may rename the policy; the check must follow the rename in
+    /// both directions, or clearing the chart's old `admin` pin locks everyone
+    /// out on one side and grants everyone on the other.
+    #[test]
+    fn the_required_policy_name_is_configurable() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(ADMIN_POLICY_ENV, "ops:root");
+
+        assert!(is_platform_admin(&holder(&["ops:root"])));
+        assert!(!is_platform_admin(&holder(&[DEFAULT_ADMIN_POLICY])));
+
+        std::env::remove_var(ADMIN_POLICY_ENV);
+    }
 
     /// Enable the gateway header contract for the duration of a test.
     struct TrustHeaders(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);

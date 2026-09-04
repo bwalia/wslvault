@@ -58,9 +58,12 @@ pub struct TenantStoreState {
 /// including listing their own secrets. That is what shipped first, and it
 /// looked like a permissions bug rather than a missing row.
 ///
-/// Scoped to `secret/**` deliberately. It does not grant policy management,
-/// key management or anything cross-tenant — those are separate decisions an
-/// operator makes deliberately, not defaults a tenant inherits by existing.
+/// Scoped to the tenant's own secrets and its own transit keys. It does not
+/// grant policy management or anything cross-tenant — those are separate
+/// decisions an operator makes deliberately, not defaults a tenant inherits by
+/// existing. Transit is in because the console shows it to every member, not
+/// only administrators; without the grant the page is advertised and then
+/// refuses every request.
 const DEFAULT_TENANT_POLICY: &str = "default";
 
 /// Create the tenant's baseline policy.
@@ -73,12 +76,22 @@ const DEFAULT_TENANT_POLICY: &str = "default";
 async fn seed_default_policy(pool: &wslvault_storage::pool::DbPool, tenant_id: &Uuid) {
     let document = serde_json::json!({
         "name": DEFAULT_TENANT_POLICY,
-        "rules": [{
-            // `secret/**` covers both shapes the engine checks: `secret/list`
-            // and `secret/data/<path>`.
-            "paths": ["secret/**"],
-            "capabilities": ["read", "write", "list", "delete"],
-        }],
+        "rules": [
+            {
+                // `secret/**` covers both shapes the engine checks:
+                // `secret/list` and `secret/data/<path>`.
+                "paths": ["secret/**"],
+                "capabilities": ["read", "write", "list", "delete"],
+            },
+            {
+                // transit-engine scopes every store call to the tenant from the
+                // verified token, so these paths can only name the tenant's own
+                // keys. Covers `transit/keys`, `transit/keys/<name>` and the
+                // encrypt / decrypt / sign / verify / rewrap forms.
+                "paths": ["transit/**"],
+                "capabilities": ["read", "write", "list"],
+            },
+        ],
     });
 
     match wslvault_storage::policy_store::put_policy(
@@ -476,9 +489,11 @@ pub async fn list_tenants(State(store): State<TenantStoreState>) -> impl IntoRes
     tag = "tenants"
 )]
 pub async fn get_tenant(
-    State(store): State<TenantStoreState>,
+    State(state): State<TenantReadState>,
+    headers: axum::http::HeaderMap,
     Path(id_str): Path<String>,
 ) -> impl IntoResponse {
+    let store = &state.store;
     let tenant_id: TenantId = match id_str.parse() {
         Ok(t) => t,
         Err(_) => {
@@ -492,6 +507,50 @@ pub async fn get_tenant(
                 .into_response()
         }
     };
+
+    // Authorised here rather than by a blanket router-level admin gate.
+    //
+    // Reading the tenant you belong to is not a platform operation. Behind
+    // `require_admin` the console's own header — which looks up the signed-in
+    // tenant's display name to show it — answered 403 to every ordinary
+    // member, so the app greeted its users by refusing them. Listing tenants
+    // still requires an administrator, because that one *is* cross-tenant.
+    //
+    // Administrators are asked first, and through the same gate as every other
+    // management route, so the bootstrap `X-Admin-Token` keeps working here. It
+    // authenticates no ordinary member, which is what the second arm is for.
+    if state.admin.authenticate(&headers).await.is_err() {
+        match wslvault_core::auth::resolve_identity(&headers).await {
+            Ok(identity) if identity.tenant_id == id_str => {}
+            Ok(identity) => {
+                tracing::warn!(
+                    principal_id = %identity.principal_id,
+                    home_tenant = %identity.tenant_id,
+                    asked_for = %id_str,
+                    "refused a cross-tenant tenant read"
+                );
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "code": "cross_tenant_denied",
+                        "message": "you can read your own tenant; reading another requires \
+                                    platform administration",
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({
+                        "code": "unauthenticated",
+                        "message": e.to_string(),
+                    })),
+                )
+                    .into_response()
+            }
+        }
+    }
 
     match store.get(&tenant_id).await {
         Ok(tenant) => (StatusCode::OK, Json(TenantResponse::from(&tenant))).into_response(),
@@ -603,15 +662,43 @@ pub async fn delete_tenant(
 /// inherently cross-tenant, and creating one is how the platform grows. So they
 /// require an administrator — the `VAULT_ADMIN_TOKEN` bootstrap credential, a
 /// token carrying the administrator policy, or a superuser token.
+///
+/// `GET /v1/tenants/:id` is the exception and is mounted separately. Reading
+/// the tenant you belong to is an ordinary member's business — the console
+/// header does it on every page to show the tenant's name — so that one
+/// authorises inside the handler, which can tell "my own tenant" from
+/// "somebody else's". Under the blanket gate it could not, and answered 403 to
+/// every non-administrator.
 pub fn router(store: TenantStoreState, admin_auth: crate::api_keys::AdminAuth) -> Router {
-    Router::new()
+    let platform_routes = Router::new()
         .route("/v1/tenants", post(create_tenant).get(list_tenants))
-        .route("/v1/tenants/:id", get(get_tenant).delete(delete_tenant))
-        .with_state(store)
+        .route("/v1/tenants/:id", axum::routing::delete(delete_tenant))
+        .with_state(store.clone())
         .layer(axum::middleware::from_fn_with_state(
-            admin_auth,
+            admin_auth.clone(),
             crate::api_keys::require_admin,
-        ))
+        ));
+
+    Router::new()
+        .route("/v1/tenants/:id", get(get_tenant))
+        .with_state(TenantReadState {
+            store,
+            admin: admin_auth,
+        })
+        .merge(platform_routes)
+}
+
+/// What `get_tenant` needs: the store, plus the same admin gate the platform
+/// routes use.
+///
+/// It carries the gate rather than sitting behind it because it has to
+/// distinguish "an administrator, reading anything" from "a member, reading
+/// their own" — a decision that needs the path parameter, which a router-level
+/// layer does not have.
+#[derive(Clone)]
+pub struct TenantReadState {
+    store: TenantStoreState,
+    admin: crate::api_keys::AdminAuth,
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +722,28 @@ mod tests {
             Some(b"test-admin-token".to_vec()),
             "admin",
         )
+    }
+
+    /// An HS256 token for an ordinary member of `tenant_id`, signed with the
+    /// same secret `test_admin` verifies against. No administrator policy — the
+    /// whole point is that it is the credential the gate used to reject.
+    fn member_token(tenant_id: &str) -> String {
+        // `resolve_identity` reads the shared secret from the process
+        // environment. Every caller here sets the same value, so the tests do
+        // not race each other over it.
+        std::env::set_var(
+            "VAULT_JWT_SECRET",
+            "test-secret-that-is-at-least-32-bytes!!",
+        );
+        crate::token::TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!")
+            .issue_token(
+                "member-principal",
+                tenant_id,
+                vec!["default".to_string()],
+                300,
+            )
+            .expect("issuing a test token")
+            .0
     }
 
     fn memory_store() -> TenantStoreState {
@@ -757,6 +866,78 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    /// A member may read the tenant it belongs to.
+    ///
+    /// This is what the console header does on every page load. Behind the
+    /// blanket admin gate it answered 403 to everyone without the platform
+    /// policy, so signing in as an ordinary member threw an error dialog
+    /// reading "does not carry the administrator policy" before the dashboard
+    /// had rendered anything.
+    #[tokio::test]
+    async fn a_member_may_read_its_own_tenant() {
+        let store = memory_store();
+        let tenant = sample_tenant("acme");
+        let id = tenant.id.clone();
+        store.create(tenant).await.unwrap();
+
+        let app = router(store, test_admin());
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/v1/tenants/{id}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", member_token(&id.to_string())),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
+    }
+
+    /// ...and only that one. The relaxation is "your own tenant", not "any
+    /// tenant" — the id in the path is attacker-controlled and the only thing
+    /// standing between a member and another organisation's record.
+    #[tokio::test]
+    async fn a_member_may_not_read_another_tenant() {
+        let store = memory_store();
+        let theirs = sample_tenant("acme");
+        let theirs_id = theirs.id.clone();
+        store.create(theirs).await.unwrap();
+
+        let app = router(store, test_admin());
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/v1/tenants/{theirs_id}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", member_token(&TenantId::new().to_string())),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    /// Listing is inherently cross-tenant and stays an administrator's job.
+    #[tokio::test]
+    async fn a_member_may_not_list_tenants() {
+        let app = router(memory_store(), test_admin());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/v1/tenants")
+            .header(
+                "authorization",
+                format!("Bearer {}", member_token(&TenantId::new().to_string())),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
     }
 
     #[tokio::test]

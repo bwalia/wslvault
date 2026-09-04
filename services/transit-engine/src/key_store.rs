@@ -99,6 +99,28 @@ impl TransitKey {
     }
 }
 
+/// What a listing returns: everything about a key except the one thing that
+/// must never leave this process. `TransitKey` carries raw material, so it is
+/// not a type that can be handed to a serialiser by mistake; this is.
+#[derive(Debug, Clone)]
+pub struct TransitKeySummary {
+    pub name: String,
+    pub current_version: u32,
+    pub algorithm: KeyAlgorithm,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<&TransitKey> for TransitKeySummary {
+    fn from(key: &TransitKey) -> Self {
+        Self {
+            name: key.name.clone(),
+            current_version: key.current_version,
+            algorithm: key.algorithm.clone(),
+            created_at: key.created_at,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Backend trait
 // ---------------------------------------------------------------------------
@@ -126,6 +148,14 @@ pub trait TransitKeyStoreBackend: Send + Sync {
     /// Old versions are retained so that existing ciphertexts can still be
     /// decrypted until a rewrap pass has been completed.
     async fn rotate_key(&self, tenant_id: &str, key_name: &str) -> Result<u32, VaultError>;
+
+    /// Every key belonging to `tenant_id`, name-ordered.
+    ///
+    /// Scoped to one tenant at the store layer rather than filtered by the
+    /// caller: a listing that returned every tenant's key names and left the
+    /// handler to trim it is one forgotten filter away from being a
+    /// cross-tenant disclosure.
+    async fn list_keys(&self, tenant_id: &str) -> Result<Vec<TransitKeySummary>, VaultError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +198,10 @@ impl TransitKeyStoreBackend for InMemoryTransitKeyStore {
 
     async fn rotate_key(&self, tenant_id: &str, key_name: &str) -> Result<u32, VaultError> {
         rotate_key(&self.store, tenant_id, key_name).await
+    }
+
+    async fn list_keys(&self, tenant_id: &str) -> Result<Vec<TransitKeySummary>, VaultError> {
+        list_keys(&self.store, tenant_id).await
     }
 }
 
@@ -229,6 +263,25 @@ async fn create_key(
     Ok(())
 }
 
+/// Every key held for `tenant_id`, ordered by name.
+///
+/// Both backends keep the full key set in this map — the PG backend warm-loads
+/// it on startup and writes through on create and rotate — so a listing needs
+/// no query of its own.
+async fn list_keys(
+    store: &SharedKeyStore,
+    tenant_id: &str,
+) -> Result<Vec<TransitKeySummary>, VaultError> {
+    let guard = store.read().await;
+    let mut keys: Vec<TransitKeySummary> = guard
+        .iter()
+        .filter(|((owner, _), _)| owner == tenant_id)
+        .map(|(_, key)| TransitKeySummary::from(key))
+        .collect();
+    keys.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(keys)
+}
+
 /// Look up an existing transit key by tenant + name.
 ///
 /// Returns a clone of the key so callers hold no references into the lock.
@@ -281,4 +334,50 @@ pub(crate) fn generate_key_material() -> [u8; 32] {
     // ring's SystemRandom only fails if the OS RNG is broken; panic is appropriate.
     rng.fill(&mut key).expect("OS RNG must be available");
     key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A listing must never reach past the tenant it was asked for.
+    ///
+    /// The filter is one line, which is exactly why it is worth pinning: drop
+    /// it and every tenant learns every other tenant's key names, with nothing
+    /// in the type system to notice.
+    #[tokio::test]
+    async fn list_keys_is_scoped_to_one_tenant() {
+        let store = InMemoryTransitKeyStore::new();
+        store.create_key("tenant-a", "billing").await.unwrap();
+        store.create_key("tenant-a", "apollo").await.unwrap();
+        store
+            .create_key("tenant-b", "secret-project")
+            .await
+            .unwrap();
+
+        let names: Vec<String> = store
+            .list_keys("tenant-a")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|k| k.name)
+            .collect();
+
+        // Sorted, and tenant-b's key is absent.
+        assert_eq!(names, vec!["apollo".to_string(), "billing".to_string()]);
+
+        assert_eq!(store.list_keys("tenant-c").await.unwrap().len(), 0);
+    }
+
+    /// Rotation must be visible in the listing — a stale `latest_version` sends
+    /// an operator rewrapping against a version that is no longer current.
+    #[tokio::test]
+    async fn list_keys_reports_the_current_version() {
+        let store = InMemoryTransitKeyStore::new();
+        store.create_key("tenant-a", "billing").await.unwrap();
+        store.rotate_key("tenant-a", "billing").await.unwrap();
+
+        let keys = store.list_keys("tenant-a").await.unwrap();
+        assert_eq!(keys[0].current_version, 2);
+    }
 }

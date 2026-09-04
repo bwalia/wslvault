@@ -13,7 +13,10 @@ import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmModal } from '@/components/ui/ConfirmModal'
 import { ErrorBanner, LoadError } from '@/components/ErrorBanner'
-import { Lock, ChevronRight, ChevronDown, Eye, EyeOff, Plus, Trash2, Save, Code2, Folder, FolderOpen } from 'lucide-react'
+import {
+  Lock, ChevronRight, ChevronDown, Eye, EyeOff, Plus, Trash2, Save, Code2,
+  Folder, FolderOpen, Search,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 interface SecretListResponse {
@@ -102,11 +105,20 @@ const TreeRow = memo(function TreeRow({
     <li>
       <div
         className={cn(
-          'group flex items-center gap-1 rounded-lg transition-colors',
-          isSelected ? 'bg-primary-600/10' : 'hover:bg-surface-2',
+          'group relative flex items-center gap-1 rounded-lg transition-colors',
+          // Brass, matching the sidebar's active item and the primary action.
+          // Selection was previously a blue wash, the one place in the app that
+          // said "current" in a colour nothing else used.
+          isSelected ? 'bg-brass/[0.12]' : 'hover:bg-surface-2',
         )}
         style={{ paddingLeft: `${depth * 12}px` }}
       >
+        {isSelected && (
+          <span
+            className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-full bg-brass"
+            aria-hidden="true"
+          />
+        )}
         {isFolder ? (
           <button
             onClick={handleToggle}
@@ -129,7 +141,7 @@ const TreeRow = memo(function TreeRow({
           aria-current={isSelected ? 'true' : undefined}
           className={cn(
             'flex-1 min-w-0 flex items-center gap-1.5 px-1 py-1.5 text-sm text-left rounded-lg focus-ring',
-            isSelected ? 'text-primary-700' : 'text-ink',
+            isSelected ? 'text-ink font-medium' : 'text-ink',
           )}
         >
           {isFolder ? (
@@ -141,10 +153,17 @@ const TreeRow = memo(function TreeRow({
           ) : (
             <Lock className="w-4 h-4 shrink-0 text-ink-faint" aria-hidden="true" />
           )}
-          <span className="truncate font-mono text-[13px]">{node.name}</span>
+          <span className="truncate font-mono text-sm">{node.name}</span>
           {isFolder && node.isLeaf && (
-            <span className="text-[10px] text-ink-faint shrink-0" title="Also a secret">
+            <span className="text-xs text-ink-faint shrink-0" title="Also a secret">
               ●
+            </span>
+          )}
+          {/* How much is under a folder, so a collapsed branch still says
+              whether it holds two secrets or two hundred. */}
+          {isFolder && (
+            <span className="ml-auto pl-1.5 shrink-0 text-xs tabular-nums text-ink-faint">
+              {node.leafCount}
             </span>
           )}
         </button>
@@ -199,15 +218,18 @@ const FieldRow = memo(function FieldRow({
   onToggleMask,
 }: FieldRowProps) {
   return (
-    <div className="flex items-center gap-2">
+    // A row in a table rather than three bordered boxes floating in a stack.
+    // The cell borders were doing nothing that the row divider does not, and a
+    // secret with a dozen fields turned into a wall of outlines.
+    <div className="group/row flex items-stretch">
       <input
         value={field.k}
         onChange={e => onChange(field.id, { k: e.target.value })}
         placeholder="key"
         aria-label={`Field ${index + 1} key`}
-        className="w-1/3 px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+        className="w-1/3 min-w-0 px-3 py-2 text-sm font-mono bg-transparent text-ink placeholder:text-ink-faint border-r border-line focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
       />
-      <div className="relative flex-1">
+      <div className="relative flex-1 min-w-0 flex">
         <input
           type={masked ? 'password' : 'text'}
           value={field.v}
@@ -216,7 +238,7 @@ const FieldRow = memo(function FieldRow({
           aria-label={`Field ${index + 1} value`}
           autoComplete="off"
           spellCheck={false}
-          className="w-full px-3 py-1.5 pr-8 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+          className="w-full px-3 py-2 pr-8 text-sm font-mono bg-transparent text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-inset focus:ring-primary-500/40 focus:bg-surface-2"
         />
         <button
           type="button"
@@ -227,10 +249,13 @@ const FieldRow = memo(function FieldRow({
           {masked ? <Eye className="w-3.5 h-3.5" aria-hidden="true" /> : <EyeOff className="w-3.5 h-3.5" aria-hidden="true" />}
         </button>
       </div>
+      {/* Revealed on hover or keyboard focus. Delete sitting permanently beside
+          every row invites the mis-click; hiding it from the keyboard would be
+          worse, hence focus-within as well as hover. */}
       <button
         onClick={() => onRemove(field.id)}
         aria-label={`Remove field ${field.k || index + 1}`}
-        className="p-1.5 text-ink-faint hover:text-danger-600 transition-colors focus-ring rounded"
+        className="px-2.5 text-ink-faint opacity-0 group-hover/row:opacity-100 focus:opacity-100 hover:text-danger-600 transition-all focus-ring rounded"
       >
         <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
       </button>
@@ -283,19 +308,33 @@ function FieldEditor({
   }, [setFields])
 
   return (
-    <div className="space-y-2">
-      {fields.map((field, idx) => (
-        <FieldRow
-          key={field.id}
-          field={field}
-          index={idx}
-          masked={!revealed.has(field.id)}
-          onChange={onChange}
-          onRemove={onRemove}
-          onToggleMask={onToggleMask}
-        />
-      ))}
-      <Button variant="ghost" size="sm" onClick={onAdd}>
+    <div>
+      <div className="rounded-xl border border-line overflow-hidden">
+        <div className="flex bg-surface-2 border-b border-line text-xs font-semibold uppercase tracking-[0.1em] text-ink-muted">
+          <span className="w-1/3 px-3 py-2 border-r border-line">Key</span>
+          <span className="flex-1 px-3 py-2">Value</span>
+          <span className="w-[34px]" aria-hidden="true" />
+        </div>
+        <div className="divide-y divide-line">
+          {fields.length === 0 && (
+            <p className="px-3 py-4 text-sm text-ink-faint">
+              No fields yet — add one below.
+            </p>
+          )}
+          {fields.map((field, idx) => (
+            <FieldRow
+              key={field.id}
+              field={field}
+              index={idx}
+              masked={!revealed.has(field.id)}
+              onChange={onChange}
+              onRemove={onRemove}
+              onToggleMask={onToggleMask}
+            />
+          ))}
+        </div>
+      </div>
+      <Button variant="ghost" size="sm" onClick={onAdd} className="mt-2">
         <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Add field
       </Button>
     </div>
@@ -415,7 +454,36 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3">
-        <p className="font-mono text-[13px] text-ink break-all">{path}</p>
+        {/* Breadcrumb rather than a flat string. The guidance is to use one at
+            three levels or more, and a secret path is exactly that: the folders
+            it sits in are meaningful context, not punctuation. The leaf carries
+            a lock so the secret itself is distinguishable at a glance from the
+            path leading to it. */}
+        <nav aria-label="Secret path" className="min-w-0">
+          <ol className="flex items-center flex-wrap gap-x-1 gap-y-0.5 font-mono text-sm">
+            {path.split('/').map((part, i, all) => {
+              const last = i === all.length - 1
+              return (
+                <li key={i} className="flex items-center gap-1 min-w-0">
+                  {i > 0 && (
+                    <ChevronRight
+                      className="w-3 h-3 shrink-0 text-ink-faint"
+                      aria-hidden="true"
+                    />
+                  )}
+                  {last ? (
+                    <span className="inline-flex items-center gap-1.5 font-medium text-ink truncate">
+                      <Lock className="w-3 h-3 shrink-0 text-brass" aria-hidden="true" />
+                      {part}
+                    </span>
+                  ) : (
+                    <span className="text-ink-faint truncate">{part}</span>
+                  )}
+                </li>
+              )
+            })}
+          </ol>
+        </nav>
         <button
           onClick={() => setJsonMode(m => !m)}
           aria-label={jsonMode ? 'Switch to field editor' : 'Switch to JSON editor'}
@@ -433,12 +501,12 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
         <dl className="flex gap-4">
           <div>
             <dt className="text-xs text-ink-faint">Version</dt>
-            <dd className="font-mono text-[13px] text-ink tabular">{data.version}</dd>
+            <dd className="font-mono text-sm text-ink tabular">{data.version}</dd>
           </div>
           {data.created_at && (
             <div>
               <dt className="text-xs text-ink-faint">Created</dt>
-              <dd className="font-mono text-[13px] text-ink tabular">
+              <dd className="font-mono text-sm text-ink tabular">
                 {new Date(data.created_at).toLocaleString()}
               </dd>
             </div>
@@ -460,7 +528,7 @@ function SecretEditor({ path, onDeleted }: { path: string; onDeleted: () => void
           rows={12}
           aria-label="JSON editor"
           spellCheck={false}
-          className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+          className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
         />
       ) : (
         <FieldEditor fields={fields} setFields={setFields} />
@@ -540,18 +608,27 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
           placeholder="myapp/database"
           autoComplete="off"
           spellCheck={false}
-          className="w-full px-3 py-1.5 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+          className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
         />
-        <p className="text-xs text-ink-faint">Slashes create folders in the tree.</p>
+        <p className="text-xs text-ink-muted">
+          Slashes create folders — <span className="font-mono text-ink">prod/db/password</span>{' '}
+          files it under <span className="font-mono text-ink">prod</span> ›{' '}
+          <span className="font-mono text-ink">db</span>.
+        </p>
       </div>
 
       <FieldEditor fields={fields} setFields={setFields} />
 
       <ErrorBanner message={create.error} onDismiss={create.clearError} />
 
-      <Button size="sm" loading={create.pending} onClick={onCreate} disabled={!secretPath.trim()}>
-        Create secret
-      </Button>
+      <div className="flex items-center gap-3">
+        <Button loading={create.pending} onClick={onCreate} disabled={!secretPath.trim()}>
+          Create secret
+        </Button>
+        {!secretPath.trim() && (
+          <span className="text-xs text-ink-muted">Give it a path first.</span>
+        )}
+      </div>
     </div>
   )
 }
@@ -570,7 +647,30 @@ export default function SecretsPage() {
   // Rebuild only when the path list actually changes — not on every keystroke
   // in the editor, which is what the old inline O(n²) build did.
   const paths = useMemo(() => listData?.paths ?? [], [listData?.paths])
-  const tree = useMemo(() => buildSecretTree(paths), [paths])
+
+  const [filter, setFilter] = useState('')
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase()
+    if (!q) return paths
+    return paths.filter(p => p.toLowerCase().includes(q))
+  }, [paths, filter])
+
+  // Built from the FILTERED list, not filtered afterwards: pruning a finished
+  // tree leaves folders whose children have all been removed, so a search for
+  // "redis" would still render an empty "prod" branch to click into.
+  const tree = useMemo(() => buildSecretTree(filtered), [filtered])
+
+  // A search should show its results, not make the user expand three folders to
+  // find them. Any active filter expands every branch on the way down.
+  useEffect(() => {
+    if (!filter.trim()) return
+    const branches = new Set<string>()
+    for (const p of filtered) {
+      const parts = p.split('/')
+      for (let i = 1; i < parts.length; i++) branches.add(parts.slice(0, i).join('/'))
+    }
+    setExpanded(prev => new Set([...prev, ...branches]))
+  }, [filter, filtered])
 
   const onToggle = useCallback((path: string) => {
     setExpanded(prev => {
@@ -618,7 +718,25 @@ export default function SecretsPage() {
     <div className="max-w-7xl space-y-6">
       <PageHeader
         title="Secrets"
-        description="Browse and manage secret key-value pairs"
+        description="Every password, key and certificate your organisation stores, encrypted and organised into folders."
+        guide={
+          <>
+            <p>
+              A <strong>secret</strong> is any value you would not want written down in
+              plain text: a database password, an API key, a certificate.
+            </p>
+            <p>
+              Everything here is encrypted before it is stored, with a key that
+              belongs to your organisation alone. Nobody else can read these —
+              not other tenants, and not someone with a copy of the database.
+            </p>
+            <p>
+              Paths work like folders. <strong>prod/database/password</strong> keeps your
+              production database password separate from
+              <strong> staging/database/password</strong>.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={startCreating}>
             <Plus className="w-4 h-4" aria-hidden="true" />
@@ -627,12 +745,43 @@ export default function SecretsPage() {
         }
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card className="lg:col-span-1">
-          <CardHeader>
-            <CardTitle>Secret paths</CardTitle>
+      {/* A fixed 20rem rail rather than a third of the grid. Paths are deep and
+          nest — at lg:col-span-1 "prod / postgres / primary" wrapped, while the
+          editor beside it had width to spare. */}
+      <div className="grid grid-cols-1 lg:grid-cols-[20rem_minmax(0,1fr)] gap-6 items-start">
+        <Card className="lg:sticky lg:top-6">
+          <CardHeader className="flex-col items-stretch gap-3 py-3">
+            <div className="flex items-center justify-between">
+              <CardTitle>Secret paths</CardTitle>
+              {paths.length > 0 && (
+                <span className="text-xs font-mono text-ink-faint tabular-nums">
+                  {filter.trim() ? `${filtered.length}/${paths.length}` : paths.length}
+                </span>
+              )}
+            </div>
+            {/* Search earns its place the moment a tenant has more than a
+                screenful: without it the only way to find a path is to expand
+                every folder and read. */}
+            {paths.length > 0 && (
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
+                  aria-hidden="true"
+                />
+                <input
+                  type="search"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                  placeholder="Filter paths…"
+                  aria-label="Filter secret paths"
+                  className="w-full pl-9 pr-2.5 py-2 text-sm rounded-lg border border-line-strong bg-surface-2 text-ink placeholder:text-ink-faint transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                />
+              </div>
+            )}
           </CardHeader>
-          <CardBody>
+          {/* Scrolls on its own so a long tree never pushes the editor off the
+              page, and the two panels stay side by side however deep it gets. */}
+          <CardBody className="max-h-[calc(100vh-16rem)] overflow-y-auto">
             {listLoading ? (
               <div className="text-xs text-ink-faint text-center py-8">Loading…</div>
             ) : listError ? (
@@ -640,6 +789,17 @@ export default function SecretsPage() {
               // request failed" look identical to a user otherwise, and the
               // second one is not something to fix by creating a secret.
               <LoadError error={listError} what="secrets" />
+            ) : tree.length === 0 && filter.trim() ? (
+              <EmptyState
+                icon={Search}
+                title="No matching paths"
+                description={`Nothing under this vault matches “${filter.trim()}”.`}
+                action={
+                  <Button size="sm" variant="secondary" onClick={() => setFilter('')}>
+                    Clear filter
+                  </Button>
+                }
+              />
             ) : tree.length === 0 ? (
               <EmptyState
                 icon={Lock}
@@ -669,7 +829,7 @@ export default function SecretsPage() {
           </CardBody>
         </Card>
 
-        <Card className="lg:col-span-2">
+        <Card>
           <CardHeader>
             <CardTitle>
               {creating ? 'Create secret' : selectedPath ? 'Edit secret' : 'Select a secret'}
@@ -682,11 +842,20 @@ export default function SecretsPage() {
               // Remount on path change so no editor state leaks between secrets.
               <SecretEditor key={selectedPath} path={selectedPath} onDeleted={handleDeleted} />
             ) : (
-              <EmptyState
-                icon={Lock}
-                title="No secret selected"
-                description="Select a secret from the tree to view or edit it."
-              />
+              // Held at the editor's rough height so choosing a secret does not
+              // make the panel jump from a stub to a full form.
+              <div className="min-h-[20rem] flex items-center justify-center">
+                <EmptyState
+                  icon={Lock}
+                  title="No secret selected"
+                  description="Pick a path on the left to view or edit it — values stay masked until you reveal them."
+                  action={
+                    <Button size="sm" variant="secondary" onClick={startCreating}>
+                      <Plus className="w-3.5 h-3.5" aria-hidden="true" /> Create secret
+                    </Button>
+                  }
+                />
+              </div>
             )}
           </CardBody>
         </Card>

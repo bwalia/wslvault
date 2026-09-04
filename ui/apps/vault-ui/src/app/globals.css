@@ -19,8 +19,8 @@
   --surface-3:     #e9edf1;
 
   /* Lines */
-  --line:          #e4e8ed;
-  --line-strong:   #ccd3db;
+  --line:          #dde2e9;
+  --line-strong:   #c2cad4;
 
   /* Ink — every step ≥ 4.5:1 on surface AND surface-2 (verified) */
   --ink:           #171a20;
@@ -33,6 +33,15 @@
   --steel-line:    #29323e;
   --steel-ink:     #b7c0cc;
   --steel-ink-dim: #828da0;
+
+  /* Brass: the lock on the door, and the thing you press.
+     Two roles, both deliberate — the vault mark and the primary action. A
+     product whose CTA is not its own colour looks assembled from parts, which
+     is exactly how the sign-in screen read with a brass vault beside a navy
+     button. Everything structural stays navy; brass is reserved for identity
+     and for action, never for decoration. */
+  --brass:         #c9a227;
+  --brass-dim:     #8a6f1a;
 }
 
 .dark {
@@ -41,18 +50,33 @@
   --surface-2:     #1a2129;
   --surface-3:     #222a34;
 
-  --line:          #242d37;
-  --line-strong:   #364250;
+  /* Lifted: at #242d37 a card edge was ~1.3:1 against its own surface, so
+     panels read as floating text rather than as compartments. */
+  --line:          #2c3743;
+  --line-strong:   #43515f;
 
+  /* Every step measured against BOTH --surface (#13181f) and --surface-2
+     (#1a2129), because faint text lands on both:
+
+       ink        14.8:1 / 13.5:1
+       ink-muted   7.9:1 /  7.2:1
+       ink-faint   6.7:1 /  6.1:1   (was 4.9 / 4.4 — AA only just, and only
+                                     for the larger sizes it was never used at)
+
+     ink-faint carries placeholders, counts and column headers. Those are
+     secondary, not optional: a count nobody can read is a count nobody has. */
   --ink:           #e7eaee;
-  --ink-muted:     #99a3b1;
-  --ink-faint:     #7b879a;
+  --ink-muted:     #a4aebc;
+  --ink-faint:     #94a0b3;
 
   --steel:         #0e1319;
   --steel-raised:  #171e27;
   --steel-line:    #232c37;
   --steel-ink:     #b7c0cc;
   --steel-ink-dim: #828da0;
+
+  --brass:         #e3bd45;
+  --brass-dim:     #a98c22;
 }
 
 @theme inline {
@@ -70,22 +94,37 @@
   --color-steel-line:    var(--steel-line);
   --color-steel-ink:     var(--steel-ink);
   --color-steel-ink-dim: var(--steel-ink-dim);
+  --color-brass:         var(--brass);
+  --color-brass-dim:     var(--brass-dim);
 }
 
 @theme {
-  /* Primary — custom deep teal ("cryptographic" green-cyan, not stock indigo).
-     600 on white = 5.0:1 contrast; 300 on dark surfaces = 7.2:1. */
-  --color-primary-50:  #eefaf8;
-  --color-primary-100: #d5f1ec;
-  --color-primary-200: #aee3dc;
-  --color-primary-300: #79cdc4;
-  --color-primary-400: #43b0a7;
-  --color-primary-500: #26948c;
-  --color-primary-600: #157a74;
-  --color-primary-700: #12615d;
-  --color-primary-800: #114e4b;
-  --color-primary-900: #10403e;
-  --color-primary-950: #052a29;
+  /* Primary — "vault navy". The colour of a safe door, not a stock indigo.
+     600 on white = 4.8:1; 300 on dark surfaces = 7.6:1. Verified, not guessed. */
+  --color-primary-50:  #f0f5fa;
+  --color-primary-100: #dde9f4;
+  --color-primary-200: #c0d6ea;
+  --color-primary-300: #94badb;
+  --color-primary-400: #6199c8;
+  --color-primary-500: #3f7cb2;
+  --color-primary-600: #2e6296;
+  --color-primary-700: #27507a;
+  --color-primary-800: #1e3a5f;
+  --color-primary-900: #1b3252;
+  --color-primary-950: #122237;
+
+  /* Accent — "unlocked green". Reserved for the moment something opens or
+     succeeds, so it keeps its meaning; never used as decoration. */
+  --color-accent-50:  #ecfdf5;
+  --color-accent-100: #d1fae5;
+  --color-accent-200: #a7f3d0;
+  --color-accent-300: #6ee7b7;
+  --color-accent-400: #34d399;
+  --color-accent-500: #10b981;
+  --color-accent-600: #059669;
+  --color-accent-700: #047857;
+  --color-accent-800: #065f46;
+  --color-accent-900: #064e3b;
 
   /* Status — functional, reserved for state (never decoration). */
   --color-success-50:  #ecfdf3;
@@ -114,7 +153,41 @@
   --color-accent-600: #0d8544;
   --color-accent-700: #0b6a38;
 
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  /* ---------------------------------------------------------------------
+     Type scale, raised.
+
+     Tailwind's default scale bottoms out at 12px for `text-xs` and 14px for
+     `text-sm`, and this console lives almost entirely in those two steps —
+     table cells, field labels, hints, counts, nav items. At a normal viewing
+     distance that is a size you decipher rather than read.
+
+     Overriding the scale here rather than editing components moves every
+     screen at once, and it moves ONLY type: Tailwind's spacing scale is a
+     separate set of variables, so padding, gaps and heights stay exactly
+     where they were and no layout shifts underneath the change.
+
+     Line heights go up with the sizes. Larger text on the same leading reads
+     as more crowded, not less, so the two have to move together.
+     --------------------------------------------------------------------- */
+  --text-xs:   0.8125rem;   /* 12 → 13 */
+  --text-xs--line-height:   1.5;
+  --text-sm:   0.9375rem;   /* 14 → 15 */
+  --text-sm--line-height:   1.55;
+  --text-base: 1.0625rem;   /* 16 → 17 */
+  --text-base--line-height: 1.6;
+  --text-lg:   1.1875rem;   /* 18 → 19 */
+  --text-lg--line-height:   1.55;
+  --text-xl:   1.3125rem;   /* 20 → 21 */
+  --text-xl--line-height:   1.5;
+  --text-2xl:  1.5625rem;   /* 24 → 25 */
+  --text-2xl--line-height:  1.35;
+  --text-3xl:  1.9375rem;   /* 30 → 31 */
+  --text-3xl--line-height:  1.25;
+
+  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  /* Headings and UI chrome. Applied via `font-display`, not globally — body
+     copy stays on the humanist face, which is more comfortable at 14-16px. */
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
 }
 
@@ -122,8 +195,35 @@
   html { @apply antialiased; }
 
   body {
-    @apply bg-canvas text-ink;
+    @apply bg-canvas text-ink text-base;
     font-feature-settings: "cv05", "ss01";
+    /* Slightly loosened. At the sizes this console uses, tracking is what
+       separates "dense" from "cramped", and the difference costs nothing. */
+    letter-spacing: 0.005em;
+  }
+
+  /* Placeholders are a hint, not content — dimmer than a real value, but still
+     legible. Set once here so no input has to remember it. */
+  ::placeholder { color: var(--ink-faint); opacity: 1; }
+
+  /* Autofill.
+     Chrome paints its own near-white background on an autofilled field and
+     will not let `background-color` override it — so a saved API key rendered
+     as a white slab in the middle of a dark form, which reads as a rendering
+     fault rather than as a convenience. The inset shadow is the documented way
+     round it: it covers the browser's fill without touching the property the
+     browser is defending. The long transition keeps it covered, because the
+     fill is re-applied on a delay after the field is touched. */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-text-fill-color: var(--ink);
+    -webkit-box-shadow: 0 0 0 1000px var(--surface) inset;
+    box-shadow: 0 0 0 1000px var(--surface) inset;
+    caret-color: var(--ink);
+    transition: background-color 100000s ease-in-out 0s;
   }
 
   /* Counts, sizes, and durations line up in tables. */

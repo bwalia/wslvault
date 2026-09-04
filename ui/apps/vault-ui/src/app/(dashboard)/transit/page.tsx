@@ -3,6 +3,7 @@ import { useState } from 'react'
 import useSWR, { mutate as swrMutate } from 'swr'
 import { useAuth } from '@/contexts/AuthContext'
 import { mutate } from '@/lib/fetcher'
+import { api } from '@/lib/api'
 import { useFetcher } from '@/hooks/useVaultSWR'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { DataTable, Column } from '@/components/ui/DataTable'
@@ -46,7 +47,7 @@ interface TransitResult {
   valid?: boolean
 }
 
-const TRANSIT_KEY = '/api/transit/v1/keys'
+const TRANSIT_KEY = '/api/transit/v1/transit/keys'
 
 const opConfig: Record<Operation, { label: string; icon: React.ElementType; inputLabel: string; inputField: keyof OperationForm; endpoint: (name: string) => string; bodyField: string }> = {
   encrypt: {
@@ -54,7 +55,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: Lock,
     inputLabel: 'Plaintext (base64)',
     inputField: 'plaintext',
-    endpoint: name => `/api/transit/v1/encrypt/${name}`,
+    endpoint: api.transit.encrypt,
     bodyField: 'plaintext',
   },
   decrypt: {
@@ -62,7 +63,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: Unlock,
     inputLabel: 'Ciphertext',
     inputField: 'ciphertext',
-    endpoint: name => `/api/transit/v1/decrypt/${name}`,
+    endpoint: api.transit.decrypt,
     bodyField: 'ciphertext',
   },
   sign: {
@@ -70,7 +71,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: FileSignature,
     inputLabel: 'Data (base64)',
     inputField: 'data',
-    endpoint: name => `/api/transit/v1/sign/${name}`,
+    endpoint: api.transit.sign,
     bodyField: 'input',
   },
   verify: {
@@ -78,7 +79,7 @@ const opConfig: Record<Operation, { label: string; icon: React.ElementType; inpu
     icon: CheckCircle,
     inputLabel: 'Data (base64)',
     inputField: 'data',
-    endpoint: name => `/api/transit/v1/verify/${name}`,
+    endpoint: api.transit.verify,
     bodyField: 'input',
   },
 }
@@ -108,7 +109,7 @@ export default function TransitPage() {
     setCreating(true)
     setCreateError('')
     try {
-      await mutate(TRANSIT_KEY, 'POST', values, token)
+      await mutate(api.transit.key(values.name), 'POST', values, token)
       await swrMutate(TRANSIT_KEY)
       setCreateOpen(false)
       reset()
@@ -142,7 +143,7 @@ export default function TransitPage() {
       field: 'name',
       label: 'Name',
       sortable: true,
-      render: row => <span className="font-mono text-[13px] text-ink">{row.name}</span>,
+      render: row => <span className="font-mono text-sm text-ink">{row.name}</span>,
     },
     {
       field: 'type',
@@ -168,6 +169,18 @@ export default function TransitPage() {
       <PageHeader
         title="Transit Engine"
         description="Encryption as a service"
+        guide={
+          <>
+            <p>
+              Transit encrypts data on your behalf. You send a value, the vault
+              returns it encrypted — the key itself never leaves.
+            </p>
+            <p>
+              Useful when an application needs to protect something but should
+              not be trusted to hold the key that protects it.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" aria-hidden="true" />
@@ -195,7 +208,7 @@ export default function TransitPage() {
             <CardHeader>
               <CardTitle>
                 {selectedKey
-                  ? <>Playground — <span className="font-mono text-[13px] font-normal">{selectedKey.name}</span></>
+                  ? <>Playground — <span className="font-mono text-sm font-normal">{selectedKey.name}</span></>
                   : 'Playground'}
               </CardTitle>
             </CardHeader>
@@ -251,7 +264,7 @@ export default function TransitPage() {
                       onChange={e => setOpInput(e.target.value)}
                       rows={4}
                       placeholder="Enter input…"
-                      className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+                      className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                     />
                   </div>
 
@@ -269,7 +282,7 @@ export default function TransitPage() {
                         onChange={e => setSigInput(e.target.value)}
                         rows={3}
                         placeholder="vault:v1:…"
-                        className="w-full px-3 py-2 text-[13px] font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
+                        className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 resize-none"
                       />
                     </div>
                   )}
@@ -298,7 +311,7 @@ export default function TransitPage() {
                           </span>
                         </div>
                       ) : (
-                        <pre className="text-[13px] font-mono bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all text-ink">
+                        <pre className="text-sm font-mono bg-surface-2 border border-line rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap break-all text-ink">
                           {opResult.ciphertext ?? opResult.plaintext ?? opResult.signature}
                         </pre>
                       )}

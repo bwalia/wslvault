@@ -305,6 +305,23 @@ export default function IdentityPage() {
       <PageHeader
         title="Identity & Access"
         description="Manage API keys and access credentials"
+        guide={
+          <>
+            <p>
+              An <strong>API key</strong> is how someone signs in — a person through this
+              console, or a service from its own code.
+            </p>
+            <p>
+              Keys are shown once, when created, and never again. Only a
+              fingerprint is stored, so if one is lost it must be replaced rather
+              than recovered.
+            </p>
+            <p>
+              <strong>Rotate</strong> issues a fresh key and retires the old one.
+              <strong> Revoke</strong> stops a key working immediately.
+            </p>
+          </>
+        }
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus className="w-4 h-4" />
@@ -514,7 +531,7 @@ function KeyRevealModal({
         <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
           <code
             className={cn(
-              'flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed',
+              'flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed',
             )}
           >
             {keyValue}
@@ -538,7 +555,7 @@ function KeyRevealModal({
           <div className="pt-1 space-y-2">
             <p className="text-sm font-medium text-ink">Send the holder both of these</p>
             <div className="flex items-start gap-2 p-3 rounded-lg border border-line bg-surface-2">
-              <code className="flex-1 font-mono text-[13px] text-ink break-all select-all leading-relaxed">
+              <code className="flex-1 font-mono text-sm text-ink break-all select-all leading-relaxed">
                 {enrolmentUrl}
               </code>
               <button

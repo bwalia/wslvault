@@ -64,6 +64,22 @@ export const api = {
     mfaEnroll: () => '/api/identity/v1/auth/mfa/totp/enroll',
     /** POST — prove the authenticator works; until this lands, enrolment is inert. */
     mfaConfirm: () => '/api/identity/v1/auth/mfa/totp/confirm',
+    /**
+     * POST — replace this key's recovery codes with a fresh set.
+     *
+     * Authorised by the second factor it replaces (a current authenticator
+     * code, or one of the remaining recovery codes), not by a session token:
+     * the holder who most needs this is the one who cannot finish signing in.
+     * The API key alone is deliberately not enough — it is the *first* factor.
+     */
+    mfaRecoveryCodes: () => '/api/identity/v1/auth/mfa/totp/recovery-codes',
+    /**
+     * GET — whether the signed-in key already has an authenticator.
+     *
+     * The only MFA route authorised by the session token rather than a pasted
+     * key, because it answers about the caller's own key and nothing else.
+     */
+    mfaStatus: () => '/api/identity/v1/auth/mfa/totp/status',
 
     /** GET/POST — invitations for a tenant. Requires an administrator. */
     tenantInvitations: (tenantId: string) =>

@@ -67,6 +67,12 @@ spec:
                           (include "wslvault.postgresHost" .)
                           (include "wslvault.postgresPort" .)
                           .Values.postgresql.auth.database }}
+            # Public keys for verifying per-tenant Ed25519 tokens. The /v1/sys
+            # endpoints are now gated on platform administration; without this
+            # they reject every request with 401 "VAULT_JWKS_URL is not
+            # configured" and the Regions and Cluster pages go blank.
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
             {{- include "wslvault.regionEnv" . | nindent 12 }}
             - name: REGION_HEALTH_LISTEN_ADDR
               value: {{ printf "0.0.0.0:%d" (int .Values.regionHealth.httpPort) | quote }}
