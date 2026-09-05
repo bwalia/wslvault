@@ -238,4 +238,18 @@ footer { border-top: 1px solid var(--steel-line-soft); padding: 40px 0; color: v
 .foot-links { display: flex; gap: 22px; flex-wrap: wrap; }
 .foot-links a { color: var(--ink-faint); font-size: 14px; }
 .foot-links a:hover { color: var(--ink); }
+.foot-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; text-align: right; }
 .foot-note { font-size: 13px; }
+.foot-version {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  border: 1px solid var(--steel-line-soft);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.foot-version:hover { color: var(--ink); border-color: var(--steel-line); }
+@media (max-width: 640px) {
+  .foot-meta { align-items: flex-start; text-align: left; width: 100%; }
+}

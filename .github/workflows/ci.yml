@@ -352,6 +352,31 @@ jobs:
           name: Release ${{ needs.compute-version.outputs.next_version }}
           generate_release_notes: true
 
+  # ─── refresh www.wslvault.org footer with the new release tag ───────
+  # pages.yml already runs on every main push (short SHA / describe). After
+  # auto-tag claims vX.Y.Z, re-dispatch so the live footer shows that tag.
+  publish-www:
+    name: Publish www (GitHub Pages)
+    needs: [compute-version, auto-tag]
+    if: needs.auto-tag.outputs.tag_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Dispatch pages.yml at release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.compute-version.outputs.next_version }}"
+          echo "Dispatching pages.yml with DEPLOY_BRANCH=${TAG}"
+          gh workflow run pages.yml \
+            --repo "${{ github.repository }}" \
+            -f ENV=www \
+            -f "DEPLOY_BRANCH=${TAG}" \
+            -f DEPLOY_MODE=full
+
   # ─── seed Ring Promoter with the tagged version ────────────────────
   # Same pattern as jobshout: CI builds + tags, then seeds int on
   # https://rp.workstation.co.uk. RP's k8sjob clones this repo at the tag and

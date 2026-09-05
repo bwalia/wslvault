@@ -1,5 +1,9 @@
 const GITHUB = "https://github.com/bwalia/wslvault";
 const DOCS = `${GITHUB}/tree/main/docs`;
+/** Baked at Pages build time (git tag / describe / short SHA). Local default: dev. */
+const SITE_VERSION = process.env.NEXT_PUBLIC_SITE_VERSION || "dev";
+const SITE_SHA = process.env.NEXT_PUBLIC_SITE_SHA || "";
+
 
 /* ── Inline icons (no icon library — keeps the static build dependency-free) ── */
 type IconProps = { className?: string };
@@ -263,7 +267,16 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
             <a href={DOCS}>Docs</a>
             <a href={GITHUB}>GitHub</a>
           </nav>
-          <div className="foot-note">© {new Date().getFullYear()} WSLVault · Open source</div>
+          <div className="foot-meta">
+            <div className="foot-note">© {new Date().getFullYear()} WSLVault · Open source</div>
+            <a
+              className="foot-version"
+              href={SITE_SHA ? `${GITHUB}/commit/${SITE_SHA}` : `${GITHUB}/tree/main`}
+              title={SITE_SHA ? `Commit ${SITE_SHA}` : "Published site version"}
+            >
+              {SITE_VERSION}
+            </a>
+          </div>
         </div>
       </footer>
     </>

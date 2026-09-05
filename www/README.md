@@ -16,11 +16,24 @@ npm run build:static     # static export into www/out
 npm run preview:static   # serve the exported site
 ```
 
+The footer shows `NEXT_PUBLIC_SITE_VERSION` (defaults to `dev` locally). Pages CI
+bakes the git tag / `git describe` / short SHA into that value.
+
 ## Deploy
 
-`.github/workflows/pages.yml` builds `www/` with `NEXT_STATIC_EXPORT=true` and
-publishes `www/out` to GitHub Pages on any push to `main` that touches `www/`
-(or via **Run workflow**). Pages must have its source set to **GitHub Actions**.
+**Every merge/push to `main`** runs `.github/workflows/pages.yml`, which builds
+`www/` and publishes to GitHub Pages → **https://www.wslvault.org/**.
+
+The footer version tag is stamped at build time (exact git tag when HEAD is
+tagged, otherwise `git describe`, otherwise the short SHA). The same build
+writes `/version.json` for health checks.
+
+Optional Ring Promoter path: `.github/workflows/seed-www-ring-promoter.yml`
+seeds app `wslvault-www`, which can also `workflow_dispatch` `pages.yml`.
+Pages source must be **GitHub Actions**.
+
+See `deploy/ring-promoter/README.md` and
+https://rp.workstation.co.uk/?app=wslvault-www.
 
 ## Domain
 
