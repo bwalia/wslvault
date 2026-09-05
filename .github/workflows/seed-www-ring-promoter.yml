@@ -38,8 +38,8 @@ jobs:
           RP="${RP_URL:-https://rp.workstation.co.uk}"
           TAG="${VERSION}"
           if [ -z "${RP_API_TOKEN:-}" ]; then
-            echo "::error::RP_API_TOKEN is not set — cannot seed Ring Promoter."
-            exit 1
+            echo "::warning::RP_API_TOKEN is not set — RP-managed www promotion is not enabled. The direct Pages deploy already published the site; skipping."
+            exit 0
           fi
           echo "Seeding wslvault-www int @ ${TAG} via ${RP}…"
           echo "Track: ${RP}/?app=wslvault-www"
@@ -51,6 +51,12 @@ jobs:
           echo "seed -> HTTP ${code} :: $(cat /tmp/seed.out)"
           case "${code}" in
             200|202) ;;
+            # wslvault-www is an optional promote path. Until it is registered in
+            # the live Ring Promoter config — which requires RP_GITHUB_TOKEN
+            # (actions:write + contents:read) on the ring-promoter Secret — the
+            # seed returns 404. The direct pages.yml deploy is the safety net and
+            # has already published the site, so skip rather than fail the run.
+            404) echo "::warning::wslvault-www is not registered in Ring Promoter yet — skipping (the direct Pages deploy already published the site)."; exit 0 ;;
             *) echo "::error::Ring Promoter seed failed (HTTP ${code})"; exit 1 ;;
           esac
 
