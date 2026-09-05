@@ -3,7 +3,7 @@ import "./globals.css";
 
 const SITE_URL = "https://www.wslvault.org";
 const DESCRIPTION =
-  "WSLVault is an open-source, multi-region secrets manager: AES-256-GCM envelope encryption with a per-tenant key hierarchy, dynamic secrets and leases, transit encryption, PKI, and active/active cross-region replication.";
+  "WSLVault is an open-source, multi-region secrets manager: AES-256-GCM envelope encryption with a per-tenant key hierarchy, dynamic secrets and leases, transit encryption, PKI, self-service two-factor auth, and active/active cross-region replication — via CLI, SDKs, or a web console.";
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),

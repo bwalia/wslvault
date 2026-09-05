@@ -30,7 +30,7 @@ const features = [
   { icon: ShuffleIcon, title: "Transit engine", body: "Encryption as a service: encrypt, decrypt, sign and verify without the plaintext key ever leaving the vault. Keys rotate while old ciphertext stays readable." },
   { icon: CertIcon, title: "PKI & certificates", body: "Issue and manage a private CA, roles and short-lived certificates. CA private keys are envelope-encrypted under their own root, never stored in the clear." },
   { icon: ClockIcon, title: "Dynamic leases", body: "Every credential is a lease: issued, listed, renewed and revoked for real. Revoking a token stops it working immediately, not just flips a row." },
-  { icon: ShieldIcon, title: "Policies & identity", body: "Fine-grained policies over API keys and JWTs, with MFA/TOTP, SCIM, LDAP, OIDC, mTLS and cloud-workload auth. Identity comes from a signed token, never a header." },
+  { icon: ShieldIcon, title: "Two-factor auth & identity", body: "Self-service TOTP two-factor with recovery codes, over fine-grained policies on API keys and JWTs — plus SCIM, LDAP, OIDC, mTLS and cloud-workload auth. Identity comes from a signed, per-tenant token, never a header." },
 ];
 
 const securityPoints = [
@@ -77,7 +77,8 @@ export default function Page() {
             <p className="hero-sub">
               WSLVault is a self-hosted secrets manager built on envelope encryption and a
               per-tenant key hierarchy — with dynamic leases, transit encryption, PKI, a
-              signed audit trail, and active/active replication between regions.
+              signed audit trail, and active/active replication between regions. Driven from
+              a CLI, four SDKs, or a web console with built-in two-factor auth.
             </p>
             <div className="hero-actions">
               <a className="btn btn-primary" href={GITHUB}><GitIcon className="" /> Get started on GitHub</a>
