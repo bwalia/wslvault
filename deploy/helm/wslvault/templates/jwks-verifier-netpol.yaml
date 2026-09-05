@@ -1,0 +1,74 @@
+{{/*
+JWKS-verifier network lanes.
+
+region-health and transit-engine verify per-tenant Ed25519 tokens on their HTTP
+APIs (VAULT_JWKS_URL, added with the v1.0.14 work), which means they must reach
+identity-service's JWKS endpoint. The default-deny policy blocks that, so
+without these lanes every /v1/sys/regions, /v1/sys/cluster and /v1/transit call
+returns 401 "could not reach the JWKS endpoint" — and the UI logs the user out
+on any 401, so the Regions, Cluster and Transit pages bounce back to /login.
+
+secret-engine, policy-engine, lease-manager and audit-service get their JWKS
+lanes inside their own per-service policies in networkpolicies.yaml; these two
+were wired for JWKS after those blocks were written, so their lanes live here.
+*/}}
+{{- if .Values.networkPolicies.enabled }}
+{{- $ctx := . }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-jwks-verifiers-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [region-health, transit-engine]
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name }}]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $ctx) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-identity-jwks-from-verifiers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $ctx) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "region-health" "context" $ctx) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "transit-engine" "context" $ctx) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+{{- end }}
