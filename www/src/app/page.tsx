@@ -111,8 +111,8 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
           </div>
         </section>
 
-        {/* Features */}
-        <section id="features">
+        {/* Features — light canvas band mirrors the login form side */}
+        <section id="features" className="band-canvas">
           <div className="wrap">
             <div className="section-head">
               <div className="kicker">One vault, every secret type</div>
@@ -134,8 +134,6 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
             </div>
           </div>
         </section>
-
-        <div className="wrap"><hr className="divider" /></div>
 
         {/* Architecture */}
         <section id="architecture">

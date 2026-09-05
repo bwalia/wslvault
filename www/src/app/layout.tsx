@@ -1,5 +1,27 @@
 import type { Metadata, Viewport } from "next";
+import { Lexend, Source_Sans_3, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+
+const lexend = Lexend({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-display",
+  display: "swap",
+});
+
+const sourceSans = Source_Sans_3({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
 
 const SITE_URL = "https://www.wslvault.org";
 const DESCRIPTION =
@@ -41,7 +63,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0b0f17",
+  themeColor: "#11161d",
   colorScheme: "dark",
 };
 
@@ -62,7 +84,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
+    <html
+      lang="en"
+      className={`${lexend.variable} ${sourceSans.variable} ${plexMono.variable}`}
+    >
       <body>
         <script
           type="application/ld+json"
