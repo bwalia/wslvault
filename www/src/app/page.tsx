@@ -56,6 +56,7 @@ export default function Page() {
             <span>WSL<span className="brand-accent">Vault</span></span>
           </a>
           <nav className="nav-links">
+            <a className="hide-sm" href="#tour">Tour</a>
             <a className="hide-sm" href="#features">Features</a>
             <a className="hide-sm" href="#architecture">Architecture</a>
             <a className="hide-sm" href="#security">Security</a>
@@ -81,8 +82,8 @@ export default function Page() {
               a CLI, four SDKs, or a web console with built-in two-factor auth.
             </p>
             <div className="hero-actions">
-              <a className="btn btn-primary" href={GITHUB}><GitIcon className="" /> Get started on GitHub</a>
-              <a className="btn btn-ghost" href="#architecture">See the architecture</a>
+              <a className="btn btn-primary" href="#tour">Watch the product tour</a>
+              <a className="btn btn-ghost" href={GITHUB}><GitIcon className="" /> GitHub</a>
             </div>
             <div className="hero-meta">
               <span><CheckIcon className="check" /> Vault-compatible API</span>
@@ -90,24 +91,26 @@ export default function Page() {
               <span><CheckIcon className="check" /> No plaintext at rest</span>
             </div>
 
-            {/* Terminal */}
-            <div className="terminal" role="img" aria-label="Example WSLVault CLI session writing and reading a secret">
-              <div className="terminal-bar">
-                <span className="tdot r" /><span className="tdot y" /><span className="tdot g" />
-                <span className="terminal-title">wslvault — kv</span>
+            {/* Product tour — dominant hero visual */}
+            <figure id="tour" className="tour">
+              <div className="tour-frame">
+                <video
+                  className="tour-video"
+                  controls
+                  playsInline
+                  preload="metadata"
+                  poster="/feature-tour-poster.png"
+                  aria-label="WSLVault product tour: console walkthrough of multi-tenancy, secrets, transit, and security"
+                >
+                  <source src="/feature-tour.mp4" type="video/mp4" />
+                  Your browser does not support embedded video.
+                </video>
               </div>
-              <pre>
-{`$ `}<span className="c-cmd">wslvault</span>{` login `}<span className="c-flag">--key</span>{` `}<span className="c-str">wslv_&hellip;</span>{`
-`}<span className="c-ok">✓</span>{` authenticated as tenant `}<span className="c-str">acme</span>{`  region=`}<span className="c-str">manchester</span>{`
-
-$ `}<span className="c-cmd">wslvault</span>{` kv put `}<span className="c-str">prod/db/creds</span>{` password=`}<span className="c-str">s3cr3t</span>{`
-`}<span className="c-ok">✓</span>{` sealed with dek `}<span className="c-dim">01a0&hellip;93a7</span>{`  version=1
-
-$ `}<span className="c-cmd">wslvault</span>{` kv get `}<span className="c-str">prod/db/creds</span>{`  `}<span className="c-flag">--region</span>{` london
-`}<span className="c-dim"># same secret, decrypted in the peer region</span>{`
-password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">replication_lag=14ms</span>
-              </pre>
-            </div>
+              <figcaption className="tour-caption">
+                Silent console tour (~2 min) — tenants, KV, transit, MFA, regions, audit, and how envelope
+                encryption protects secrets if the vault disk walks away.
+              </figcaption>
+            </figure>
           </div>
         </section>
 
@@ -169,6 +172,23 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
                   <li><CheckIcon className="check" /> Fails over as a PoP-side change</li>
                 </ul>
               </div>
+            </div>
+            <div className="terminal" role="img" aria-label="Example WSLVault CLI session writing and reading a secret">
+              <div className="terminal-bar">
+                <span className="tdot r" /><span className="tdot y" /><span className="tdot g" />
+                <span className="terminal-title">wslvault — kv</span>
+              </div>
+              <pre>
+{`$ `}<span className="c-cmd">wslvault</span>{` login `}<span className="c-flag">--key</span>{` `}<span className="c-str">wslv_&hellip;</span>{`
+`}<span className="c-ok">✓</span>{` authenticated as tenant `}<span className="c-str">acme</span>{`  region=`}<span className="c-str">manchester</span>{`
+
+$ `}<span className="c-cmd">wslvault</span>{` kv put `}<span className="c-str">prod/db/creds</span>{` password=`}<span className="c-str">s3cr3t</span>{`
+`}<span className="c-ok">✓</span>{` sealed with dek `}<span className="c-dim">01a0&hellip;93a7</span>{`  version=1
+
+$ `}<span className="c-cmd">wslvault</span>{` kv get `}<span className="c-str">prod/db/creds</span>{`  `}<span className="c-flag">--region</span>{` london
+`}<span className="c-dim"># same secret, decrypted in the peer region</span>{`
+password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">replication_lag=14ms</span>
+              </pre>
             </div>
           </div>
         </section>
@@ -260,6 +280,7 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
             <span>WSL<span className="brand-accent">Vault</span></span>
           </div>
           <nav className="foot-links">
+            <a href="#tour">Tour</a>
             <a href="#features">Features</a>
             <a href="#architecture">Architecture</a>
             <a href="#security">Security</a>
