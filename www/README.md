@@ -19,7 +19,12 @@ npm run preview:static   # serve the exported site
 The footer shows `NEXT_PUBLIC_SITE_VERSION` (defaults to `dev` locally). Pages CI
 bakes the git tag / `git describe` / short SHA into that value.
 
-## Deploy
+## Product tour
+
+The landing page embeds a silent console walkthrough (`public/feature-tour.mp4`)
+covering multi-tenancy, KV secrets, transit, MFA, regions, audit, and the
+“steal the disk” security story. Rebuild/publish via `pages.yml` on every
+merge to `main`.
 
 **Every merge/push to `main`** runs `.github/workflows/pages.yml`, which builds
 `www/` and publishes to GitHub Pages → **https://www.wslvault.org/**.

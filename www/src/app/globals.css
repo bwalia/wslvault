@@ -254,9 +254,37 @@ h1.hero-title {
 .hero-meta span { display: inline-flex; align-items: center; gap: 7px; }
 .check { color: var(--brass); }
 
+/* ── Product tour video ──────────────────────────────────────────────── */
+.tour {
+  margin: 40px 0 0;
+  animation: rise-in 0.85s ease 0.08s both;
+}
+.tour-frame {
+  border: 1px solid var(--steel-line);
+  border-radius: var(--radius);
+  background: #0e1319;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+}
+.tour-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #0e1319;
+  vertical-align: top;
+}
+.tour-caption {
+  margin-top: 12px;
+  color: var(--on-steel-faint);
+  font-size: 14px;
+  max-width: 52rem;
+}
+
 /* ── Terminal ────────────────────────────────────────────────────────── */
 .terminal {
-  margin-top: 44px;
+  margin-top: 36px;
   border: 1px solid var(--steel-line);
   border-radius: var(--radius);
   background: linear-gradient(180deg, var(--steel-raised), #0e1319);
