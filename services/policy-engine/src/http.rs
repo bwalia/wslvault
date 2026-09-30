@@ -19,7 +19,10 @@
 //!
 //! Every policy route resolves the caller through
 //! [`wslvault_core::auth::resolve_identity`] and operates on **that** caller's
-//! tenant. The tenant is never taken from a request header.
+//! tenant. The tenant is never taken from a request header. Any member may
+//! read the tenant's policies; creating, replacing or deleting one requires
+//! the tenant's `root` or `admin` policy, or platform administration (see
+//! [`may_manage_policies`]).
 //!
 //! It used to be: `tenant_id()` read `X-Tenant-Id` straight off the request and
 //! the routes were guarded only by `require_gateway_auth`, which is disabled
@@ -174,6 +177,58 @@ async fn caller_tenant(headers: &HeaderMap) -> Result<String, axum::response::Re
         })
 }
 
+/// Policy names that make a caller an administrator of its **own** tenant.
+///
+/// Every policy route acts only on the caller's tenant, so a tenant's `admin`
+/// here reaches that tenant and no other — unlike identity-service's key
+/// management, which crosses tenants and so demands the platform policy. These
+/// are the same names the console uses to decide who sees the Policies page.
+const TENANT_ADMIN_POLICIES: &[&str] = &["root", "admin"];
+
+/// Whether this caller may change its tenant's policies.
+///
+/// A policy is the tenant's permission system: writing one is granting
+/// permissions. Membership alone used to be enough, so a caller holding only
+/// `default` could rewrite `default` to grant itself everything in the tenant,
+/// or delete the policies constraining others.
+fn may_manage_policies(identity: &wslvault_core::auth::Identity) -> bool {
+    wslvault_core::auth::is_platform_admin(identity)
+        || identity
+            .policies
+            .iter()
+            .any(|p| TENANT_ADMIN_POLICIES.contains(&p.as_str()))
+}
+
+/// Resolve the caller, and require that it may manage policies. Returns the
+/// tenant to act on: always the caller's own.
+async fn admin_caller_tenant(headers: &HeaderMap) -> Result<String, axum::response::Response> {
+    let identity = wslvault_core::auth::resolve_identity(headers)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "message": e.to_string() })),
+            )
+                .into_response()
+        })?;
+    if !may_manage_policies(&identity) {
+        tracing::warn!(
+            tenant_id = %identity.tenant_id,
+            principal_id = %identity.principal_id,
+            "denied: policy change by a caller without an administrator policy"
+        );
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "code": "admin_policy_required",
+                "message": "changing policies requires the tenant's root or admin policy, or platform administration"
+            })),
+        )
+            .into_response());
+    }
+    Ok(identity.tenant_id)
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -202,7 +257,7 @@ async fn create_policy(
     headers: HeaderMap,
     Json(body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers).await {
+    let tid = match admin_caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -251,7 +306,7 @@ async fn upsert_policy(
     Path(name): Path<String>,
     Json(mut body): Json<PolicyDocumentDto>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers).await {
+    let tid = match admin_caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -280,7 +335,7 @@ async fn delete_policy(
     headers: HeaderMap,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let tid = match caller_tenant(&headers).await {
+    let tid = match admin_caller_tenant(&headers).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -389,4 +444,276 @@ pub fn api_router(state: AppState) -> Router {
         .merge(policy_routes)
         .layer(cors)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    //! Who may change a tenant's policies.
+    //!
+    //! Policies are the tenant's permission system, so rewriting one is
+    //! granting permissions. A member holding only `default` could rewrite
+    //! `default` itself and hand themselves everything; these tests pin that
+    //! shut, and pin that ordinary members can still read.
+
+    use super::*;
+    use crate::evaluator::CompiledPolicies;
+    use crate::store::PolicyStore;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    const SECRET: &str = "policy-engine-test-secret-at-least-32-bytes!!";
+    const TENANT: &str = "tenant-a";
+
+    fn env() {
+        // Every test sets the same values, so parallel tests cannot disagree.
+        std::env::set_var(wslvault_core::auth::JWT_SECRET_ENV, SECRET);
+        std::env::remove_var(wslvault_core::auth::TRUST_GATEWAY_HEADERS_ENV);
+        std::env::remove_var("VAULT_GATEWAY_SECRET");
+        std::env::remove_var(wslvault_core::auth::ADMIN_POLICY_ENV);
+    }
+
+    fn token(policies: &[&str], superuser: bool) -> String {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        let claims = serde_json::json!({
+            "sub": "someone",
+            "tenant_id": TENANT,
+            "policies": policies,
+            "superuser": superuser,
+            "exp": chrono::Utc::now().timestamp() + 600,
+        });
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .expect("encode test token")
+    }
+
+    fn state() -> AppState {
+        AppState {
+            store: Arc::new(PolicyStore::new()),
+            compiled: Arc::new(tokio::sync::RwLock::new(CompiledPolicies::new())),
+        }
+    }
+
+    async fn call(
+        state: &AppState,
+        method: &str,
+        uri: &str,
+        bearer: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> StatusCode {
+        env();
+        let mut req = Request::builder().method(method).uri(uri);
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        api_router(state.clone())
+            .oneshot(req)
+            .await
+            .expect("route")
+            .status()
+    }
+
+    fn everything(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "rules": [{ "paths": ["secret/**"], "capabilities": ["read", "write", "list", "delete"] }]
+        })
+    }
+
+    async fn seed(state: &AppState, name: &str, paths: &[&str]) {
+        let dto: PolicyDocumentDto = serde_json::from_value(serde_json::json!({
+            "name": name,
+            "rules": [{ "paths": paths, "capabilities": ["read"] }]
+        }))
+        .unwrap();
+        state
+            .store
+            .put_policy(TENANT, dto_to_doc(dto).unwrap())
+            .await;
+    }
+
+    async fn paths_of(state: &AppState, name: &str) -> Option<Vec<String>> {
+        let doc = state.store.get_policy(TENANT, name).await?;
+        let dto = doc_to_dto(doc);
+        Some(dto.rules.into_iter().flat_map(|r| r.paths).collect())
+    }
+
+    // --- the escalation ---------------------------------------------------
+
+    /// The hole: a `default`-only member rewrote `default` to grant itself
+    /// everything in the tenant.
+    #[tokio::test]
+    async fn a_member_cannot_rewrite_default_to_grant_itself_everything() {
+        let s = state();
+        seed(&s, "default", &["secret/public/*"]).await;
+        let member = token(&["default"], false);
+
+        let status = call(
+            &s,
+            "PUT",
+            "/v1/policies/default",
+            Some(&member),
+            Some(everything("default")),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            paths_of(&s, "default").await,
+            Some(vec!["secret/public/*".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_member_cannot_create_a_policy() {
+        let s = state();
+        let member = token(&["default"], false);
+        let status = call(
+            &s,
+            "POST",
+            "/v1/policies",
+            Some(&member),
+            Some(everything("mine")),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(paths_of(&s, "mine").await, None);
+    }
+
+    #[tokio::test]
+    async fn a_member_cannot_delete_a_policy() {
+        let s = state();
+        seed(&s, "guard", &["secret/x"]).await;
+        let member = token(&["default"], false);
+        let status = call(&s, "DELETE", "/v1/policies/guard", Some(&member), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(paths_of(&s, "guard").await.is_some(), "policy must survive");
+    }
+
+    // --- who may ------------------------------------------------------------
+
+    #[tokio::test]
+    async fn a_tenant_admin_manages_the_tenants_policies() {
+        let s = state();
+        let admin = token(&["admin"], false);
+        assert_eq!(
+            call(
+                &s,
+                "POST",
+                "/v1/policies",
+                Some(&admin),
+                Some(everything("ops"))
+            )
+            .await,
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            call(
+                &s,
+                "PUT",
+                "/v1/policies/ops",
+                Some(&admin),
+                Some(everything("ops"))
+            )
+            .await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&s, "DELETE", "/v1/policies/ops", Some(&admin), None).await,
+            StatusCode::NO_CONTENT
+        );
+    }
+
+    #[tokio::test]
+    async fn root_manages_the_tenants_policies() {
+        let s = state();
+        let root = token(&["root"], false);
+        assert_eq!(
+            call(
+                &s,
+                "POST",
+                "/v1/policies",
+                Some(&root),
+                Some(everything("ops"))
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_platform_admin_manages_policies() {
+        let s = state();
+        let platform = token(&[wslvault_core::auth::DEFAULT_ADMIN_POLICY], false);
+        assert_eq!(
+            call(
+                &s,
+                "POST",
+                "/v1/policies",
+                Some(&platform),
+                Some(everything("ops"))
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+
+    #[tokio::test]
+    async fn a_superuser_manages_policies_without_the_policy_name() {
+        let s = state();
+        let su = token(&[], true);
+        assert_eq!(
+            call(
+                &s,
+                "POST",
+                "/v1/policies",
+                Some(&su),
+                Some(everything("ops"))
+            )
+            .await,
+            StatusCode::CREATED
+        );
+    }
+
+    // --- unchanged ----------------------------------------------------------
+
+    /// Reading stays open to members: the console and SDKs list policies, and
+    /// seeing a rule is not holding it.
+    #[tokio::test]
+    async fn a_member_can_still_read_policies() {
+        let s = state();
+        seed(&s, "default", &["secret/public/*"]).await;
+        let member = token(&["default"], false);
+        assert_eq!(
+            call(&s, "GET", "/v1/policies", Some(&member), None).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            call(&s, "GET", "/v1/policies/default", Some(&member), None).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn no_credential_is_still_unauthorized() {
+        let s = state();
+        assert_eq!(
+            call(&s, "POST", "/v1/policies", None, Some(everything("x"))).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&s, "GET", "/v1/policies", None, None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
 }

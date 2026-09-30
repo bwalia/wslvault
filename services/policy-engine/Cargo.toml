@@ -31,5 +31,8 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 
+[dev-dependencies]
+jsonwebtoken = { workspace = true }
+
 [build-dependencies]
 tonic-build = { workspace = true }
