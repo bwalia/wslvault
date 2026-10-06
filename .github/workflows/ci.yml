@@ -87,6 +87,18 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      # Both rust-toolchain.toml and the setup action above track `stable`, so a
+      # new Rust release can introduce a lint that `-D warnings` turns into a
+      # hard failure across every crate at once. The suppressions below are
+      # lints this workspace has decided not to chase; keep them one per line,
+      # and note that a `#` comment cannot live inside the folded block that
+      # follows — it would be passed to the shell and comment out the rest of
+      # the command.
+      #
+      # clippy::double_must_use fires on `#[async_trait]`'s own expansion, which
+      # stamps `#[must_use]` on a method already returning a must-use
+      # `Pin<Box<dyn Future>>`. No source change in this workspace can satisfy
+      # it; the attribute belongs to the macro. Added for Rust 1.99.
       - name: Clippy lints
         run: >
           cargo clippy --all-targets --all-features -- -D warnings
@@ -96,6 +108,7 @@ jobs:
           -A clippy::explicit_auto_deref
           -A clippy::doc_overindented_list_items
           -A clippy::needless_lifetimes
+          -A clippy::double_must_use
           -A dead_code
 
       - name: Check workspace compiles
