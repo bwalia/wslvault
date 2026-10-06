@@ -205,8 +205,12 @@ identityService:
   # it.
   publicUrl: "https://vault-ha.workstation.co.uk"
   # -- Outbound email for tenant invitations. The password is deliberately NOT
-  # here: it comes from the `wslvault-smtp` Secret created out-of-band in the
-  # cluster (see deploy/gitops/README.md). Leaving host empty disables sending
+  # here: it comes from the `smtp-password` key of the `wslvault-mesh-keys`
+  # Secret. NOT a separate `wslvault-smtp` Secret — setting
+  # secrets.existingSecret below redirects every key lookup in the chart to
+  # that one Secret, so a `wslvault-smtp` Secret would never be read.
+  # Provisioned by scripts/wslvault-mesh-keys.sh; see deploy/gitops/README.md.
+  # Leaving host empty disables sending
   # — invitations are still created, and the link is returned to the operator
   # to deliver by hand.
   smtp:
