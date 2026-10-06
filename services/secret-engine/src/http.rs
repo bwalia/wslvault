@@ -407,6 +407,7 @@ pub struct VersionQuery {
         DeleteResponseBody,
         MetadataResponseBody,
         ListResponseBody,
+        ListSecretItem,
     )),
     tags(
         (name = "secrets", description = "KV secret CRUD operations"),
