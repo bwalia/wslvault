@@ -850,9 +850,7 @@ pub async fn put_secret(
                     Ok(e) => e,
                     Err(resp) => return resp,
                 };
-                if let Err(resp) =
-                    validate_secret_environment(&state, &tenant_id, env).await
-                {
+                if let Err(resp) = validate_secret_environment(&state, &tenant_id, env).await {
                     return resp;
                 }
                 let tags = body.tags.clone().unwrap_or_else(|| {

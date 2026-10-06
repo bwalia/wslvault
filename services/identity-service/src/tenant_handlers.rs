@@ -504,22 +504,20 @@ pub async fn create_tenant(
         }
     };
 
-    let allowed_environments = match resolve_allowed_environments(
-        tenant_kind,
-        payload.allowed_environments.as_ref(),
-    ) {
-        Ok(v) => v,
-        Err(msg) => {
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({
-                    "code": "invalid_allowed_environments",
-                    "message": msg,
-                })),
-            )
-                .into_response()
-        }
-    };
+    let allowed_environments =
+        match resolve_allowed_environments(tenant_kind, payload.allowed_environments.as_ref()) {
+            Ok(v) => v,
+            Err(msg) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({
+                        "code": "invalid_allowed_environments",
+                        "message": msg,
+                    })),
+                )
+                    .into_response()
+            }
+        };
 
     let default_environment = match resolve_default_environment(
         tenant_kind,

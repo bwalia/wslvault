@@ -88,7 +88,9 @@ pub async fn run(
                 )
             }
             Err(_) => {
-                warn!("DATABASE_URL not set — falling back to in-memory KvStore (not for production)");
+                warn!(
+                    "DATABASE_URL not set — falling back to in-memory KvStore (not for production)"
+                );
                 (KvStore::new(), None)
             }
         };

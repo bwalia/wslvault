@@ -722,7 +722,10 @@ mod tests {
 
         let entry = store.get_metadata("t1", "app/db").await.unwrap();
         assert_eq!(entry.environment, "TEST");
-        assert_eq!(entry.tags, vec!["database".to_string(), "api-key".to_string()]);
+        assert_eq!(
+            entry.tags,
+            vec!["database".to_string(), "api-key".to_string()]
+        );
         assert_eq!(entry.custom_metadata.get("environment").unwrap(), "TEST");
         assert_eq!(entry.custom_metadata.get("owner").unwrap(), "billing");
 
