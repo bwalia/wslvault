@@ -112,7 +112,7 @@ export default function LoginPage() {
             </span>
           </div>
 
-          <h2 className="font-display text-[2rem] font-semibold tracking-tight text-ink">
+          <h2 className="font-display text-[clamp(1.75rem,1.25rem+2vw,2.6rem)] font-semibold tracking-tight text-ink">
             {challenge ? 'One more step' : 'Sign in'}
           </h2>
           <p className="text-base text-ink-muted mt-1.5 mb-7 leading-relaxed">

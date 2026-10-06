@@ -154,41 +154,30 @@
   --color-accent-700: #0b6a38;
 
   /* ---------------------------------------------------------------------
-     Type scale, raised.
+     Type scale — matched to workstation-website (15px body, Poppins/Unbounded).
 
-     Tailwind's default scale bottoms out at 12px for `text-xs` and 14px for
-     `text-sm`, and this console lives almost entirely in those two steps —
-     table cells, field labels, hints, counts, nav items. At a normal viewing
-     distance that is a size you decipher rather than read.
-
-     Overriding the scale here rather than editing components moves every
-     screen at once, and it moves ONLY type: Tailwind's spacing scale is a
-     separate set of variables, so padding, gaps and heights stay exactly
-     where they were and no layout shifts underneath the change.
-
-     Line heights go up with the sizes. Larger text on the same leading reads
-     as more crowded, not less, so the two have to move together.
+     Override Tailwind defaults so the console and marketing site share one
+     reading size. Spacing stays on Tailwind's default rem scale.
      --------------------------------------------------------------------- */
-  --text-xs:   0.8125rem;   /* 12 → 13 */
+  --text-xs:   0.8rem;      /* ~12.8px — meta, labels */
   --text-xs--line-height:   1.5;
-  --text-sm:   0.9375rem;   /* 14 → 15 */
+  --text-sm:   0.9rem;      /* ~14.4px — table cells, hints */
   --text-sm--line-height:   1.55;
-  --text-base: 1.0625rem;   /* 16 → 17 */
-  --text-base--line-height: 1.6;
-  --text-lg:   1.1875rem;   /* 18 → 19 */
+  --text-base: 0.9375rem;   /* 15px — body (workstation) */
+  --text-base--line-height: 1.7;
+  --text-lg:   1.125rem;    /* 18px */
   --text-lg--line-height:   1.55;
-  --text-xl:   1.3125rem;   /* 20 → 21 */
+  --text-xl:   1.25rem;     /* 20px */
   --text-xl--line-height:   1.5;
-  --text-2xl:  1.5625rem;   /* 24 → 25 */
+  --text-2xl:  1.5rem;      /* 24px */
   --text-2xl--line-height:  1.35;
-  --text-3xl:  1.9375rem;   /* 30 → 31 */
+  --text-3xl:  1.875rem;    /* 30px */
   --text-3xl--line-height:  1.25;
 
-  --font-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  /* Headings and UI chrome. Applied via `font-display`, not globally — body
-     copy stays on the humanist face, which is more comfortable at 14-16px. */
-  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-plex-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  --font-sans: var(--font-sans), "Poppins", "Helvetica Neue", Arial, sans-serif;
+  /* Headings / brand chrome — Unbounded, same as workstation-website. */
+  --font-display: var(--font-display), "Unbounded", "Poppins", sans-serif;
+  --font-mono: var(--font-plex-mono), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
 }
 
 @layer base {
@@ -196,10 +185,14 @@
 
   body {
     @apply bg-canvas text-ink text-base;
-    font-feature-settings: "cv05", "ss01";
-    /* Slightly loosened. At the sizes this console uses, tracking is what
-       separates "dense" from "cramped", and the difference costs nothing. */
-    letter-spacing: 0.005em;
+    font-family: var(--font-sans), "Poppins", "Helvetica Neue", Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.7;
+    letter-spacing: 0;
+  }
+
+  h1, h2, h3 {
+    letter-spacing: -0.02em;
   }
 
   /* Placeholders are a hint, not content — dimmer than a real value, but still
