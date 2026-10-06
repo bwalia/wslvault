@@ -198,6 +198,12 @@ pub struct SecretEntry {
     pub updated_at: DateTime<Utc>,
     /// All versions in ascending order; oldest first.
     pub versions: Vec<VersionEntry>,
+    /// SDLC environment (INT / TEST / ACC / PROD).
+    pub environment: String,
+    /// Category tags.
+    pub tags: Vec<String>,
+    /// Arbitrary key/value metadata (includes mirrored environment/tags keys).
+    pub custom_metadata: HashMap<String, String>,
 }
 
 impl SecretEntry {
@@ -318,7 +324,36 @@ impl KvStore {
             created_at: now,
             updated_at: now,
             versions: Vec::new(),
+            environment: custom_metadata
+                .get("environment")
+                .cloned()
+                .unwrap_or_else(|| "INT".to_string()),
+            tags: custom_metadata
+                .get("tags")
+                .map(|s| {
+                    s.split(',')
+                        .map(str::trim)
+                        .filter(|t| !t.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            custom_metadata: custom_metadata.clone(),
         });
+
+        // Refresh labels on every write when supplied via reserved metadata keys.
+        if let Some(env) = custom_metadata.get("environment") {
+            entry.environment = env.clone();
+        }
+        if let Some(tags) = custom_metadata.get("tags") {
+            entry.tags = tags
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        entry.custom_metadata = custom_metadata.clone();
 
         // Apply max_versions override if provided on this write.
         if let Some(mv) = max_versions {
@@ -663,6 +698,37 @@ mod tests {
 
     async fn make_store() -> Arc<KvStore> {
         KvStore::new()
+    }
+
+    #[tokio::test]
+    async fn put_persists_environment_and_tags_in_metadata() {
+        let store = make_store().await;
+        let mut meta = HashMap::new();
+        meta.insert("environment".into(), "TEST".into());
+        meta.insert("tags".into(), "database,api-key".into());
+        meta.insert("owner".into(), "billing".into());
+        store
+            .put(
+                "t1",
+                "app/db",
+                "cipher".into(),
+                "dek".into(),
+                None,
+                meta,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let entry = store.get_metadata("t1", "app/db").await.unwrap();
+        assert_eq!(entry.environment, "TEST");
+        assert_eq!(entry.tags, vec!["database".to_string(), "api-key".to_string()]);
+        assert_eq!(entry.custom_metadata.get("environment").unwrap(), "TEST");
+        assert_eq!(entry.custom_metadata.get("owner").unwrap(), "billing");
+
+        let ver = store.get("t1", "app/db", None).await.unwrap();
+        assert_eq!(ver.custom_metadata.get("environment").unwrap(), "TEST");
+        assert_eq!(ver.custom_metadata.get("tags").unwrap(), "database,api-key");
     }
 
     #[tokio::test]

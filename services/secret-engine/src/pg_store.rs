@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use tracing::warn;
-use wslvault_core::types::secret::SecretEngine;
+use wslvault_core::types::secret::{SecretEngine, SecretEnvironment};
 use wslvault_core::types::tenant::TenantId;
 use wslvault_core::VaultError;
 use wslvault_storage::pool::DbPool;
@@ -191,7 +191,7 @@ impl SecretStoreBackend for PgSecretBackend {
         ciphertext: String,
         dek_id: String,
         cas: Option<u32>,
-        _custom_metadata: HashMap<String, String>,
+        custom_metadata: HashMap<String, String>,
         max_versions: Option<u32>,
     ) -> Result<(String, u32), VaultError> {
         let tid = Self::parse_tenant_id(tenant_id)?;
@@ -208,6 +208,21 @@ impl SecretStoreBackend for PgSecretBackend {
             });
         }
 
+        let environment = custom_metadata
+            .get("environment")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(SecretEnvironment::Int);
+        let tags: Vec<String> = custom_metadata
+            .get("tags")
+            .map(|s| {
+                s.split(',')
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let (secret_id, version) = secret_store::upsert_secret_version(
             scope.conn(),
             &tid,
@@ -219,6 +234,9 @@ impl SecretStoreBackend for PgSecretBackend {
             max_versions.unwrap_or(10),
             // Treat the presence of a CAS version as requiring CAS on the row.
             cas.is_some(),
+            &custom_metadata,
+            environment,
+            &tags,
         )
         .await?;
 
@@ -374,6 +392,9 @@ impl SecretStoreBackend for PgSecretBackend {
             created_at: meta.created_at,
             updated_at: meta.updated_at,
             versions,
+            environment: meta.environment.as_str().to_string(),
+            tags: meta.tags,
+            custom_metadata: meta.custom_metadata,
         })
     }
 

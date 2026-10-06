@@ -26,8 +26,10 @@ pub use error::VaultError;
 pub use types::key::{KeyAlgorithm, KeyDescriptor, KeyId, KeyMaterial, KeyPurpose, KeyState};
 pub use types::lease::{Lease, LeaseId, LeaseState, LeaseTarget};
 pub use types::principal::{AuthMethod, Principal, PrincipalId};
-pub use types::secret::{SecretEngine, SecretId, SecretMetadata, SecretVersion};
-pub use types::tenant::{Tenant, TenantContext, TenantId, TenantTier};
+pub use types::secret::{
+    SecretEngine, SecretEnvironment, SecretId, SecretMetadata, SecretVersion,
+};
+pub use types::tenant::{Tenant, TenantContext, TenantId, TenantKind, TenantTier};
 
 pub use traits::{
     AuditEvent, AuditOutcome, AuditSink, CryptoBackend, PolicyEvaluator, SecretBackend,
