@@ -124,8 +124,8 @@ h1, h2, h3, h4, .brand, .hero-title, .nav-inner .brand {
   align-items: center;
   gap: 11px;
   font-weight: 600;
-  letter-spacing: -0.01em;
-  font-size: 17px;
+  letter-spacing: var(--tracking-tight);
+  font-size: var(--font-size-lead);
   color: #fff;
 }
 .brand-mark {
@@ -413,8 +413,8 @@ h2 {
   border: 1px solid rgba(201, 162, 39, 0.28);
   color: var(--brass);
 }
-.card h3 { margin: 0 0 8px; font-size: 17px; letter-spacing: -0.01em; font-weight: 600; color: #fff; }
-.card p { margin: 0; color: var(--on-steel-muted); font-size: 14.5px; }
+.card h3 { margin: 0 0 8px; font-size: var(--font-size-h3); letter-spacing: var(--tracking-tight); font-weight: 600; color: #fff; }
+.card p { margin: 0; color: var(--on-steel-muted); font-size: var(--font-size-sm); }
 
 /* ── Architecture / regions ──────────────────────────────────────────── */
 .regions { display: grid; grid-template-columns: 1fr auto 1fr; gap: 18px; align-items: stretch; }
@@ -460,8 +460,8 @@ h2 {
 @media (max-width: 620px) { .sec-list { grid-template-columns: 1fr; } }
 .sec-item { display: flex; gap: 13px; }
 .sec-item .mk { color: var(--brass); flex: none; margin-top: 3px; }
-.sec-item h4 { margin: 0 0 3px; font-size: 15.5px; font-family: var(--font-display), "Unbounded", "Poppins", sans-serif; font-weight: 600; color: #fff; }
-.sec-item p { margin: 0; color: var(--on-steel-muted); font-size: 14px; }
+.sec-item h4 { margin: 0 0 3px; font-size: var(--font-size-h3); font-family: var(--font-display), "Unbounded", "Poppins", sans-serif; font-weight: 600; color: #fff; }
+.sec-item p { margin: 0; color: var(--on-steel-muted); font-size: var(--font-size-sm); }
 
 /* ── SDK chips ───────────────────────────────────────────────────────── */
 .chips { display: flex; flex-wrap: wrap; gap: 10px; }

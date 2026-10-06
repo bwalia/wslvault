@@ -27,14 +27,18 @@ non-token cases, but prefer tokens.)
 
 ## Typography
 
-- Sans: IBM Plex Sans (`font-sans`, default). Weights 400/500/600/700.
-- Mono: IBM Plex Mono (`font-mono`). **Every** secret path, tenant ID, key ID,
+Matched to **workstation-website** (and `www.wslvault.org`):
+
+- Display / headings: **Unbounded** (`font-display`). Weights 400/500/600/700.
+- Body: **Poppins** (`font-sans`, default). Weights 400/500/600/700. Body size **15px**, line-height 1.7.
+- Mono: **JetBrains Mono** (`font-mono`). **Every** secret path, tenant ID, key ID,
   UUID, token, fingerprint, duration, and count wears `font-mono`.
 - Numbers in tables get `tabular` (utility class → tabular-nums).
-- Page title: `text-2xl font-semibold tracking-tight text-ink`.
+- Page title: `font-display` + clamp ~1.75–2.6rem, `font-semibold tracking-tight`.
 - Section heading: `text-sm font-semibold text-ink`.
 - Table headers: `text-xs font-medium uppercase tracking-wide text-ink-faint`.
 - Meta/labels: `text-xs text-ink-muted`.
+- Eyebrows / uppercase chrome: `text-xs` (~0.75–0.8rem) + wide tracking.
 
 ## Voice (copy)
 

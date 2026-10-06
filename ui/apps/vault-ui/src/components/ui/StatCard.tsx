@@ -36,7 +36,7 @@ export function StatCard({ label, value, trend, detail }: StatCardProps) {
       </p>
       {/* tabular-nums so a figure changing from 9 to 10 does not shift the
           layout of every tile beside it. */}
-      <p className="mt-2 font-display text-[2.25rem] leading-none font-semibold tracking-tight text-ink tabular-nums">
+      <p className="mt-2 font-display text-[clamp(1.75rem,1.25rem+1.5vw,2.25rem)] leading-none font-semibold tracking-tight text-ink tabular-nums">
         {value}
       </p>
       {(trend || detail) && (
