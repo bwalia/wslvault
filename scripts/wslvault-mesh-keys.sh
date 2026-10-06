@@ -58,12 +58,29 @@ note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 apply_secret() {
   local ns="$1" root="$2" jwt="$3" pki="$4" peer="$5" audit="$6"
   kubectl create namespace "$ns" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
+  # `kubectl apply` of a generated Secret replaces `data` wholesale, so any key
+  # not named below is silently dropped. These two are not mesh material — they
+  # are deployment config the chart reads out of the same Secret because
+  # secrets.existingSecret redirects every lookup here — so carry forward
+  # whatever the namespace already holds, or take a first value from the
+  # environment. Without this, re-running the script switched off invitation
+  # email and the bootstrap admin token.
+  local smtp admin
+  smtp="${SMTP_PASSWORD:-$(kubectl -n "$ns" get secret "$SECRET_NAME" -o jsonpath='{.data.smtp-password}' 2>/dev/null | base64 -d || true)}"
+  admin="${VAULT_ADMIN_TOKEN:-$(kubectl -n "$ns" get secret "$SECRET_NAME" -o jsonpath='{.data.admin-token}' 2>/dev/null | base64 -d || true)}"
+
+  # Empty is written rather than omitted: the chart marks both keys
+  # `optional: true` and the services treat blank as unset, so an empty value
+  # behaves exactly like an absent one and keeps this a single code path.
   kubectl -n "$ns" create secret generic "$SECRET_NAME" \
     --from-literal=root-key="$root" \
     --from-literal=jwt-secret="$jwt" \
     --from-literal=pki-root-key="$pki" \
     --from-literal=replication-peer-token="$peer" \
     --from-literal=audit-signing-key="$audit" \
+    --from-literal=smtp-password="$smtp" \
+    --from-literal=admin-token="$admin" \
     --dry-run=client -o yaml | kubectl apply $DRY_RUN -f -
 }
 
