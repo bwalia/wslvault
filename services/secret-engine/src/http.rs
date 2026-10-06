@@ -63,6 +63,8 @@ pub struct AppState {
     pub policy_client: PolicyClient,
     #[allow(dead_code)] // reserved for a future dynamic secret engine
     pub lease_client: LeaseClient,
+    /// Optional DB pool for tenant allowed_environments checks on secret write.
+    pub tenant_pool: Option<wslvault_storage::pool::DbPool>,
 }
 
 // ─── Error helpers ────────────────────────────────────────────────────────────
@@ -72,6 +74,123 @@ pub struct AppState {
 struct ApiError {
     code: &'static str,
     message: String,
+}
+
+/// Normalize tags: trim, lowercase, drop empties, dedupe.
+fn normalize_tags(tags: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in tags {
+        let n = t.trim().to_lowercase();
+        if !n.is_empty() && !out.contains(&n) {
+            out.push(n);
+        }
+    }
+    out
+}
+
+/// Resolve the environment for a secret write.
+///
+/// Order: explicit body/metadata value → tenant default (when DB available) → INT.
+async fn resolve_put_environment(
+    state: &AppState,
+    tenant_id: &str,
+    explicit: Option<&str>,
+) -> Result<wslvault_core::SecretEnvironment, Response> {
+    if let Some(raw) = explicit.map(str::trim).filter(|s| !s.is_empty()) {
+        return raw
+            .parse::<wslvault_core::SecretEnvironment>()
+            .map_err(|msg| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ApiError {
+                        code: "invalid_environment",
+                        message: msg,
+                    }),
+                )
+                    .into_response()
+            });
+    }
+
+    if let Some(pool) = state.tenant_pool.as_ref() {
+        if let Ok(tid) = tenant_id.parse::<wslvault_core::TenantId>() {
+            if let Ok(tenant) = wslvault_storage::tenant_store::get_tenant(pool, &tid).await {
+                return Ok(tenant.default_environment);
+            }
+        }
+    }
+
+    Ok(wslvault_core::SecretEnvironment::Int)
+}
+
+/// Reject secret environments the tenant is not allowed to store.
+///
+/// Project tenants (INT/TEST/ACC) cannot write PROD — keep production in a
+/// separate tenancy. When no DB pool is configured (in-memory/dev), the check
+/// is skipped so local tests keep working.
+async fn validate_secret_environment(
+    state: &AppState,
+    tenant_id: &str,
+    env: wslvault_core::SecretEnvironment,
+) -> Result<(), Response> {
+    let Some(pool) = state.tenant_pool.as_ref() else {
+        return Ok(());
+    };
+    let tid: wslvault_core::TenantId = match tenant_id.parse() {
+        Ok(t) => t,
+        Err(_) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ApiError {
+                    code: "invalid_tenant",
+                    message: "tenant id is not a valid UUID".into(),
+                }),
+            )
+                .into_response());
+        }
+    };
+    let tenant = match wslvault_storage::tenant_store::get_tenant(pool, &tid).await {
+        Ok(t) => t,
+        Err(e) => {
+            warn!(error = %e, %tenant_id, "tenant lookup failed during environment check");
+            // Fail open only when the tenant row is missing from a fresh/migrating
+            // DB; otherwise fail closed on database errors.
+            if matches!(e, wslvault_core::VaultError::TenantNotFound { .. }) {
+                return Ok(());
+            }
+            return Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    code: "tenant_lookup_failed",
+                    message: "could not verify tenant environment policy".into(),
+                }),
+            )
+                .into_response());
+        }
+    };
+    if tenant.allows_environment(env) {
+        return Ok(());
+    }
+    let allowed: Vec<&str> = tenant
+        .allowed_environments
+        .iter()
+        .map(|e| e.as_str())
+        .collect();
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(ApiError {
+            code: "environment_not_allowed",
+            message: format!(
+                "environment {} is not allowed for tenant '{}' ({:?}). Allowed: {}. \
+                 Keep PROD secrets in a separate production tenant \
+                 (e.g. project-dta-prod); project tenants hold INT/TEST/ACC only.",
+                env.as_str(),
+                tenant.slug,
+                tenant.tenant_kind,
+                allowed.join(", ")
+            ),
+        }),
+    )
+        .into_response())
 }
 
 /// Convert a `VaultError` to an HTTP response with the appropriate status code.
@@ -174,6 +293,12 @@ pub struct PutSecretBody {
     pub cas: Option<u32>,
     #[serde(default)]
     pub metadata: std::collections::HashMap<String, String>,
+    /// SDLC environment: INT | TEST | ACC | PROD. Defaults to the tenant's default.
+    #[serde(default)]
+    pub environment: Option<String>,
+    /// Free-form category tags (e.g. database, api-key).
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -220,17 +345,35 @@ pub struct MetadataResponseBody {
     pub cas_required: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub environment: String,
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub metadata: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ListSecretItem {
+    pub path: String,
+    pub environment: String,
+    pub tags: Vec<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct ListResponseBody {
     pub paths: Vec<String>,
+    /// Richer listing (env + tags). Empty when the store only returns paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<ListSecretItem>,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ListQuery {
     /// Optional path prefix to restrict the listing.
     pub prefix: Option<String>,
+    /// Filter by SDLC environment (INT / TEST / ACC / PROD).
+    pub environment: Option<String>,
+    /// Filter to secrets that include this tag.
+    pub tag: Option<String>,
 }
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -264,6 +407,7 @@ pub struct VersionQuery {
         DeleteResponseBody,
         MetadataResponseBody,
         ListResponseBody,
+        ListSecretItem,
     )),
     tags(
         (name = "secrets", description = "KV secret CRUD operations"),
@@ -694,7 +838,37 @@ pub async fn put_secret(
             encrypt_resp.ciphertext_b64,
             encrypt_resp.dek_id,
             body.cas,
-            body.metadata,
+            {
+                let mut meta = body.metadata.clone();
+                // Resolve environment: body.environment > metadata key >
+                // tenant default (when DB available) > INT.
+                let explicit = body
+                    .environment
+                    .as_deref()
+                    .or_else(|| meta.get("environment").map(String::as_str));
+                let env = match resolve_put_environment(&state, &tenant_id, explicit).await {
+                    Ok(e) => e,
+                    Err(resp) => return resp,
+                };
+                if let Err(resp) = validate_secret_environment(&state, &tenant_id, env).await {
+                    return resp;
+                }
+                let tags = body.tags.clone().unwrap_or_else(|| {
+                    meta.get("tags")
+                        .map(|s| {
+                            s.split(',')
+                                .map(str::trim)
+                                .filter(|t| !t.is_empty())
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                });
+                let tags = normalize_tags(tags);
+                meta.insert("environment".into(), env.as_str().to_string());
+                meta.insert("tags".into(), tags.join(","));
+                meta
+            },
             None,
         )
         .await
@@ -1151,6 +1325,9 @@ pub async fn get_metadata(
             cas_required: entry.cas_required,
             created_at: entry.created_at.to_rfc3339(),
             updated_at: entry.updated_at.to_rfc3339(),
+            environment: entry.environment,
+            tags: entry.tags,
+            metadata: entry.custom_metadata,
         }),
     )
         .into_response()
@@ -1249,6 +1426,44 @@ pub async fn list_secrets(
     let mut paths = state.store.list(&tenant_id, &prefix).await;
     paths.sort();
 
+    let env_filter = query
+        .environment
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_uppercase());
+    let tag_filter = query
+        .tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_lowercase());
+
+    let mut secrets = Vec::new();
+    let mut filtered_paths = Vec::new();
+    for path in paths {
+        let (environment, tags) = match state.store.get_metadata(&tenant_id, &path).await {
+            Ok(entry) => (entry.environment, entry.tags),
+            Err(_) => ("INT".to_string(), Vec::new()),
+        };
+        if let Some(ref want) = env_filter {
+            if environment.to_uppercase() != *want {
+                continue;
+            }
+        }
+        if let Some(ref want_tag) = tag_filter {
+            if !tags.iter().any(|t| t.eq_ignore_ascii_case(want_tag)) {
+                continue;
+            }
+        }
+        filtered_paths.push(path.clone());
+        secrets.push(ListSecretItem {
+            path,
+            environment,
+            tags,
+        });
+    }
+
     state
         .audit_client
         .emit(
@@ -1263,7 +1478,14 @@ pub async fn list_secrets(
         )
         .await;
 
-    (StatusCode::OK, Json(ListResponseBody { paths })).into_response()
+    (
+        StatusCode::OK,
+        Json(ListResponseBody {
+            paths: filtered_paths,
+            secrets,
+        }),
+    )
+        .into_response()
 }
 
 // ─── Lifecycle request/response bodies ───────────────────────────────────────
@@ -1870,6 +2092,7 @@ pub fn build_router(
     audit_client: AuditClient,
     policy_client: PolicyClient,
     lease_client: LeaseClient,
+    tenant_pool: Option<wslvault_storage::pool::DbPool>,
 ) -> Router {
     use utoipa::OpenApi as _;
     use utoipa_swagger_ui::SwaggerUi;
@@ -1881,6 +2104,7 @@ pub fn build_router(
         audit_client,
         policy_client,
         lease_client,
+        tenant_pool,
     };
 
     Router::new()
@@ -1965,6 +2189,7 @@ mod auth_tests {
             AuditClient::new("http://127.0.0.1:1".to_string()),
             PolicyClient::new("http://127.0.0.1:1".to_string()),
             LeaseClient::new("http://127.0.0.1:1".to_string()),
+            None,
         )
     }
 

@@ -1,22 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Lexend, Source_Sans_3, IBM_Plex_Mono } from "next/font/google";
+import { Poppins, Unbounded, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const lexend = Lexend({
+/** Match workstation-website: Unbounded display, Poppins body, JetBrains Mono. */
+const unbounded = Unbounded({
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
   variable: "--font-display",
   display: "swap",
 });
 
-const sourceSans = Source_Sans_3({
+const poppins = Poppins({
   subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  weight: ["400", "500", "600", "700"],
   variable: "--font-sans",
   display: "swap",
 });
 
-const plexMono = IBM_Plex_Mono({
+const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   variable: "--font-plex-mono",
@@ -86,7 +87,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${lexend.variable} ${sourceSans.variable} ${plexMono.variable}`}
+      className={`${unbounded.variable} ${poppins.variable} ${jetbrainsMono.variable}`}
     >
       <body>
         <script

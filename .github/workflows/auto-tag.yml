@@ -1,0 +1,66 @@
+name: Auto Tag
+
+# Tag every merge to main with the next patch version (vMAJOR.MINOR.PATCH),
+# matching the diy-tax-return-uk / jobshout style: bump on push, not gated on
+# Docker builds. CI's existing Tag & Release job remains idempotent if this
+# workflow already claimed the same version.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: auto-tag-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    name: Create next version tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: calc
+        run: |
+          set -euo pipefail
+          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+          [ -n "$LATEST_TAG" ] || LATEST_TAG="v1.0.0"
+          BASE_VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+          NEXT_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+          echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
+          echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        id: create_tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.calc.outputs.next_version }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${{ github.repository }}/git/ref/tags/$NEXT_VERSION" >/dev/null 2>&1; then
+            echo "::notice::Tag $NEXT_VERSION already exists — skipping"
+            echo "tag_created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Prefer API over git push: GITHUB_TOKEN cannot push workflow-touching
+          # commits as refs without workflows permission; creating a tag ref is fine.
+          gh api -X POST "repos/${{ github.repository }}/git/refs" \
+            -f ref="refs/tags/$NEXT_VERSION" \
+            -f sha="${{ github.sha }}" >/dev/null
+          echo "tag_created=true" >> "$GITHUB_OUTPUT"
+          echo "Created $NEXT_VERSION -> ${{ github.sha }}"
+
+      - name: Create GitHub Release
+        if: steps.create_tag.outputs.tag_created == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calc.outputs.next_version }}
+          name: Release ${{ steps.calc.outputs.next_version }}
+          generate_release_notes: true

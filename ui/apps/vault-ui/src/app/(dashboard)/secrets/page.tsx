@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils'
 
 interface SecretListResponse {
   paths?: string[]
+  secrets?: Array<{ path: string; environment?: string; tags?: string[] }>
 }
 
 /** Wire shape of `GET /v1/secret/data/*path`. */
@@ -574,6 +575,8 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
   const { mutate: globalMutate } = useSWRConfig()
 
   const [secretPath, setSecretPath] = useState('')
+  const [environment, setEnvironment] = useState('INT')
+  const [tagsInput, setTagsInput] = useState('')
   const [fields, setFields] = useState<Field[]>(() => [{ id: nextFieldId(), k: '', v: '' }])
   const create = useAsyncAction()
 
@@ -585,7 +588,15 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
         const data = Object.fromEntries(fields.filter(f => f.k.trim()).map(f => [f.k, f.v]))
         const encoded = encodeSecretBlob(data)
         if (!encoded.ok) throw new Error(encoded.error)
-        await vaultMutate(api.secret.data(trimmed), 'POST', { data: encoded.value })
+        const tags = tagsInput
+          .split(',')
+          .map(t => t.trim().toLowerCase())
+          .filter(Boolean)
+        await vaultMutate(api.secret.data(trimmed), 'POST', {
+          data: encoded.value,
+          environment,
+          tags,
+        })
         await globalMutate(api.secret.list())
       },
       {
@@ -593,7 +604,7 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
         onSuccess: () => onCreated(trimmed),
       },
     )
-  }, [create, secretPath, fields, vaultMutate, globalMutate, onCreated])
+  }, [create, secretPath, fields, environment, tagsInput, vaultMutate, globalMutate, onCreated])
 
   return (
     <div className="space-y-4">
@@ -611,10 +622,42 @@ function NewSecretPanel({ onCreated }: { onCreated: (path: string) => void }) {
           className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
         />
         <p className="text-xs text-ink-muted">
-          Slashes create folders — <span className="font-mono text-ink">prod/db/password</span>{' '}
-          files it under <span className="font-mono text-ink">prod</span> ›{' '}
-          <span className="font-mono text-ink">db</span>.
+          Slashes create folders — environment is a separate field (not the path). Project tenants
+          use INT / TEST / ACC; keep PROD in a production tenant.
         </p>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label htmlFor="new-secret-env" className="block text-xs font-medium text-ink-muted">
+            Environment
+          </label>
+          <select
+            id="new-secret-env"
+            value={environment}
+            onChange={e => setEnvironment(e.target.value)}
+            className="w-full px-3 py-2.5 text-sm rounded-lg border border-line-strong bg-surface text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+          >
+            <option value="INT">INT</option>
+            <option value="TEST">TEST</option>
+            <option value="ACC">ACC</option>
+            <option value="PROD">PROD</option>
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <label htmlFor="new-secret-tags" className="block text-xs font-medium text-ink-muted">
+            Tags
+          </label>
+          <input
+            id="new-secret-tags"
+            value={tagsInput}
+            onChange={e => setTagsInput(e.target.value)}
+            placeholder="database, api-key"
+            autoComplete="off"
+            className="w-full px-3 py-2.5 text-sm rounded-lg border border-line-strong bg-surface text-ink placeholder:text-ink-faint focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+          />
+          <p className="text-xs text-ink-muted">Comma-separated categories.</p>
+        </div>
       </div>
 
       <FieldEditor fields={fields} setFields={setFields} />
@@ -647,13 +690,27 @@ export default function SecretsPage() {
   // Rebuild only when the path list actually changes — not on every keystroke
   // in the editor, which is what the old inline O(n²) build did.
   const paths = useMemo(() => listData?.paths ?? [], [listData?.paths])
+  const secretMeta = useMemo(() => {
+    const map = new Map<string, { environment?: string; tags?: string[] }>()
+    for (const s of listData?.secrets ?? []) {
+      map.set(s.path, { environment: s.environment, tags: s.tags })
+    }
+    return map
+  }, [listData?.secrets])
 
   const [filter, setFilter] = useState('')
+  const [envFilter, setEnvFilter] = useState('')
   const filtered = useMemo(() => {
     const q = filter.trim().toLowerCase()
-    if (!q) return paths
-    return paths.filter(p => p.toLowerCase().includes(q))
-  }, [paths, filter])
+    return paths.filter(p => {
+      if (q && !p.toLowerCase().includes(q)) return false
+      if (envFilter) {
+        const env = secretMeta.get(p)?.environment?.toUpperCase()
+        if (env !== envFilter) return false
+      }
+      return true
+    })
+  }, [paths, filter, envFilter, secretMeta])
 
   // Built from the FILTERED list, not filtered afterwards: pruning a finished
   // tree leaves folders whose children have all been removed, so a search for
@@ -763,19 +820,33 @@ export default function SecretsPage() {
                 screenful: without it the only way to find a path is to expand
                 every folder and read. */}
             {paths.length > 0 && (
-              <div className="relative">
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
-                  aria-hidden="true"
-                />
-                <input
-                  type="search"
-                  value={filter}
-                  onChange={e => setFilter(e.target.value)}
-                  placeholder="Filter paths…"
-                  aria-label="Filter secret paths"
-                  className="w-full pl-9 pr-2.5 py-2 text-sm rounded-lg border border-line-strong bg-surface-2 text-ink placeholder:text-ink-faint transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
-                />
+              <div className="space-y-2">
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-faint"
+                    aria-hidden="true"
+                  />
+                  <input
+                    type="search"
+                    value={filter}
+                    onChange={e => setFilter(e.target.value)}
+                    placeholder="Filter paths…"
+                    aria-label="Filter secret paths"
+                    className="w-full pl-9 pr-2.5 py-2 text-sm rounded-lg border border-line-strong bg-surface-2 text-ink placeholder:text-ink-faint transition-colors focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                  />
+                </div>
+                <select
+                  value={envFilter}
+                  onChange={e => setEnvFilter(e.target.value)}
+                  aria-label="Filter by environment"
+                  className="w-full px-2.5 py-2 text-sm rounded-lg border border-line-strong bg-surface-2 text-ink focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500"
+                >
+                  <option value="">All environments</option>
+                  <option value="INT">INT</option>
+                  <option value="TEST">TEST</option>
+                  <option value="ACC">ACC</option>
+                  <option value="PROD">PROD</option>
+                </select>
               </div>
             )}
           </CardHeader>

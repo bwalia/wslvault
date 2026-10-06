@@ -31,6 +31,60 @@ impl std::fmt::Display for SecretId {
     }
 }
 
+/// SDLC environment label attached to a secret.
+///
+/// Independent of geo region. Project tenants typically allow INT/TEST/ACC;
+/// production tenants allow PROD only — see [`crate::types::tenant::Tenant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum SecretEnvironment {
+    #[serde(rename = "INT")]
+    #[default]
+    Int,
+    #[serde(rename = "TEST")]
+    Test,
+    #[serde(rename = "ACC")]
+    Acc,
+    #[serde(rename = "PROD")]
+    Prod,
+}
+
+impl SecretEnvironment {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Int => "INT",
+            Self::Test => "TEST",
+            Self::Acc => "ACC",
+            Self::Prod => "PROD",
+        }
+    }
+
+    /// All valid environment labels.
+    pub fn all() -> &'static [SecretEnvironment] {
+        &[Self::Int, Self::Test, Self::Acc, Self::Prod]
+    }
+}
+
+impl std::str::FromStr for SecretEnvironment {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_uppercase().as_str() {
+            "INT" => Ok(Self::Int),
+            "TEST" => Ok(Self::Test),
+            "ACC" => Ok(Self::Acc),
+            "PROD" => Ok(Self::Prod),
+            other => Err(format!(
+                "unknown environment '{other}'; must be one of: INT, TEST, ACC, PROD"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for SecretEnvironment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Lifecycle type controlling how a secret expires and rotates.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -214,6 +268,12 @@ pub struct SecretMetadata {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub custom_metadata: HashMap<String, String>,
+    /// SDLC environment (INT / TEST / ACC / PROD).
+    #[serde(default)]
+    pub environment: SecretEnvironment,
+    /// Free-form category labels (e.g. `database`, `api-key`, `app:billing`).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Lifecycle type governing expiry and rotation behaviour.
     #[serde(default)]
     pub secret_type: SecretType,
@@ -263,4 +323,52 @@ impl std::fmt::Debug for PlaintextSecret {
 pub struct SecretReadResult {
     pub metadata: SecretMetadata,
     pub plaintext: PlaintextSecret,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_environment_parses_case_insensitive() {
+        assert_eq!(
+            "INT".parse::<SecretEnvironment>().unwrap(),
+            SecretEnvironment::Int
+        );
+        assert_eq!(
+            "test".parse::<SecretEnvironment>().unwrap(),
+            SecretEnvironment::Test
+        );
+        assert_eq!(
+            "Acc".parse::<SecretEnvironment>().unwrap(),
+            SecretEnvironment::Acc
+        );
+        assert_eq!(
+            "PROD".parse::<SecretEnvironment>().unwrap(),
+            SecretEnvironment::Prod
+        );
+    }
+
+    #[test]
+    fn secret_environment_rejects_unknown() {
+        assert!("DEV".parse::<SecretEnvironment>().is_err());
+        assert!("staging".parse::<SecretEnvironment>().is_err());
+    }
+
+    #[test]
+    fn secret_environment_display_roundtrip() {
+        for env in SecretEnvironment::all() {
+            let s = env.to_string();
+            assert_eq!(s.parse::<SecretEnvironment>().unwrap(), *env);
+            assert_eq!(env.as_str(), s.as_str());
+        }
+    }
+
+    #[test]
+    fn secret_environment_serde_uses_uppercase() {
+        let json = serde_json::to_string(&SecretEnvironment::Test).unwrap();
+        assert_eq!(json, "\"TEST\"");
+        let parsed: SecretEnvironment = serde_json::from_str("\"ACC\"").unwrap();
+        assert_eq!(parsed, SecretEnvironment::Acc);
+    }
 }

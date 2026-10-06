@@ -31,7 +31,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info};
 use uuid::Uuid;
 use wslvault_core::{
-    types::tenant::{Tenant, TenantId, TenantTier},
+    types::secret::SecretEnvironment,
+    types::tenant::{Tenant, TenantId, TenantKind, TenantTier},
     VaultError,
 };
 use wslvault_storage::pool::DbPool;
@@ -262,6 +263,18 @@ pub struct CreateTenantRequest {
     pub tier: Option<String>,
     /// ID of the tenant's root key-encryption key in the crypto-service.
     pub root_key_id: String,
+    /// `project` (INT/TEST/ACC) or `production` (PROD only). Defaults to project.
+    #[serde(default)]
+    pub tenant_kind: Option<String>,
+    /// Override allowed SDLC environments. Must be a subset of INT/TEST/ACC/PROD.
+    #[serde(default)]
+    pub allowed_environments: Option<Vec<String>>,
+    /// Default environment for new secrets in this tenant.
+    #[serde(default)]
+    pub default_environment: Option<String>,
+    /// Optional tenant-level tags (e.g. project:dta).
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Response body returned for single-tenant operations.
@@ -272,6 +285,10 @@ pub struct TenantResponse {
     pub display_name: String,
     pub tier: String,
     pub root_key_id: String,
+    pub tenant_kind: String,
+    pub allowed_environments: Vec<String>,
+    pub default_environment: String,
+    pub tags: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -291,6 +308,14 @@ impl From<&Tenant> for TenantResponse {
             display_name: t.display_name.clone(),
             tier: tier_str.to_string(),
             root_key_id: t.root_key_id.clone(),
+            tenant_kind: t.tenant_kind.as_str().to_string(),
+            allowed_environments: t
+                .allowed_environments
+                .iter()
+                .map(|e| e.as_str().to_string())
+                .collect(),
+            default_environment: t.default_environment.as_str().to_string(),
+            tags: t.tags.clone(),
             created_at: t.created_at.to_rfc3339(),
             updated_at: t.updated_at.to_rfc3339(),
             deleted_at: t.deleted_at.map(|dt| dt.to_rfc3339()),
@@ -327,6 +352,58 @@ fn parse_tier(tier_opt: Option<&str>) -> Result<TenantTier, String> {
             other
         )),
     }
+}
+
+fn resolve_allowed_environments(
+    kind: TenantKind,
+    override_list: Option<&Vec<String>>,
+) -> Result<Vec<SecretEnvironment>, String> {
+    if kind == TenantKind::Production {
+        // Production tenants are always PROD-only — ignore overrides that would
+        // mix lower environments into the production tenancy.
+        return Ok(TenantKind::Production.default_allowed());
+    }
+    match override_list {
+        None => Ok(kind.default_allowed()),
+        Some(list) if list.is_empty() => Ok(kind.default_allowed()),
+        Some(list) => {
+            let mut out = Vec::new();
+            for s in list {
+                let env: SecretEnvironment = s.parse()?;
+                if env == SecretEnvironment::Prod {
+                    return Err(
+                        "project tenants cannot allow PROD — create a separate production tenant"
+                            .into(),
+                    );
+                }
+                if !out.contains(&env) {
+                    out.push(env);
+                }
+            }
+            if out.is_empty() {
+                return Err("allowed_environments must not be empty".into());
+            }
+            Ok(out)
+        }
+    }
+}
+
+fn resolve_default_environment(
+    kind: TenantKind,
+    allowed: &[SecretEnvironment],
+    override_default: Option<&str>,
+) -> Result<SecretEnvironment, String> {
+    let env = match override_default {
+        None | Some("") => kind.default_environment(),
+        Some(s) => s.parse()?,
+    };
+    if !allowed.contains(&env) {
+        return Err(format!(
+            "default_environment {} is not in allowed_environments",
+            env.as_str()
+        ));
+    }
+    Ok(env)
 }
 
 /// Map a `VaultError` to an appropriate HTTP status code.
@@ -408,6 +485,66 @@ pub async fn create_tenant(
         }
     };
 
+    let tenant_kind = match payload
+        .tenant_kind
+        .as_deref()
+        .unwrap_or("project")
+        .parse::<TenantKind>()
+    {
+        Ok(k) => k,
+        Err(msg) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "code": "invalid_tenant_kind",
+                    "message": msg,
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let allowed_environments =
+        match resolve_allowed_environments(tenant_kind, payload.allowed_environments.as_ref()) {
+            Ok(v) => v,
+            Err(msg) => {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(serde_json::json!({
+                        "code": "invalid_allowed_environments",
+                        "message": msg,
+                    })),
+                )
+                    .into_response()
+            }
+        };
+
+    let default_environment = match resolve_default_environment(
+        tenant_kind,
+        &allowed_environments,
+        payload.default_environment.as_deref(),
+    ) {
+        Ok(v) => v,
+        Err(msg) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(serde_json::json!({
+                    "code": "invalid_default_environment",
+                    "message": msg,
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let tags = payload
+        .tags
+        .unwrap_or_default()
+        .into_iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>();
+
     let now = Utc::now();
     let tenant = Tenant {
         id: TenantId::new(),
@@ -415,6 +552,10 @@ pub async fn create_tenant(
         display_name: payload.display_name,
         tier,
         root_key_id: payload.root_key_id,
+        tenant_kind,
+        allowed_environments,
+        default_environment,
+        tags,
         created_at: now,
         updated_at: now,
         deleted_at: None,
@@ -754,12 +895,17 @@ mod tests {
 
     fn sample_tenant(slug: &str) -> Tenant {
         let now = Utc::now();
+        let kind = TenantKind::Project;
         Tenant {
             id: TenantId::new(),
             slug: slug.to_string(),
             display_name: format!("{slug} Corp"),
             tier: TenantTier::Shared,
             root_key_id: "kek-001".to_string(),
+            tenant_kind: kind,
+            allowed_environments: kind.default_allowed(),
+            default_environment: kind.default_environment(),
+            tags: Vec::new(),
             created_at: now,
             updated_at: now,
             deleted_at: None,

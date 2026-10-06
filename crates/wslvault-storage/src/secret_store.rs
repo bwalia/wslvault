@@ -16,8 +16,8 @@ use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 use wslvault_core::types::secret::{
-    RotationPolicy, RotationRecord, SecretEngine, SecretMetadata, SecretType, SecretVersion,
-    VersionStatus,
+    RotationPolicy, RotationRecord, SecretEngine, SecretEnvironment, SecretMetadata, SecretType,
+    SecretVersion, VersionStatus,
 };
 use wslvault_core::types::tenant::TenantId;
 use wslvault_core::VaultError;
@@ -57,6 +57,8 @@ pub async fn get_secret_metadata(
     let row = sqlx::query(
         "SELECT id, tenant_id, path, engine, current_version, max_versions, cas_required,
                 custom_metadata, created_at, updated_at,
+                COALESCE(environment, 'INT') AS environment,
+                COALESCE(tags, '{}') AS tags,
                 COALESCE(secret_type, 'STALE_TTL') AS secret_type,
                 ttl_seconds, soft_warn_seconds, rotation_interval_seconds,
                 grace_period_seconds, webhook_url,
@@ -80,6 +82,12 @@ pub async fn get_secret_metadata(
     let custom_metadata: serde_json::Value = row.get("custom_metadata");
     let custom_map: HashMap<String, String> =
         serde_json::from_value(custom_metadata).unwrap_or_default();
+
+    let environment: SecretEnvironment = row
+        .get::<String, _>("environment")
+        .parse()
+        .unwrap_or_default();
+    let tags: Vec<String> = row.get("tags");
 
     let secret_type: SecretType = row
         .get::<Option<&str>, _>("secret_type")
@@ -111,6 +119,8 @@ pub async fn get_secret_metadata(
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
         custom_metadata: custom_map,
+        environment,
+        tags,
         secret_type,
         rotation_policy,
         expires_at: row.get("expires_at"),
@@ -207,27 +217,68 @@ pub async fn get_secret_version(
     })
 }
 
+/// A listed secret path with environment and tags (no ciphertext).
+#[derive(Debug, Clone)]
+pub struct ListedSecret {
+    pub path: String,
+    pub environment: SecretEnvironment,
+    pub tags: Vec<String>,
+}
+
 /// List secret paths under a prefix for a given tenant.
 pub async fn list_secret_paths(
     conn: &mut PgConnection,
     tenant_id: &TenantId,
     prefix: &str,
 ) -> Result<Vec<String>, VaultError> {
+    let items = list_secrets(conn, tenant_id, prefix, None, None).await?;
+    Ok(items.into_iter().map(|i| i.path).collect())
+}
+
+/// List secrets under a prefix, optionally filtered by environment and/or tag.
+///
+/// Filters use AND semantics. `tag` matches if it appears in the secret's tags
+/// array (`tag = ANY(tags)`).
+pub async fn list_secrets(
+    conn: &mut PgConnection,
+    tenant_id: &TenantId,
+    prefix: &str,
+    environment: Option<&str>,
+    tag: Option<&str>,
+) -> Result<Vec<ListedSecret>, VaultError> {
     let pattern = format!("{}%", prefix);
     let rows = sqlx::query(
-        "SELECT path FROM shared.secrets
-         WHERE tenant_id = $1 AND path LIKE $2
+        "SELECT path,
+                COALESCE(environment, 'INT') AS environment,
+                COALESCE(tags, '{}') AS tags
+         FROM shared.secrets
+         WHERE tenant_id = $1
+           AND path LIKE $2
+           AND ($3::text IS NULL OR environment = $3)
+           AND ($4::text IS NULL OR $4 = ANY(tags))
          ORDER BY path",
     )
     .bind(tenant_id.as_uuid())
     .bind(&pattern)
+    .bind(environment)
+    .bind(tag)
     .fetch_all(&mut *conn)
     .await
     .map_err(|e| VaultError::Database {
         reason: e.to_string(),
     })?;
 
-    Ok(rows.into_iter().map(|r| r.get("path")).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let env_s: String = r.get("environment");
+            ListedSecret {
+                path: r.get("path"),
+                environment: env_s.parse().unwrap_or_default(),
+                tags: r.get("tags"),
+            }
+        })
+        .collect())
 }
 
 /// Write a new secret version using the atomic upsert function.
@@ -242,9 +293,13 @@ pub async fn upsert_secret_version(
     cas_version: Option<u32>,
     max_versions: u32,
     cas_required: bool,
+    custom_metadata: &HashMap<String, String>,
+    environment: SecretEnvironment,
+    tags: &[String],
 ) -> Result<(wslvault_core::SecretId, u32), VaultError> {
+    let meta_json = serde_json::to_value(custom_metadata).unwrap_or_else(|_| serde_json::json!({}));
     let row =
-        sqlx::query("SELECT * FROM shared.vault_upsert_secret($1, $2, $3, $4, $5, $6, $7, $8)")
+        sqlx::query("SELECT * FROM shared.vault_upsert_secret($1, $2, $3, $4, $5, $6, $7, $8, $9)")
             .bind(tenant_id.as_uuid())
             .bind(path)
             .bind(engine_str(engine))
@@ -253,6 +308,7 @@ pub async fn upsert_secret_version(
             .bind(cas_version.map(|v| v as i32))
             .bind(max_versions as i32)
             .bind(cas_required)
+            .bind(&meta_json)
             .fetch_one(&mut *conn)
             .await
             .map_err(|e| {
@@ -269,6 +325,27 @@ pub async fn upsert_secret_version(
 
     let secret_id = wslvault_core::SecretId(row.get::<Uuid, _>("secret_id"));
     let new_version = row.get::<i32, _>("new_version") as u32;
+
+    // Persist first-class labels and keep the secrets-row custom_metadata in
+    // sync (vault_upsert_secret only writes it on INSERT, not on conflict).
+    sqlx::query(
+        "UPDATE shared.secrets
+         SET environment = $3,
+             tags = $4,
+             custom_metadata = $5,
+             updated_at = now()
+         WHERE tenant_id = $1 AND path = $2",
+    )
+    .bind(tenant_id.as_uuid())
+    .bind(path)
+    .bind(environment.as_str())
+    .bind(tags)
+    .bind(&meta_json)
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| VaultError::Database {
+        reason: e.to_string(),
+    })?;
 
     Ok((secret_id, new_version))
 }

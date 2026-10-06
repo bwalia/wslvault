@@ -24,6 +24,10 @@ interface Tenant {
   display_name: string
   tier: string
   root_key_id: string
+  tenant_kind?: string
+  allowed_environments?: string[]
+  default_environment?: string
+  tags?: string[]
   created_at: string
 }
 
@@ -41,6 +45,8 @@ interface TenantFormValues {
   display_name: string
   tier: 'shared' | 'dedicated' | 'sovereign'
   root_key_id: string
+  /** project = INT/TEST/ACC; production = PROD-only separate tenancy */
+  tenant_kind: 'project' | 'production'
   /** Optional. When present, an invitation is sent as soon as the tenant exists. */
   email: string
 }
@@ -72,7 +78,7 @@ export default function TenantsPage() {
     reset,
     setValue,
     formState: { errors },
-  } = useForm<TenantFormValues>({ defaultValues: { tier: 'shared' } })
+  } = useForm<TenantFormValues>({ defaultValues: { tier: 'shared', tenant_kind: 'project' } })
 
   /** Which derived fields the user has taken over, so we stop writing to them. */
   const [touched, setTouched] = useState({ slug: false, root_key_id: false })
@@ -349,6 +355,21 @@ export default function TenantsPage() {
             </select>
             <p className="text-xs text-ink-faint">
               Shared is suitable for most workloads. Choose Dedicated or Sovereign for stricter isolation requirements.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <label className="block text-sm font-medium text-ink">
+              Environment scope
+            </label>
+            <select
+              className="w-full px-3 py-2 rounded-lg border border-line-strong bg-surface text-ink text-sm focus:outline-none focus:ring-2 focus:ring-primary-500/40 focus:border-primary-500 transition-colors"
+              {...register('tenant_kind')}
+            >
+              <option value="project">Project — INT, TEST, ACC (e.g. project-dta)</option>
+              <option value="production">Production — PROD only (e.g. project-dta-prod)</option>
+            </select>
+            <p className="text-xs text-ink-faint">
+              Keep production secrets in a separate tenant from lower environments.
             </p>
           </div>
           <Input

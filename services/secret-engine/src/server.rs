@@ -68,26 +68,32 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     // Select the storage backend.  The PostgreSQL backend is used when
     // DATABASE_URL is present; the in-memory KvStore is the fallback.
-    let store: Arc<dyn SecretStoreBackend> = match std::env::var("DATABASE_URL") {
-        Ok(database_url) => {
-            info!("DATABASE_URL detected — connecting to PostgreSQL backend");
-            let db_config = DatabaseConfig {
-                url: database_url,
-                ..DatabaseConfig::default()
-            };
-            let pool = DbPool::connect(&db_config).await.map_err(|e| {
-                error!(error = %e, "failed to connect to PostgreSQL");
-                anyhow::anyhow!("PostgreSQL connection failed: {}", e)
-            })?;
-            info!("PostgreSQL connection pool established; using PgSecretBackend");
-            wslvault_storage::revocation_store::install_auth_revocation_checker(pool.clone());
-            Arc::new(PgSecretBackend::new(pool))
-        }
-        Err(_) => {
-            warn!("DATABASE_URL not set — falling back to in-memory KvStore (not for production)");
-            KvStore::new()
-        }
-    };
+    let (store, tenant_pool): (Arc<dyn SecretStoreBackend>, Option<DbPool>) =
+        match std::env::var("DATABASE_URL") {
+            Ok(database_url) => {
+                info!("DATABASE_URL detected — connecting to PostgreSQL backend");
+                let db_config = DatabaseConfig {
+                    url: database_url,
+                    ..DatabaseConfig::default()
+                };
+                let pool = DbPool::connect(&db_config).await.map_err(|e| {
+                    error!(error = %e, "failed to connect to PostgreSQL");
+                    anyhow::anyhow!("PostgreSQL connection failed: {}", e)
+                })?;
+                info!("PostgreSQL connection pool established; using PgSecretBackend");
+                wslvault_storage::revocation_store::install_auth_revocation_checker(pool.clone());
+                (
+                    Arc::new(PgSecretBackend::new(pool.clone())) as Arc<dyn SecretStoreBackend>,
+                    Some(pool),
+                )
+            }
+            Err(_) => {
+                warn!(
+                    "DATABASE_URL not set — falling back to in-memory KvStore (not for production)"
+                );
+                (KvStore::new(), None)
+            }
+        };
 
     // Construct the audit client once; it is cheaply clonable (`Clone` is
     // derived) and is shared by both the gRPC and HTTP servers.
@@ -119,6 +125,7 @@ pub async fn run(
         audit_client,
         policy_client,
         lease_client,
+        tenant_pool,
     ));
 
     // Await both; propagate the first error encountered.
@@ -176,6 +183,7 @@ async fn run_http(
     audit_client: AuditClient,
     policy_client: PolicyClient,
     lease_client: LeaseClient,
+    tenant_pool: Option<DbPool>,
 ) -> anyhow::Result<()> {
     // Build the secret API router, forwarding the policy and lease clients so
     // every handler can gate operations and optionally attach TTL-based leases.
@@ -185,6 +193,7 @@ async fn run_http(
         audit_client,
         policy_client,
         lease_client,
+        tenant_pool,
     );
 
     // Mount health probes alongside the secret API routes, with metrics middleware.
