@@ -32,7 +32,7 @@ jobs:
       contents: read # resolves a number; tagging happens after the build
     outputs:
       next_version: ${{ steps.calc.outputs.next_version }}
-      tag_is_new: ${{ steps.calc.outputs.tag_is_new }}
+      is_release: ${{ steps.calc.outputs.is_release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,21 +42,31 @@ jobs:
         id: calc
         run: |
           set -euo pipefail
-          LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
-          [ -n "$LATEST_TAG" ] || LATEST_TAG="v1.0.0"
-          BASE_VERSION="${LATEST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
-          NEXT_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
-          echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
-
-          # A collision means there is nothing to release (a replay, mostly);
-          # the registry version tag and git tag are both skipped, while the
-          # SHA-tagged image builds proceed as always.
-          if git tag -l "$NEXT_VERSION" | grep -q "^$NEXT_VERSION$"; then
-            echo "::warning::Tag $NEXT_VERSION already exists — skipping the release tags."
-            echo "tag_is_new=false" >> "$GITHUB_OUTPUT"
+          # auto-tag.yml races this workflow on every push to main. If it has
+          # already tagged this commit, release that version instead of bumping
+          # past it (which would leave two tags on one commit and skip the seed).
+          HEAD_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --points-at "$GITHUB_SHA" --sort=-v:refname | head -1)
+          if [ -n "$HEAD_TAG" ]; then
+            NEXT_VERSION="$HEAD_TAG"
+            echo "Commit already tagged $HEAD_TAG (auto-tag.yml) — releasing it"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
           else
-            echo "tag_is_new=true" >> "$GITHUB_OUTPUT"
+            LATEST_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+            [ -n "$LATEST_TAG" ] || LATEST_TAG="v1.0.0"
+            BASE_VERSION="${LATEST_TAG#v}"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
+            NEXT_VERSION="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+            echo "Auto patch bump: $LATEST_TAG -> $NEXT_VERSION"
+
+            # A collision with a tag on another commit means there is nothing to
+            # release (a replay, mostly); the registry version tag and git tag
+            # are both skipped, while the SHA-tagged image builds proceed.
+            if git tag -l "$NEXT_VERSION" | grep -q "^$NEXT_VERSION$"; then
+              echo "::warning::Tag $NEXT_VERSION already exists on another commit — skipping the release tags."
+              echo "is_release=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "is_release=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
           echo "next_version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
 
@@ -268,7 +278,7 @@ jobs:
             ghcr.io/bwalia/wslvault-${{ matrix.service }}:latest
             ghcr.io/bwalia/wslvault-${{ matrix.service }}:0.1.0
             ghcr.io/bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}
-            ${{ needs.compute-version.outputs.tag_is_new == 'true' && format('ghcr.io/bwalia/wslvault-{0}:{1}', matrix.service, needs.compute-version.outputs.next_version) || '' }}
+            ${{ needs.compute-version.outputs.is_release == 'true' && format('ghcr.io/bwalia/wslvault-{0}:{1}', matrix.service, needs.compute-version.outputs.next_version) || '' }}
           # Only vault-ui declares these (footer build stamp); they are inert
           # for the other services.
           build-args: |
@@ -295,7 +305,7 @@ jobs:
           src="ghcr.io/bwalia/wslvault-${{ matrix.service }}:${{ github.sha }}"
           img="bwalia/wslvault-${{ matrix.service }}"
           args=(--tag "$img:latest" --tag "$img:0.1.0" --tag "$img:${{ github.sha }}")
-          if [ "${{ needs.compute-version.outputs.tag_is_new }}" = "true" ]; then
+          if [ "${{ needs.compute-version.outputs.is_release }}" = "true" ]; then
             args+=(--tag "$img:${{ needs.compute-version.outputs.next_version }}")
           fi
 
@@ -322,12 +332,12 @@ jobs:
   auto-tag:
     name: Tag & Release
     needs: [compute-version, build-images]
-    if: needs.compute-version.outputs.tag_is_new == 'true'
+    if: needs.compute-version.outputs.is_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write # the only job that writes to the repo
     outputs:
-      tag_created: ${{ steps.create_tag.outputs.tag_created }}
+      tag_ready: ${{ steps.create_tag.outputs.tag_ready }}
       version: ${{ needs.compute-version.outputs.next_version }}
     steps:
       # Create the tag via the GitHub API, NOT `git push`. A GITHUB_TOKEN push
@@ -343,16 +353,23 @@ jobs:
         run: |
           set -euo pipefail
           NEXT_VERSION="${{ needs.compute-version.outputs.next_version }}"
-          # compute-version checked collisions against its clone; re-check the
-          # remote, because the race being guarded is a tag appearing during the
-          # build.
-          if gh api "repos/${{ github.repository }}/git/ref/tags/$NEXT_VERSION" >/dev/null 2>&1; then
-            echo "::warning::Tag $NEXT_VERSION appeared during the build, skipping creation"
+          # compute-version checked against its clone; re-check the remote,
+          # because auto-tag.yml may have claimed the version during the build.
+          # A tag on this commit is fine (release it); on another commit it isn't.
+          if TAG_SHA=$(gh api "repos/${{ github.repository }}/git/ref/tags/$NEXT_VERSION" --jq .object.sha 2>/dev/null); then
+            if [ "$TAG_SHA" = "${{ github.sha }}" ]; then
+              echo "Tag $NEXT_VERSION already points at this commit (auto-tag.yml) — releasing it"
+              echo "tag_ready=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "::warning::Tag $NEXT_VERSION appeared on another commit during the build, skipping release"
+              echo "tag_ready=false" >> "$GITHUB_OUTPUT"
+            fi
             echo "tag_created=false" >> "$GITHUB_OUTPUT"
           else
             gh api -X POST "repos/${{ github.repository }}/git/refs" \
               -f ref="refs/tags/$NEXT_VERSION" -f sha="${{ github.sha }}" >/dev/null
             echo "tag_created=true" >> "$GITHUB_OUTPUT"
+            echo "tag_ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create GitHub Release
@@ -371,7 +388,7 @@ jobs:
   publish-www:
     name: Publish www (GitHub Pages)
     needs: [compute-version, auto-tag]
-    if: needs.auto-tag.outputs.tag_created == 'true'
+    if: needs.auto-tag.outputs.tag_ready == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -398,7 +415,7 @@ jobs:
   seed-ring-promoter:
     name: Seed Ring Promoter (int → region-a)
     needs: [compute-version, auto-tag]
-    if: needs.auto-tag.outputs.tag_created == 'true'
+    if: needs.auto-tag.outputs.tag_ready == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
