@@ -81,7 +81,7 @@ export function VaultPanel({
 
         <motion.h1
           variants={staggerItem}
-          className="font-display text-[2.5rem] xl:text-[3rem] leading-[1.05] font-semibold tracking-tight text-white text-balance"
+          className="font-display text-[clamp(2rem,1.2rem+2.6vw,3.25rem)] leading-[1.15] font-semibold tracking-tight text-white text-balance"
         >
           {headline}
         </motion.h1>

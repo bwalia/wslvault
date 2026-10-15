@@ -39,7 +39,7 @@ export function PageHeader({ title, description, actions, guide }: PageHeaderPro
           <div className="flex items-center gap-2">
             {/* Display face and a step up in size: on a page of dense tables the
                 title is the only thing establishing where you are. */}
-            <h1 className="font-display text-[2rem] leading-tight font-semibold tracking-tight text-ink">
+            <h1 className="font-display text-[clamp(1.75rem,1.25rem+2vw,2.6rem)] leading-snug font-semibold tracking-tight text-ink">
               {title}
             </h1>
             {guide && (
