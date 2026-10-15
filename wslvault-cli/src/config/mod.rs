@@ -14,7 +14,7 @@ pub struct AppConfig {
     /// TLS CA certificate path
     pub ca_cert: Option<String>,
     /// Named profiles (dev, staging, prod)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub profiles: HashMap<String, ProfileConfig>,
 }
 
@@ -32,7 +32,8 @@ fn default_endpoint() -> String {
 
 impl AppConfig {
     /// Load configuration from `~/.wslvault/config.toml`, merging the named profile if specified.
-    pub fn load(profile: Option<&str>) -> anyhow::Result<Self> {
+    /// A missing profile is an error unless `allow_missing_profile` is set.
+    pub fn load(profile: Option<&str>, allow_missing_profile: bool) -> anyhow::Result<Self> {
         let config_path = Self::config_path();
 
         let mut config = if config_path.exists() {
@@ -57,12 +58,76 @@ impl AppConfig {
                 if profile.ca_cert.is_some() {
                     config.ca_cert = profile.ca_cert.clone();
                 }
-            } else {
+            } else if !allow_missing_profile {
                 anyhow::bail!("profile '{}' not found in config", profile_name);
             }
         }
 
         Ok(config)
+    }
+
+    /// Load the config file exactly as written, without merging any profile.
+    pub fn load_raw() -> anyhow::Result<Self> {
+        let path = Self::config_path();
+        if !path.exists() {
+            return Ok(AppConfig {
+                endpoint: default_endpoint(),
+                ..Default::default()
+            });
+        }
+        Ok(toml::from_str(&std::fs::read_to_string(&path)?)?)
+    }
+
+    /// Store a token, the endpoint that issued it and its tenant, at the top
+    /// level or in `profile` (created if missing). The tenant is informational:
+    /// the server takes the tenant from the token itself.
+    pub fn set_credentials(
+        &mut self,
+        profile: Option<&str>,
+        endpoint: &str,
+        token: String,
+        tenant_id: Option<String>,
+    ) {
+        match profile {
+            Some(name) => {
+                let p = self.profiles.entry(name.to_string()).or_default();
+                p.endpoint = Some(endpoint.to_string());
+                p.token = Some(token);
+                p.tenant_id = tenant_id;
+            }
+            None => {
+                self.endpoint = endpoint.to_string();
+                self.token = Some(token);
+                self.tenant_id = tenant_id;
+            }
+        }
+    }
+
+    /// Write the config to `~/.wslvault/config.toml`, owner-only on Unix
+    /// because it may hold a token.
+    pub fn save(&self) -> anyhow::Result<PathBuf> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                anyhow::anyhow!(
+                    "failed to create config directory {}: {}",
+                    parent.display(),
+                    e
+                )
+            })?;
+        }
+        let content = format!(
+            "# WSLVault configuration — managed by `wslvault init` / `wslvault identity login`\n{}",
+            toml::to_string_pretty(self)?
+        );
+        std::fs::write(&path, content)
+            .map_err(|e| anyhow::anyhow!("failed to write config to {}: {}", path.display(), e))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(path)
     }
 
     /// Returns the path to the config file: `~/.wslvault/config.toml`

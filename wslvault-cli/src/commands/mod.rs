@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 mod apikey;
 mod cluster;
 mod completion;
-mod identity;
+pub mod identity;
 mod init;
 mod integration;
 mod lease;
@@ -112,6 +112,7 @@ pub async fn execute(cli: Cli, config: AppConfig) -> anyhow::Result<()> {
 
     let ctx = CommandContext {
         endpoint,
+        profile: cli.profile.clone(),
         token,
         tenant_id,
         format: cli.format,
@@ -137,9 +138,22 @@ pub async fn execute(cli: Cli, config: AppConfig) -> anyhow::Result<()> {
     }
 }
 
+impl Cli {
+    /// `identity login` writes credentials into the selected profile, so it
+    /// may name a profile that does not exist yet.
+    pub fn creates_profile(&self) -> bool {
+        matches!(
+            &self.command,
+            Commands::Identity(args) if matches!(args.command, identity::IdentityCommands::Login { .. })
+        )
+    }
+}
+
 /// Shared context passed to all command handlers.
 pub struct CommandContext {
     pub endpoint: String,
+    /// The `--profile` / `WSLVAULT_PROFILE` in effect, if any
+    pub profile: Option<String>,
     pub token: Option<String>,
     pub tenant_id: Option<String>,
     pub format: OutputFormat,

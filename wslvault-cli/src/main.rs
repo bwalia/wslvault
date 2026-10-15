@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Load configuration
-    let config = AppConfig::load(cli.profile.as_deref())?;
+    let config = AppConfig::load(cli.profile.as_deref(), cli.creates_profile())?;
 
     // Execute the command
     if let Err(e) = commands::execute(cli, config).await {
