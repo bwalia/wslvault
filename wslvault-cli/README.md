@@ -36,6 +36,27 @@ export WSLVAULT_TOKEN="s.my-token"
 export WSLVAULT_TENANT_ID="my-tenant"
 ```
 
+### Token and tenant
+
+The tenant a command reads and writes is taken from the token itself (its
+`tenant_id` claim), so use a token issued for the tenant you want.
+`--tenant-id` / `WSLVAULT_TENANT_ID` are only honoured when the server runs
+with `VAULT_TRUST_GATEWAY_HEADERS` enabled, which is off by default.
+
+Save a token after `wslvault init` (or let `init` prompt for one):
+
+```bash
+# Verifies the token, then saves it with its endpoint and tenant to ~/.wslvault/config.toml.
+# Omit the token to be prompted for it, keeping it out of shell history.
+wslvault --addr https://vault.workstation.co.uk identity login
+
+# One profile per tenant, selected with --profile or WSLVAULT_PROFILE
+wslvault --addr https://vault.workstation.co.uk --profile acme identity login
+wslvault --profile acme secret put app/db --data password=s3cret
+```
+
+Use the API host (`vault.…`), not the web console host (`vault-ui.…`).
+
 ## Usage
 
 ### Secrets
