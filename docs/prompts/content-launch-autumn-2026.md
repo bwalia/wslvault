@@ -83,7 +83,7 @@ percentages. When a sentence needs a number, take it from this list.
 *(PR #79, `.github/workflows/ci.yml`, `deploy/ring-promoter/`)*
 
 - When a pull request is merged to `main`, CI builds 13 service images, tags a release (`vX.Y.Z`) and **seeds Ring Promoter**. Ring Promoter deploys region-a (Manchester), checks it is healthy, then **auto-promotes** to region-b (London) and checks again.
-- Observed on v1.0.27–v1.0.29: about **5–6 minutes** from seed to both regions healthy, with no manual step. All 13 deployments were ready in both regions.
+- Observed on v1.0.27 and v1.0.28: about **5–6 minutes** from seed to both regions healthy. v1.0.28 to v1.0.30 deployed with no manual step (v1.0.27 was seeded by hand, before the PR #79 fix). All 13 deployments were ready in both regions.
 - PR #79 fixed a race. Two workflows competed to create the release tag, and when the other one won, the deploy was skipped. CI now releases whichever version tag points at the merged commit.
 - Rollback is simply the previous ring version. Ring Promoter records `previous_version`.
 
