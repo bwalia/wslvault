@@ -341,7 +341,7 @@ for ingress + env.
 
 After sync on region-a (`wslvault`) then region-b (`wslvault-b`):
 
-1. `curl -sk https://vault-ui.workstation.co.uk/api/lease/health` → 200
+1. `curl -sk https://vault.workstation.co.uk/api/lease/health` → 200
 2. Login in the UI
 3. Open **Leases** — the session lease is listed (not 404, not empty
    after login)

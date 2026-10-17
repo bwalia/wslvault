@@ -24,7 +24,7 @@ curl -s -X POST https://vault.workstation.co.uk/v1/api-keys \
   | jq -r .key
 ```
 
-That prints a `wslv_…` key. Paste it into <https://vault-ui.workstation.co.uk/login>.
+That prints a `wslv_…` key. Paste it into <https://vault.workstation.co.uk/login>.
 
 **The raw key is shown exactly once.** Only its SHA-256 hash is stored, so a
 lost key cannot be recovered — mint a new one and revoke the old.
