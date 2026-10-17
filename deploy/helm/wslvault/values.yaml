@@ -439,7 +439,7 @@ identityService:
   # namespaced policy to the right keys.
   adminPolicy: ""
   # -- Base address tenant invitation links point at, e.g.
-  # "https://vault-ui.workstation.co.uk". Must be an address the recipient can
+  # "https://vault.workstation.co.uk". Must be an address the recipient can
   # actually open; the service cannot infer it, and a wrong value produces
   # links that reach nobody. Empty falls back to a localhost default that is
   # only correct for local development.

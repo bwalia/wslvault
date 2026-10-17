@@ -16,7 +16,7 @@ One region is one complete, self-contained wslvault release:
 | Node | `cloud001` (Manchester) | `cloud003` (London) |
 | API host | `vault.workstation.co.uk` | `vault-b.workstation.co.uk` |
 | Peer host | `vault-a.workstation.co.uk` | `vault-b.workstation.co.uk` |
-| UI host | `vault-ui.workstation.co.uk` | `vault-ha.workstation.co.uk` (alias: `vault-ui-b.workstation.co.uk`) |
+| UI host | `vault.workstation.co.uk` (non-API paths; `vault-ui.workstation.co.uk` 301s here) | `vault-ha.workstation.co.uk` (alias: `vault-ui-b.workstation.co.uk`) |
 | PostgreSQL | own StatefulSet, `local-path` | own StatefulSet, `local-path` |
 | Values | `deploy/gitops/regions/region-a.values.yaml` | `…/region-b.values.yaml` |
 

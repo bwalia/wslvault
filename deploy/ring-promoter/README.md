@@ -63,7 +63,7 @@ kubectl rollout restart deploy/ring-promoter -n workstation-ring-promoter
 
 | Ring | `target_env` | Namespace | Pipeline label | Health | Auto-promote |
 |------|--------------|-----------|----------------|--------|--------------|
-| `int` | `region-a` | `wslvault` | `region-a · Manchester` | `https://vault-ui.workstation.co.uk/api/version` | yes |
+| `int` | `region-a` | `wslvault` | `region-a · Manchester` | `https://vault.workstation.co.uk/api/version` | yes |
 | `test` | `region-b` | `wslvault-b` | `region-b · London` | `https://vault-ha.workstation.co.uk/api/version` | no |
 
 ## Marketing site (`wslvault-www`)

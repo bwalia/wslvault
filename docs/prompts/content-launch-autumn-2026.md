@@ -253,7 +253,7 @@ No text inside generated images except short labels, which may be added afterwar
 - [ ] The v1 limits (path-based policies, copy-based promotion) appear in B and at least briefly in C1.
 - [ ] A has no unexplained jargon, and a non-engineer could repeat its main point.
 - [ ] B's code and config snippets match the repo (check `ci.yml`, `auth.rs` and the CLI README).
-- [ ] Hostnames: use only `vault.workstation.co.uk` (API) and `vault-ui.workstation.co.uk` (console) as examples. No internal tokens, IPs, node names or kubeconfig paths.
+- [ ] Hostnames: use only `vault.workstation.co.uk` (API and console) as the example host. No internal tokens, IPs, node names or kubeconfig paths.
 - [ ] Mermaid renders (check with `npx @mermaid-js/mermaid-cli`), with light and dark SVGs exported.
 - [ ] The wslvault.org blog builds: `cd www && npm run build` succeeds, and `/blog` plus each post appear in the static export and the sitemap.
 - [ ] British English, sentence-case headings, no em-dash overuse.

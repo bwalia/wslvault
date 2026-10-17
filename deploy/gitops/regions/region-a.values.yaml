@@ -64,6 +64,8 @@ ui:
     # Promoted with the rest of the mesh to release v1.0.14 (vault redesign,
     # RLS on api_keys / MFA, invitations). Keep in lockstep with region B.
     tag: v1.0.14
+  # Keep: the WSLProxy edge reaches this pod for vault.workstation.co.uk by
+  # sending Host: vault-ui.workstation.co.uk (rule vault-workstation-dashboard).
   host: vault-ui.workstation.co.uk
   ingressClassName: traefik-edge
   entrypoint: web,websecure
@@ -139,10 +141,11 @@ gateway:
 identityService:
   replicaCount: 1
   # -- Where invitation links point. Must be the address the RECIPIENT opens,
-  # which is this region's UI host, not the API host and not cluster DNS. A
-  # wrong value produces links that reach nobody, and the service cannot infer
-  # it.
-  publicUrl: "https://vault-ui.workstation.co.uk"
+  # not cluster DNS. A wrong value produces links that reach nobody, and the
+  # service cannot infer it. vault.workstation.co.uk serves the console too
+  # (the WSLProxy edge sends every non-API path to this UI); the old
+  # vault-ui.workstation.co.uk 301s there and is being retired.
+  publicUrl: "https://vault.workstation.co.uk"
   # -- Outbound email for tenant invitations. The password is deliberately NOT
   # here: it comes from the `smtp-password` key of the `wslvault-mesh-keys`
   # Secret. NOT a separate `wslvault-smtp` Secret — setting
