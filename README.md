@@ -1,3 +1,9 @@
+> [!WARNING]
+> **This repository is no longer maintained.** WSL Vault has been rebranded as **Vault10x** and is now developed in the TenthMatrix monorepo: [`bwalia/tenthmatrix/products/vault10x`](https://github.com/bwalia/tenthmatrix/tree/main/products/vault10x).
+>
+> Website: [www.vault10x.com](https://www.vault10x.com) · TenthMatrix: [www.tenthmatrix.com/en/products/](https://www.tenthmatrix.com/en/products/)
+> Please open new issues and pull requests in the monorepo.
+
 # WSLVault
 
 A self-hosted, multi-tenant secrets platform: envelope-encrypted secret storage,
