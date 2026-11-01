@@ -52,8 +52,9 @@ use wslvault_storage::pool::DbPool;
 
 use crate::audit_client::AuditClient;
 use crate::http::{
-    create_key_handler, decrypt_handler, encrypt_handler, list_keys_handler, rewrap_handler,
-    rotate_key_handler, sign_handler, verify_handler, ApiDoc, AppState,
+    create_key_handler, decrypt_handler, encrypt_handler, hmac_handler, list_keys_handler,
+    public_keys_handler, rewrap_handler, rotate_key_handler, sign_handler, verify_handler, ApiDoc,
+    AppState,
 };
 use crate::key_store::{InMemoryTransitKeyStore, TransitKeyStoreBackend};
 use crate::pg_store::PgTransitKeyBackend;
@@ -148,6 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/v1/transit/decrypt/:key_name", post(decrypt_handler))
         .route("/v1/transit/sign/:key_name", post(sign_handler))
         .route("/v1/transit/verify/:key_name", post(verify_handler))
+        .route("/v1/transit/hmac/:key_name", post(hmac_handler))
         .route("/v1/transit/rewrap/:key_name", post(rewrap_handler))
         // Key management
         .route("/v1/transit/keys", get(list_keys_handler))
@@ -155,6 +157,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route(
             "/v1/transit/keys/:key_name/rotate",
             post(rotate_key_handler),
+        )
+        .route(
+            "/v1/transit/keys/:key_name/public",
+            get(public_keys_handler),
         )
         .with_state(state);
 

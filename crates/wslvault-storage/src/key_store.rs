@@ -11,6 +11,7 @@ fn parse_algorithm(s: &str) -> KeyAlgorithm {
     match s {
         "chacha20-poly1305" => KeyAlgorithm::ChaCha20Poly1305,
         "xchacha20-poly1305" => KeyAlgorithm::XChaCha20Poly1305,
+        "ed25519" => KeyAlgorithm::Ed25519,
         _ => KeyAlgorithm::Aes256Gcm,
     }
 }
@@ -20,6 +21,7 @@ fn algorithm_str(a: &KeyAlgorithm) -> &'static str {
         KeyAlgorithm::Aes256Gcm => "aes-256-gcm",
         KeyAlgorithm::ChaCha20Poly1305 => "chacha20-poly1305",
         KeyAlgorithm::XChaCha20Poly1305 => "xchacha20-poly1305",
+        KeyAlgorithm::Ed25519 => "ed25519",
     }
 }
 
@@ -241,6 +243,10 @@ pub struct PersistedKeyEntry {
     /// Caller-facing name, for keys addressed by name (transit). `None` for
     /// DEKs and KEKs.
     pub key_name: Option<String>,
+    /// What the material is for. Transit keys can now be AES-256-GCM or
+    /// Ed25519, and the two must never be confused on reload: treating a
+    /// signing seed as a cipher key (or the reverse) is a silent downgrade.
+    pub algorithm: KeyAlgorithm,
 }
 
 /// Fetch one key's wrapped material by id.
@@ -253,7 +259,7 @@ pub async fn get_key_with_wrapped_key(
     key_id: &Uuid,
 ) -> Result<Option<PersistedKeyEntry>, VaultError> {
     let row = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key, key_name
+        "SELECT id, tenant_id, version, wrapped_key, key_name, algorithm
          FROM system.key_descriptors
          WHERE id = $1 AND state IN ('active', 'rotating_out')
          ORDER BY version DESC
@@ -274,6 +280,7 @@ pub async fn get_key_with_wrapped_key(
             .map(|u| u.to_string()),
         version: row.get::<i32, _>("version") as u32,
         wrapped_key: row.get("wrapped_key"),
+        algorithm: parse_algorithm(row.get("algorithm")),
     }))
 }
 
@@ -286,7 +293,7 @@ pub async fn get_key_versions_with_wrapped_key(
     key_id: &Uuid,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key, key_name
+        "SELECT id, tenant_id, version, wrapped_key, key_name, algorithm
          FROM system.key_descriptors
          WHERE id = $1 AND state IN ('active', 'rotating_out')
          ORDER BY version ASC",
@@ -308,6 +315,7 @@ pub async fn get_key_versions_with_wrapped_key(
                 .map(|u| u.to_string()),
             version: row.get::<i32, _>("version") as u32,
             wrapped_key: row.get("wrapped_key"),
+            algorithm: parse_algorithm(row.get("algorithm")),
         })
         .collect())
 }
@@ -355,8 +363,8 @@ pub async fn list_recent_loadable_keys(
     limit: i64,
 ) -> Result<Vec<PersistedKeyEntry>, VaultError> {
     let rows = sqlx::query(
-        "SELECT id, tenant_id, version, wrapped_key, key_name FROM (
-             SELECT id, tenant_id, version, wrapped_key, key_name, created_at
+        "SELECT id, tenant_id, version, wrapped_key, key_name, algorithm FROM (
+             SELECT id, tenant_id, version, wrapped_key, key_name, algorithm, created_at
              FROM system.key_descriptors
              WHERE purpose = $1 AND state IN ('active', 'rotating_out')
              ORDER BY created_at DESC
@@ -382,6 +390,7 @@ pub async fn list_recent_loadable_keys(
                 .map(|u| u.to_string()),
             version: row.get::<i32, _>("version") as u32,
             wrapped_key: row.get("wrapped_key"),
+            algorithm: parse_algorithm(row.get("algorithm")),
         })
         .collect();
 

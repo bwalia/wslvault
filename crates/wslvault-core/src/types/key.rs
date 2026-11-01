@@ -35,12 +35,18 @@ impl std::str::FromStr for KeyId {
     }
 }
 
-/// Symmetric encryption algorithm used for a given key.
+/// Algorithm used for a given key.
+///
+/// The first three are symmetric ciphers. `Ed25519` is an asymmetric signing
+/// key: the stored 32 bytes are the RFC 8032 private seed, and the public key
+/// is derived from it on demand. It exists for transit signing, where a
+/// verifier holds only the public key (for example a JWKS consumer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyAlgorithm {
     Aes256Gcm,
     ChaCha20Poly1305,
     XChaCha20Poly1305,
+    Ed25519,
 }
 
 /// Purpose classification — determines which operations a key may perform.
