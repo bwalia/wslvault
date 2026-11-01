@@ -31,8 +31,11 @@ use base64::Engine as _;
 use wslvault_core::VaultError;
 
 use crate::audit_client::AuditClient;
-use crate::key_store::TransitKeyStoreBackend;
-use crate::operations::{decrypt, encrypt, rewrap, sign_data, verify_data};
+use crate::key_store::{KeyAlgorithm, TransitKey, TransitKeyStoreBackend};
+use crate::operations::{
+    decrypt, ed25519_jwks, ed25519_sign, ed25519_verify, encrypt, hmac_versioned, jwk_kid, rewrap,
+    sign_data, verify_data,
+};
 use crate::policy_client::PolicyClient;
 
 /// Shared application state threaded through axum.
@@ -101,11 +104,50 @@ pub struct DecryptResponse {
 pub struct SignRequest {
     /// Base64-encoded data to sign.
     pub data: String,
+    /// Ed25519 keys only: sign with this version instead of the current one.
+    #[serde(default)]
+    pub key_version: Option<u32>,
 }
 
+/// For an AES key, `signature` is a hex HMAC-SHA256 (unchanged behaviour).
+/// For an Ed25519 key it is `vault:v{N}:{base64url}`; the part after the last
+/// `:` is the raw signature in the encoding a compact JWS uses.
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct SignResponse {
     pub signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_version: Option<u32>,
+    /// JWK key id of the signing version, matching the public JWKS.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
+    /// JWS `alg` for the signature (`EdDSA`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub algorithm: Option<String>,
+}
+
+/// Body for `POST /v1/transit/keys/:key_name`. Optional: an empty body creates
+/// an AES-256-GCM key, as before.
+#[derive(Deserialize, Default, utoipa::ToSchema)]
+pub struct CreateKeyRequest {
+    /// `aes256-gcm` (default) or `ed25519`.
+    #[serde(rename = "type", default)]
+    pub key_type: Option<String>,
+}
+
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct HmacRequest {
+    /// Base64-encoded data to MAC.
+    pub data: String,
+    /// Recompute under this version instead of the current one.
+    #[serde(default)]
+    pub key_version: Option<u32>,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct HmacResponse {
+    /// `vault:v{N}:{hex HMAC-SHA256}`.
+    pub hmac: String,
+    pub key_version: u32,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -168,6 +210,8 @@ struct ErrorResponse {
         create_key_handler,
         rotate_key_handler,
         list_keys_handler,
+        hmac_handler,
+        public_keys_handler,
     ),
     components(schemas(
         ListKeysResponse,
@@ -178,6 +222,9 @@ struct ErrorResponse {
         DecryptResponse,
         SignRequest,
         SignResponse,
+        CreateKeyRequest,
+        HmacRequest,
+        HmacResponse,
         VerifyRequest,
         VerifyResponse,
         RewrapRequest,
@@ -361,6 +408,19 @@ pub async fn encrypt_handler(
         }
     };
 
+    if let Err(resp) = require_symmetric(
+        &state,
+        &key,
+        &tenant_id,
+        &principal_id,
+        "transit.encrypt",
+        &client_ip,
+    )
+    .await
+    {
+        return resp;
+    }
+
     match encrypt(&key, &plaintext) {
         Ok(ciphertext) => {
             state
@@ -471,6 +531,19 @@ pub async fn decrypt_handler(
             return vault_error_response(e).into_response();
         }
     };
+
+    if let Err(resp) = require_symmetric(
+        &state,
+        &key,
+        &tenant_id,
+        &principal_id,
+        "transit.decrypt",
+        &client_ip,
+    )
+    .await
+    {
+        return resp;
+    }
 
     match decrypt(&key, &body.ciphertext) {
         Ok(plaintext_bytes) => {
@@ -615,7 +688,40 @@ pub async fn sign_handler(
         }
     };
 
-    let signature = sign_data(key.current_material(), &data);
+    // Ed25519 keys produce a public-key signature anyone can check; AES keys
+    // keep the HMAC behaviour this endpoint always had.
+    let response = match key.algorithm {
+        KeyAlgorithm::Ed25519 => match ed25519_sign(&key, &data, body.key_version) {
+            Ok(sig) => SignResponse {
+                signature: sig.versioned(),
+                key_version: Some(sig.key_version),
+                kid: Some(jwk_kid(&key.name, sig.key_version)),
+                algorithm: Some("EdDSA".into()),
+            },
+            Err(e) => {
+                state
+                    .audit_client
+                    .emit(
+                        &tenant_id,
+                        &principal_id,
+                        "transit.sign",
+                        &key_name,
+                        "failure",
+                        &e.to_string(),
+                        "",
+                        &client_ip,
+                    )
+                    .await;
+                return vault_error_response(e).into_response();
+            }
+        },
+        KeyAlgorithm::Aes256Gcm => SignResponse {
+            signature: sign_data(key.current_material(), &data),
+            key_version: None,
+            kid: None,
+            algorithm: None,
+        },
+    };
 
     state
         .audit_client
@@ -631,7 +737,7 @@ pub async fn sign_handler(
         )
         .await;
 
-    (StatusCode::OK, Json(SignResponse { signature })).into_response()
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 /// POST /v1/transit/verify/:key_name
@@ -734,7 +840,10 @@ pub async fn verify_handler(
         }
     };
 
-    let valid = verify_data(key.current_material(), &data, &body.signature);
+    let valid = match key.algorithm {
+        KeyAlgorithm::Ed25519 => ed25519_verify(&key, &data, &body.signature),
+        KeyAlgorithm::Aes256Gcm => verify_data(key.current_material(), &data, &body.signature),
+    };
 
     state
         .audit_client
@@ -827,6 +936,19 @@ pub async fn rewrap_handler(
             return vault_error_response(e).into_response();
         }
     };
+
+    if let Err(resp) = require_symmetric(
+        &state,
+        &key,
+        &tenant_id,
+        &principal_id,
+        "transit.rewrap",
+        &client_ip,
+    )
+    .await
+    {
+        return resp;
+    }
 
     match rewrap(&key, &body.ciphertext) {
         Ok(ciphertext) => {
@@ -931,7 +1053,8 @@ pub async fn list_keys_handler(
 
 /// POST /v1/transit/keys/:key_name  — create a new named key
 ///
-/// Creates a new AES-256-GCM transit key scoped to the tenant.
+/// Creates a new transit key scoped to the tenant. The optional body
+/// `{"type": "ed25519"}` creates a signing key; the default is AES-256-GCM.
 #[utoipa::path(
     post,
     path = "/v1/transit/keys/{key_name}",
@@ -939,6 +1062,7 @@ pub async fn list_keys_handler(
         ("key_name" = String, Path, description = "Name of the key to create"),
         ("x-tenant-id" = String, Header, description = "Tenant identifier (required)"),
     ),
+    request_body(content = CreateKeyRequest, description = "Optional; omit for AES-256-GCM"),
     responses(
         (status = 201, description = "Key created", body = CreateKeyResponse),
         (status = 400, description = "Missing X-Tenant-Id header"),
@@ -951,7 +1075,42 @@ pub async fn create_key_handler(
     State(state): State<AppState>,
     Path(key_name): Path<String>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    // Parsed by hand rather than with `Option<Json<_>>`: that extractor turns
+    // a malformed body into `None`, which would silently create an AES key for
+    // a caller who asked for a signing key.
+    let request: CreateKeyRequest = if body.iter().all(u8::is_ascii_whitespace) {
+        CreateKeyRequest::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("invalid request body: {e}"),
+                    }),
+                )
+                    .into_response()
+            }
+        }
+    };
+    let algorithm = match request.key_type.as_deref() {
+        None => KeyAlgorithm::Aes256Gcm,
+        Some(t) => match KeyAlgorithm::parse(t) {
+            Some(a) => a,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse {
+                        error: format!("unsupported key type '{t}'; use aes256-gcm or ed25519"),
+                    }),
+                )
+                    .into_response()
+            }
+        },
+    };
     let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
         Ok(i) => (i.tenant_id, i.principal_id, i.policies),
         Err(e) => return e,
@@ -981,7 +1140,11 @@ pub async fn create_key_handler(
         return vault_error_response(e).into_response();
     }
 
-    match state.key_store.create_key(&tenant_id, &key_name).await {
+    match state
+        .key_store
+        .create_key(&tenant_id, &key_name, algorithm)
+        .await
+    {
         Ok(()) => {
             state
                 .audit_client
@@ -1000,7 +1163,7 @@ pub async fn create_key_handler(
                 StatusCode::CREATED,
                 Json(CreateKeyResponse {
                     key_name,
-                    algorithm: "aes256-gcm".into(),
+                    algorithm: algorithm.as_str().into(),
                 }),
             )
                 .into_response()
@@ -1118,4 +1281,228 @@ pub async fn rotate_key_handler(
             vault_error_response(e).into_response()
         }
     }
+}
+
+/// Refuse a cipher operation on an Ed25519 signing key.
+///
+/// Without this an Ed25519 seed would be accepted as an AES-256 key: both are
+/// 32 bytes, so `encrypt` would "work" and turn a signing key into a cipher
+/// key, which removes the separation between the two that the key type exists
+/// to provide.
+#[allow(clippy::result_large_err)] // same convention as secret-engine's authenticate
+async fn require_symmetric(
+    state: &AppState,
+    key: &TransitKey,
+    tenant_id: &str,
+    principal_id: &str,
+    action: &str,
+    client_ip: &str,
+) -> Result<(), Response> {
+    if key.algorithm.is_symmetric() {
+        return Ok(());
+    }
+    let reason = format!(
+        "key '{}' is a {} signing key; it supports sign, verify and public only",
+        key.name,
+        key.algorithm.as_str()
+    );
+    state
+        .audit_client
+        .emit(
+            tenant_id,
+            principal_id,
+            action,
+            &key.name,
+            "failure",
+            &reason,
+            "",
+            client_ip,
+        )
+        .await;
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse { error: reason }),
+    )
+        .into_response())
+}
+
+/// POST /v1/transit/hmac/:key_name
+///
+/// HMAC-SHA256 over base64 data with a symmetric key, versioned as
+/// `vault:v{N}:{hex}`. Pass `key_version` to recompute a stored MAC after the
+/// key has been rotated.
+#[utoipa::path(
+    post,
+    path = "/v1/transit/hmac/{key_name}",
+    params(("key_name" = String, Path, description = "Name of an aes256-gcm key")),
+    request_body = HmacRequest,
+    responses(
+        (status = 200, description = "Versioned HMAC", body = HmacResponse),
+        (status = 400, description = "Invalid base64 data, or the key is a signing key"),
+        (status = 403, description = "Authorization denied by policy-engine"),
+        (status = 404, description = "Key or key version not found"),
+    ),
+    tag = "transit"
+)]
+pub async fn hmac_handler(
+    State(state): State<AppState>,
+    Path(key_name): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<HmacRequest>,
+) -> impl IntoResponse {
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
+    };
+    let client_ip = extract_client_ip(&headers);
+    let action = "transit.hmac";
+
+    let resource = format!("transit/hmac/{}", key_name);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "write", &resource)
+        .await
+    {
+        state
+            .audit_client
+            .emit(
+                &tenant_id,
+                &principal_id,
+                action,
+                &key_name,
+                "failure",
+                &e.to_string(),
+                "",
+                &client_ip,
+            )
+            .await;
+        return vault_error_response(e).into_response();
+    }
+
+    let Ok(data) = BASE64.decode(&body.data) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "data must be valid base64".into(),
+            }),
+        )
+            .into_response();
+    };
+
+    let key = match state.key_store.get_key(&tenant_id, &key_name).await {
+        Ok(k) => k,
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    action,
+                    &key_name,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            return vault_error_response(e).into_response();
+        }
+    };
+    if let Err(resp) =
+        require_symmetric(&state, &key, &tenant_id, &principal_id, action, &client_ip).await
+    {
+        return resp;
+    }
+
+    match hmac_versioned(&key, &data, body.key_version) {
+        Ok((hmac, key_version)) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    action,
+                    &key_name,
+                    "success",
+                    "",
+                    "",
+                    &client_ip,
+                )
+                .await;
+            (StatusCode::OK, Json(HmacResponse { hmac, key_version })).into_response()
+        }
+        Err(e) => {
+            state
+                .audit_client
+                .emit(
+                    &tenant_id,
+                    &principal_id,
+                    action,
+                    &key_name,
+                    "failure",
+                    &e.to_string(),
+                    "",
+                    &client_ip,
+                )
+                .await;
+            vault_error_response(e).into_response()
+        }
+    }
+}
+
+/// GET /v1/transit/keys/:key_name/public
+///
+/// The public keys of every version of an Ed25519 key, as a JWK Set (RFC 7517,
+/// OKP per RFC 8037). An identity provider serves this, or a cached copy, as
+/// its `jwks_uri`. The private seed never leaves the service; nothing here can
+/// be used to sign.
+#[utoipa::path(
+    get,
+    path = "/v1/transit/keys/{key_name}/public",
+    params(("key_name" = String, Path, description = "Name of an ed25519 key")),
+    responses(
+        (status = 200, description = "JWK Set with one entry per key version"),
+        (status = 400, description = "The key is not an ed25519 key"),
+        (status = 403, description = "Authorization denied by policy-engine"),
+        (status = 404, description = "Key not found"),
+    ),
+    tag = "keys"
+)]
+pub async fn public_keys_handler(
+    State(state): State<AppState>,
+    Path(key_name): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let (tenant_id, principal_id, policies) = match authenticate(&headers).await {
+        Ok(i) => (i.tenant_id, i.principal_id, i.policies),
+        Err(e) => return e,
+    };
+
+    let resource = format!("transit/keys/{}/public", key_name);
+    if let Err(e) = state
+        .policy_client
+        .authorize(&tenant_id, &principal_id, &policies, "read", &resource)
+        .await
+    {
+        return vault_error_response(e).into_response();
+    }
+
+    let key = match state.key_store.get_key(&tenant_id, &key_name).await {
+        Ok(k) => k,
+        Err(e) => return vault_error_response(e).into_response(),
+    };
+    if key.algorithm != KeyAlgorithm::Ed25519 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: format!(
+                    "key '{}' is {}, which has no public key",
+                    key.name,
+                    key.algorithm.as_str()
+                ),
+            }),
+        )
+            .into_response();
+    }
+    (StatusCode::OK, Json(ed25519_jwks(&key))).into_response()
 }

@@ -54,19 +54,40 @@ impl std::fmt::Debug for KeyVersion {
     }
 }
 
-/// The supported key algorithm for transit operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The supported key algorithms for transit operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyAlgorithm {
-    /// AES-256-GCM authenticated encryption.
+    /// AES-256-GCM authenticated encryption. Also backs the HMAC-SHA256
+    /// `hmac` operation through an HKDF-derived subkey.
     Aes256Gcm,
+    /// Ed25519 digital signatures (RFC 8032). The stored material is the
+    /// private seed; it is never exported, and only the public key leaves the
+    /// service. Sign and verify only: such a key cannot encrypt.
+    Ed25519,
 }
 
 impl KeyAlgorithm {
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             KeyAlgorithm::Aes256Gcm => "aes256-gcm",
+            KeyAlgorithm::Ed25519 => "ed25519",
         }
+    }
+
+    /// Parse the `type` a caller asks for when creating a key. Accepts the
+    /// HashiCorp Vault spellings too, so existing clients can create keys
+    /// without translation.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "aes256-gcm" | "aes256-gcm96" | "aes-256-gcm" => Some(KeyAlgorithm::Aes256Gcm),
+            "ed25519" => Some(KeyAlgorithm::Ed25519),
+            _ => None,
+        }
+    }
+
+    /// Whether the key can encrypt, decrypt, rewrap and HMAC.
+    pub fn is_symmetric(&self) -> bool {
+        matches!(self, KeyAlgorithm::Aes256Gcm)
     }
 }
 
@@ -115,7 +136,7 @@ impl From<&TransitKey> for TransitKeySummary {
         Self {
             name: key.name.clone(),
             current_version: key.current_version,
-            algorithm: key.algorithm.clone(),
+            algorithm: key.algorithm,
             created_at: key.created_at,
         }
     }
@@ -136,7 +157,12 @@ pub trait TransitKeyStoreBackend: Send + Sync {
     /// Create a new named key for the given tenant.
     ///
     /// Returns `VaultError::ValidationError` if the key already exists.
-    async fn create_key(&self, tenant_id: &str, key_name: &str) -> Result<(), VaultError>;
+    async fn create_key(
+        &self,
+        tenant_id: &str,
+        key_name: &str,
+        algorithm: KeyAlgorithm,
+    ) -> Result<(), VaultError>;
 
     /// Retrieve a transit key by tenant and name.
     ///
@@ -188,8 +214,13 @@ impl Default for InMemoryTransitKeyStore {
 
 #[async_trait]
 impl TransitKeyStoreBackend for InMemoryTransitKeyStore {
-    async fn create_key(&self, tenant_id: &str, key_name: &str) -> Result<(), VaultError> {
-        create_key(&self.store, tenant_id, key_name).await
+    async fn create_key(
+        &self,
+        tenant_id: &str,
+        key_name: &str,
+        algorithm: KeyAlgorithm,
+    ) -> Result<(), VaultError> {
+        create_key(&self.store, tenant_id, key_name, algorithm).await
     }
 
     async fn get_key(&self, tenant_id: &str, key_name: &str) -> Result<TransitKey, VaultError> {
@@ -232,6 +263,7 @@ async fn create_key(
     store: &SharedKeyStore,
     tenant_id: &str,
     key_name: &str,
+    algorithm: KeyAlgorithm,
 ) -> Result<(), VaultError> {
     let mut guard = store.write().await;
     let map_key = (tenant_id.to_string(), key_name.to_string());
@@ -255,7 +287,7 @@ async fn create_key(
         name: key_name.to_string(),
         versions: vec![initial_version],
         current_version: 1,
-        algorithm: KeyAlgorithm::Aes256Gcm,
+        algorithm,
         created_at: Utc::now(),
     };
 
@@ -327,6 +359,9 @@ async fn rotate_key(
 }
 
 /// Generate a fresh 32-byte random key using the OS CSPRNG via `ring`.
+///
+/// Serves both algorithms: 32 uniformly random bytes are a valid AES-256 key
+/// and a valid Ed25519 seed.
 pub(crate) fn generate_key_material() -> [u8; 32] {
     use ring::rand::{SecureRandom, SystemRandom};
     let rng = SystemRandom::new();
@@ -348,10 +383,16 @@ mod tests {
     #[tokio::test]
     async fn list_keys_is_scoped_to_one_tenant() {
         let store = InMemoryTransitKeyStore::new();
-        store.create_key("tenant-a", "billing").await.unwrap();
-        store.create_key("tenant-a", "apollo").await.unwrap();
         store
-            .create_key("tenant-b", "secret-project")
+            .create_key("tenant-a", "billing", KeyAlgorithm::Aes256Gcm)
+            .await
+            .unwrap();
+        store
+            .create_key("tenant-a", "apollo", KeyAlgorithm::Aes256Gcm)
+            .await
+            .unwrap();
+        store
+            .create_key("tenant-b", "secret-project", KeyAlgorithm::Ed25519)
             .await
             .unwrap();
 
@@ -374,10 +415,36 @@ mod tests {
     #[tokio::test]
     async fn list_keys_reports_the_current_version() {
         let store = InMemoryTransitKeyStore::new();
-        store.create_key("tenant-a", "billing").await.unwrap();
+        store
+            .create_key("tenant-a", "billing", KeyAlgorithm::Aes256Gcm)
+            .await
+            .unwrap();
         store.rotate_key("tenant-a", "billing").await.unwrap();
 
         let keys = store.list_keys("tenant-a").await.unwrap();
         assert_eq!(keys[0].current_version, 2);
+    }
+
+    /// The algorithm is fixed at creation and survives rotation; parsing
+    /// accepts both our spelling and HashiCorp Vault's.
+    #[tokio::test]
+    async fn algorithm_is_kept_across_rotation() {
+        let store = InMemoryTransitKeyStore::new();
+        store
+            .create_key("tenant-a", "idp", KeyAlgorithm::Ed25519)
+            .await
+            .unwrap();
+        store.rotate_key("tenant-a", "idp").await.unwrap();
+        let key = store.get_key("tenant-a", "idp").await.unwrap();
+        assert_eq!(key.algorithm, KeyAlgorithm::Ed25519);
+        assert_eq!(key.current_version, 2);
+        assert!(!key.algorithm.is_symmetric());
+
+        assert_eq!(KeyAlgorithm::parse("ED25519"), Some(KeyAlgorithm::Ed25519));
+        assert_eq!(
+            KeyAlgorithm::parse("aes256-gcm96"),
+            Some(KeyAlgorithm::Aes256Gcm)
+        );
+        assert_eq!(KeyAlgorithm::parse("rsa-2048"), None);
     }
 }

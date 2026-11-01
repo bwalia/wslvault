@@ -39,3 +39,8 @@ utoipa-swagger-ui = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }
+
+[dev-dependencies]
+# Independent EdDSA verifier: proves transit signatures interoperate with
+# ordinary JWT libraries, which is what an opsapi relying party will use.
+jsonwebtoken = { workspace = true }

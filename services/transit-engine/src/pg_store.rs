@@ -86,6 +86,23 @@ fn tenant_id_to_uuid(tenant_id: &str) -> Uuid {
     })
 }
 
+/// Transit's algorithm in the storage layer's vocabulary.
+fn to_core(a: KeyAlgorithm) -> CoreKeyAlgorithm {
+    match a {
+        KeyAlgorithm::Aes256Gcm => CoreKeyAlgorithm::Aes256Gcm,
+        KeyAlgorithm::Ed25519 => CoreKeyAlgorithm::Ed25519,
+    }
+}
+
+/// The reverse of [`to_core`]. `None` for algorithms transit never creates.
+fn from_core(a: CoreKeyAlgorithm) -> Option<KeyAlgorithm> {
+    match a {
+        CoreKeyAlgorithm::Aes256Gcm => Some(KeyAlgorithm::Aes256Gcm),
+        CoreKeyAlgorithm::Ed25519 => Some(KeyAlgorithm::Ed25519),
+        CoreKeyAlgorithm::ChaCha20Poly1305 | CoreKeyAlgorithm::XChaCha20Poly1305 => None,
+    }
+}
+
 /// Environment variable holding the base64 32-byte root KEK.
 ///
 /// Shared with crypto-service on purpose. Custody of key material is already
@@ -280,15 +297,38 @@ impl PgTransitKeyBackend {
                 }
             };
 
+            let Some(algorithm) = from_core(row.algorithm) else {
+                warn!(
+                    key_id = %row.key_id,
+                    key_name = %key_name,
+                    "transit descriptor has an algorithm transit cannot use - skipping"
+                );
+                skipped += 1;
+                continue;
+            };
+
             let entry = cache
                 .entry((tenant_id, key_name.clone()))
                 .or_insert_with(|| TransitKey {
-                    name: key_name,
+                    name: key_name.clone(),
                     versions: Vec::new(),
                     current_version: 0,
-                    algorithm: KeyAlgorithm::Aes256Gcm,
+                    algorithm,
                     created_at: Utc::now(),
                 });
+            if entry.algorithm != algorithm {
+                // Versions of one key must agree. A mismatch means a damaged
+                // or tampered descriptor; refuse that version rather than
+                // mixing a signing seed into a cipher key's history.
+                warn!(
+                    key_id = %row.key_id,
+                    key_name = %key_name,
+                    version = row.version,
+                    "transit key version disagrees with the key's algorithm - skipping"
+                );
+                skipped += 1;
+                continue;
+            }
             entry.versions.push(KeyVersion {
                 version: row.version,
                 material,
@@ -321,7 +361,12 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
     /// The cache is checked first; if the key already exists in the cache the
     /// call is rejected with `VaultError::ValidationError` before touching PG.
     /// This mirrors the in-memory backend's semantics.
-    async fn create_key(&self, tenant_id: &str, key_name: &str) -> Result<(), VaultError> {
+    async fn create_key(
+        &self,
+        tenant_id: &str,
+        key_name: &str,
+        algorithm: KeyAlgorithm,
+    ) -> Result<(), VaultError> {
         let map_key = (tenant_id.to_string(), key_name.to_string());
 
         // Guard: reject duplicate keys before any PG interaction.
@@ -355,7 +400,7 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
         let descriptor = KeyDescriptor {
             id: KeyId::new(),
             version: 1,
-            algorithm: CoreKeyAlgorithm::Aes256Gcm,
+            algorithm: to_core(algorithm),
             purpose: KeyPurpose::Transit,
             state: KeyState::Active,
             tenant_id: Some(tenant_uuid.to_string()),
@@ -374,7 +419,7 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
             name: key_name.to_string(),
             versions: vec![initial_version],
             current_version: 1,
-            algorithm: KeyAlgorithm::Aes256Gcm,
+            algorithm,
             created_at: descriptor.created_at,
         };
 
@@ -432,12 +477,16 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
 
         // Determine new version and generate material while holding a brief
         // read lock so we don't block other readers for the entire PG call.
-        let (new_version, new_material) = {
+        let (new_version, new_material, algorithm) = {
             let guard = self.cache.read().await;
             let existing = guard.get(&map_key).ok_or_else(|| VaultError::KeyNotFound {
                 key_id: format!("{}/{}", tenant_id, key_name),
             })?;
-            (existing.current_version + 1, generate_key_material())
+            (
+                existing.current_version + 1,
+                generate_key_material(),
+                existing.algorithm,
+            )
         };
 
         let tenant_uuid = tenant_id_to_uuid(tenant_id);
@@ -455,7 +504,10 @@ impl TransitKeyStoreBackend for PgTransitKeyBackend {
         let new_descriptor = KeyDescriptor {
             id: KeyId::new(),
             version: new_version,
-            algorithm: CoreKeyAlgorithm::Aes256Gcm,
+            // A rotation keeps the key's algorithm. Rotating an Ed25519 key
+            // into an AES one would hand verifiers a JWKS entry with no
+            // matching signer.
+            algorithm: to_core(algorithm),
             purpose: KeyPurpose::Transit,
             state: KeyState::Active,
             tenant_id: Some(tenant_uuid.to_string()),
