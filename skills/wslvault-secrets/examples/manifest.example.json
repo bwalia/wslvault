@@ -1,0 +1,49 @@
+{
+  "tenant": "acme",
+  "display_name": "Acme Ltd",
+  "layout": "split",
+  "environments": ["int", "test", "acc", "prod"],
+  "path_template": "{app}/{service}/{env}",
+  "tags": ["owner:platform"],
+  "apps": [
+    {
+      "name": "billing",
+      "tags": ["team:payments"],
+      "services": [
+        {
+          "name": "api",
+          "secrets": {
+            "DATABASE_URL": "file:./secrets/{env}/billing-db-url",
+            "JWT_SIGNING_KEY": "generate:48",
+            "STRIPE_KEY": {
+              "test": "dotenv:./.env.test#STRIPE_KEY",
+              "acc": "dotenv:./.env.acc#STRIPE_KEY",
+              "prod": "dotenv:./.env.prod#STRIPE_KEY"
+            }
+          }
+        },
+        {
+          "name": "worker",
+          "environments": ["int", "prod"],
+          "from_dotenv": {
+            "int": "./envs/billing-worker.int.env",
+            "prod": "./envs/billing-worker.prod.env"
+          },
+          "secrets": {
+            "QUEUE_PASSWORD": "env:BILLING_QUEUE_PASSWORD_{ENV}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "web",
+      "services": [
+        {
+          "name": "frontend",
+          "environments": ["test", "prod"],
+          "secrets": { "SESSION_SECRET": "generate:32" }
+        }
+      ]
+    }
+  ]
+}
