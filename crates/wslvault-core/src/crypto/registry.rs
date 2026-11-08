@@ -9,6 +9,8 @@ pub fn key_length_bytes(alg: KeyAlgorithm) -> usize {
         KeyAlgorithm::Aes256Gcm => 32,
         KeyAlgorithm::ChaCha20Poly1305 => 32,
         KeyAlgorithm::XChaCha20Poly1305 => 32,
+        // RFC 8032 private seed.
+        KeyAlgorithm::Ed25519 => 32,
     }
 }
 
