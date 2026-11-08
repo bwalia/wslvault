@@ -63,6 +63,7 @@ secret reads are not leased. See `docs/leases-plan.md`.
 | audit-service | 8085 | 50056 | Immutable audit logging, HMAC integrity |
 | transit-engine | 8086 | — | Encryption-as-a-service (encrypt/decrypt/sign/verify) |
 | mcp-server | 8087 | — | AI agent integration via Model Context Protocol |
+| agent-proxy | 8094 | — | Credential-brokering egress proxy for AI agents ([agent-proxy.md](agent-proxy.md)) |
 | gateway | 443/8080 | — | Edge routing, TLS, rate limiting, caching |
 
 ## Envelope Encryption Hierarchy

@@ -1,0 +1,15 @@
+[
+  {
+    "name": "agent-broker",
+    "rules": [
+      { "paths": ["secret/data/brokered/**"], "capabilities": ["read"] }
+    ]
+  },
+  {
+    "name": "agent-claude",
+    "rules": [
+      { "paths": ["secret/data/brokered/**", "secret/metadata/brokered/**"], "capabilities": ["deny"] },
+      { "paths": ["secret/data/agents/claude-coder/**"], "capabilities": ["read", "write", "list"] }
+    ]
+  }
+]

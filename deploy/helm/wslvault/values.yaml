@@ -603,6 +603,64 @@ mcpServer:
     maxReplicas: 3
     targetCPUUtilizationPercentage: 70
 
+# -- agent-proxy: credential broker for AI agents (docs/agent-proxy.md).
+# Agents hold a short-lived wslvault session token and NO upstream keys; the
+# proxy injects the real credential, read with its own Kubernetes-auth identity.
+agentProxy:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: bwalia/wslvault-agent-proxy
+    tag: ""
+  httpPort: 8094
+  # -- identity-service Kubernetes auth role (VAULT_K8S_ROLES) bound to the
+  # agent-proxy ServiceAccount. Its policy must grant read on the brokered
+  # secret paths; agent roles must NOT.
+  k8sRole: agent-proxy
+  # -- Optional audience for the projected SA token used for Kubernetes auth.
+  k8sTokenAudience: ""
+  # -- How long a brokered credential is cached before re-reading (seconds).
+  secretTtlSeconds: 60
+  # -- Namespaces whose pods may call the proxy (matched on namespace labels).
+  # Empty = only pods in the release namespace.
+  agentNamespaceSelector: {}
+  #  matchLabels:
+  #    wslvault.io/agent-sandbox: "true"
+  # -- Upstream egress allowed from the proxy (TCP 443). Private ranges are
+  # excluded so a route cannot be pointed at in-cluster services.
+  egressCidrs:
+    - cidr: 0.0.0.0/0
+      except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10]
+  # -- Route table; see services/agent-proxy/src/config.rs for the schema.
+  routes: {}
+  #  anthropic:
+  #    upstream: https://api.anthropic.com
+  #    hosts: [api.anthropic.com]
+  #    allowed_policies: [agent-claude]
+  #    secret_path: brokered/anthropic
+  #    secret_key: api_key
+  #    inject_header: x-api-key
+  #  github:
+  #    upstream: https://api.github.com
+  #    hosts: [api.github.com]
+  #    allowed_policies: [agent-claude]
+  #    secret_path: brokered/github
+  #    secret_key: token
+  #    inject_header: authorization
+  #    inject_format: "Bearer {secret}"
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  extraEnv: []
+
 # -- gateway: OpenResty TLS termination and reverse proxy
 gateway:
   enabled: true

@@ -3,7 +3,9 @@
 How an AI agent gets a secret out of wslvault, what stops it getting one it
 should not have, and where the sharp edges are.
 
-Companion to [`tenant-authentication.md`](tenant-authentication.md).
+Companion to [`tenant-authentication.md`](tenant-authentication.md). For agents
+that should call third-party APIs **without ever holding the key**, see
+[`agent-proxy.md`](agent-proxy.md) (credential brokering).
 
 ---
 

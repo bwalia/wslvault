@@ -1,0 +1,32 @@
+{
+  "anthropic": {
+    "upstream": "https://api.anthropic.com",
+    "hosts": ["api.anthropic.com"],
+    "allowed_policies": ["agent-claude"],
+    "allowed_principals": ["agents:*"],
+    "secret_path": "brokered/anthropic",
+    "secret_key": "api_key",
+    "inject_header": "x-api-key",
+    "allowed_methods": ["GET", "POST"],
+    "allowed_path_prefixes": ["/v1/"]
+  },
+  "github": {
+    "upstream": "https://api.github.com",
+    "hosts": ["api.github.com"],
+    "allowed_policies": ["agent-claude"],
+    "allowed_principals": ["agents:*"],
+    "secret_path": "brokered/github",
+    "secret_key": "token",
+    "inject_header": "authorization",
+    "inject_format": "Bearer {secret}"
+  },
+  "github-mcp": {
+    "upstream": "https://api.githubcopilot.com/mcp",
+    "allowed_policies": ["agent-claude"],
+    "secret_path": "brokered/github",
+    "secret_key": "token",
+    "inject_header": "authorization",
+    "inject_format": "Bearer {secret}",
+    "allowed_methods": ["GET", "POST", "DELETE"]
+  }
+}

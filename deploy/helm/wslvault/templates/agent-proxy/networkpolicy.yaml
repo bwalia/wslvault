@@ -1,0 +1,75 @@
+{{/*
+agent-proxy NetworkPolicy.
+
+Ingress: only agent sandboxes (agentProxy.agentNamespaceSelector) on the proxy
+port. Egress: the three vault backends it needs, plus public TCP 443 for the
+brokered upstreams. Private ranges are excluded from the public allowance, so
+a route cannot be aimed at an in-cluster service to launder a credential.
+
+Pair this with a sandbox-side policy that lets agent pods egress ONLY to this
+Service (see docs/agent-proxy.md) — that is what makes the proxy the agent's
+sole way out.
+*/}}
+{{- if and .Values.networkPolicies.enabled .Values.agentProxy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "wslvault.fullname" . }}-agent-proxy
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "agent-proxy" "context" $) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- if .Values.agentProxy.agentNamespaceSelector }}
+        - namespaceSelector:
+            {{- toYaml .Values.agentProxy.agentNamespaceSelector | nindent 12 }}
+        {{- else }}
+        - podSelector: {}
+        {{- end }}
+      ports:
+        - port: {{ .Values.agentProxy.httpPort }}
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "secret-engine" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.secretEngine.httpPort }}
+          protocol: TCP
+    # Kubernetes-auth login and JWKS
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "identity-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.identityService.httpPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "audit-service" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.auditService.grpcPort }}
+          protocol: TCP
+    # Brokered upstreams
+    - to:
+        {{- range .Values.agentProxy.egressCidrs }}
+        - ipBlock:
+            cidr: {{ .cidr }}
+            {{- with .except }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
+      ports:
+        - port: 443
+          protocol: TCP
+{{- end }}
