@@ -1,0 +1,114 @@
+# Agent sandbox wiring for wslvault agent-proxy. Apply in the agents' namespace.
+#
+#   1. The namespace is labelled so agent-proxy's NetworkPolicy admits it.
+#   2. Agent pods may egress ONLY to DNS, the wslvault gateway (for the
+#      Kubernetes-auth login) and agent-proxy. No direct internet.
+#   3. The pod logs in with its projected SA token, receives a 1-hour session
+#      token, and uses it in place of every API key. No real key is mounted.
+#
+# Replace `wslvault` (namespace) and the release-prefixed names to match your install.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agents
+  labels:
+    wslvault.io/agent-sandbox: "true"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-coder
+  namespace: agents
+automountServiceAccountToken: false
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agents-egress-via-broker-only
+  namespace: agents
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { port: 53, protocol: UDP }
+        - { port: 53, protocol: TCP }
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: wslvault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agent-proxy
+      ports:
+        - { port: 8094, protocol: TCP }
+    # Kubernetes-auth login (identity-service via the gateway)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: wslvault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: gateway
+      ports:
+        - { port: 443, protocol: TCP }
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: claude-coder
+  namespace: agents
+spec:
+  serviceAccountName: claude-coder
+  runtimeClassName: gvisor # optional: stronger syscall isolation
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile: { type: RuntimeDefault }
+  initContainers:
+    # Exchange the SA token for a wslvault session token. Only the session
+    # token lands on the shared volume; the agent never sees the SA token's
+    # mount path either.
+    - name: wslvault-login
+      image: curlimages/curl:8.10.1
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          curl -sfS https://wslvault-gateway.wslvault.svc/v1/auth/kubernetes/login \
+            -H 'Content-Type: application/json' \
+            -d "{\"role\":\"agent-claude\",\"jwt\":\"$(cat /var/run/secrets/wslvault-sa/token)\"}" \
+          | sed -n 's/.*"token":"\([^"]*\)".*/\1/p' > /session/token
+          test -s /session/token
+      volumeMounts:
+        - { name: sa-token, mountPath: /var/run/secrets/wslvault-sa, readOnly: true }
+        - { name: session, mountPath: /session }
+  containers:
+    - name: agent
+      image: ghcr.io/example/claude-agent:latest
+      command: ["/bin/sh", "-ec"]
+      args:
+        - |
+          export ANTHROPIC_API_KEY="$(cat /session/token)"   # session token, not a key
+          exec claude -p "$TASK"
+      env:
+        - name: ANTHROPIC_BASE_URL
+          value: http://wslvault-agent-proxy.wslvault.svc:8094/r/anthropic
+        # Other tools: point a base URL at /r/<route>, or use forward-proxy
+        # mode (HTTP_PROXY + http:// URLs + Proxy-Authorization: Bearer <token>).
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: { drop: [ALL] }
+      volumeMounts:
+        - { name: session, mountPath: /session, readOnly: true }
+  volumes:
+    - name: session
+      emptyDir: { medium: Memory }
+    - name: sa-token
+      projected:
+        sources:
+          - serviceAccountToken: { path: token, expirationSeconds: 600 }

@@ -233,6 +233,7 @@ jobs:
           - lease-manager
           - audit-service
           - mcp-server
+          - agent-proxy
           - replication-agent
           - region-health
           - sync-scheduler

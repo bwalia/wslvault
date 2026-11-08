@@ -17,6 +17,9 @@ Traffic topology (allowed ingress paths):
   audit-service     <- all services (fire-and-forget audit events)
   transit-engine    <- gateway
   mcp-server        <- gateway (MCP HTTP sessions)
+  agent-proxy       <- agent sandboxes (agentProxy.agentNamespaceSelector);
+                       egress to secret-engine, identity-service, audit-service
+                       and public 443 only (templates/agent-proxy/networkpolicy.yaml)
 
 All pods in the release are restricted to the release namespace via
 namespaceSelector unless cross-namespace access is explicitly required.
@@ -223,6 +226,11 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
+        {{- if .Values.agentProxy.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "agent-proxy" "context" $) | nindent 14 }}
+        {{- end }}
       ports:
         - port: {{ .Values.secretEngine.httpPort }}
           protocol: TCP
@@ -360,6 +368,11 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "wslvault.componentSelectorLabels" (dict "component" "mcp-server" "context" $) | nindent 14 }}
+        {{- if .Values.agentProxy.enabled }}
+        - podSelector:
+            matchLabels:
+              {{- include "wslvault.componentSelectorLabels" (dict "component" "agent-proxy" "context" $) | nindent 14 }}
+        {{- end }}
       ports:
         - port: {{ .Values.identityService.httpPort }}
           protocol: TCP

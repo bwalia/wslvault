@@ -15,5 +15,5 @@ COPY proto/ proto/
 RUN cargo build --release --target x86_64-unknown-linux-musl \
       -p crypto-service -p secret-engine -p policy-engine -p identity-service \
       -p lease-manager -p audit-service -p transit-engine -p pki-engine \
-      -p mcp-server -p replication-agent -p region-health -p sync-scheduler \
+      -p mcp-server -p agent-proxy -p replication-agent -p region-health -p sync-scheduler \
       -p k8s-operator

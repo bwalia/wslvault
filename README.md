@@ -29,6 +29,7 @@ Thirteen Rust services behind an OpenResty gateway, backed by PostgreSQL.
 | `region-health`, `sync-scheduler` | Region status; scheduled sync to external secret stores |
 | `k8s-operator` | `VaultSecret` / `VaultPolicy` CRDs reconciled into native Kubernetes Secrets |
 | `mcp-server` | Model Context Protocol server, so AI agents can use the vault as a tool |
+| `agent-proxy` | Credential broker: agents call APIs with a session token, the proxy injects the real key ([docs](docs/agent-proxy.md)) |
 
 Plus a Next.js UI, a CLI, and SDKs for Go, Python, TypeScript and Rust.
 

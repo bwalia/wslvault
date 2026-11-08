@@ -1,0 +1,29 @@
+{{- if .Values.agentProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "agent-proxy" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "agent-proxy" "componentType" "integration" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "wslvault.componentSelectorLabels" (dict "component" "agent-proxy" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.agentProxy.httpPort }}
+      targetPort: http
+      protocol: TCP
+---
+# Dedicated identity: identity-service's Kubernetes auth role for the broker
+# binds to exactly this ServiceAccount, so no other pod can log in as it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "agent-proxy" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "agent-proxy" "componentType" "integration" "context" $) | nindent 4 }}
+automountServiceAccountToken: false
+{{- end }}

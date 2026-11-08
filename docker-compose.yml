@@ -171,6 +171,28 @@ services:
     depends_on:
       - secret-engine
 
+  # Credential broker for AI agents. Agents send their session token, never an
+  # upstream key; the proxy injects the real one. See docs/agent-proxy.md.
+  agent-proxy:
+    build:
+      context: .
+      dockerfile: deploy/docker/agent-proxy/Dockerfile
+    environment:
+      VAULT_LISTEN_ADDR: "0.0.0.0:8094"
+      VAULT_SECRET_ENGINE_ADDR: "http://secret-engine:8081"
+      VAULT_JWT_SECRET: "dev-jwt-secret-change-in-production"
+      # Dev: mint a token for the broker (tenant `default`, policy granting
+      # read on brokered/**) and export it before `docker compose up`.
+      VAULT_AGENT_PROXY_TOKEN: "${VAULT_AGENT_PROXY_TOKEN:-}"
+      VAULT_AGENT_PROXY_ROUTES_FILE: "/etc/agent-proxy/routes.json"
+      RUST_LOG: "info,agent_proxy=debug"
+    volumes:
+      - ./examples/agent-proxy/routes.json:/etc/agent-proxy/routes.json:ro
+    ports:
+      - "8094:8094"
+    depends_on:
+      - secret-engine
+
   replication-agent:
     build:
       context: .

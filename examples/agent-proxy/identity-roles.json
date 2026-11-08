@@ -1,0 +1,14 @@
+{
+  "agent-proxy": {
+    "bound_service_account_namespaces": ["wslvault"],
+    "bound_service_account_names": ["wslvault-agent-proxy"],
+    "tenant_id": "homelab",
+    "policies": ["agent-broker"]
+  },
+  "agent-claude": {
+    "bound_service_account_namespaces": ["agents"],
+    "bound_service_account_names": ["claude-coder"],
+    "tenant_id": "homelab",
+    "policies": ["agent-claude"]
+  }
+}

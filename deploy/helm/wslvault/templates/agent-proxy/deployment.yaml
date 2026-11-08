@@ -1,0 +1,119 @@
+{{/*
+agent-proxy/deployment.yaml
+Credential broker for AI agents. Agents present a short-lived wslvault session
+token; the proxy reads the real upstream credential with its OWN identity
+(Kubernetes auth, role .Values.agentProxy.k8sRole) and injects it.
+Stateless, so it scales horizontally. See docs/agent-proxy.md.
+*/}}
+{{- if .Values.agentProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "wslvault.componentFullname" (dict "component" "agent-proxy" "context" $) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "wslvault.componentLabels" (dict "component" "agent-proxy" "componentType" "integration" "context" $) | nindent 4 }}
+spec:
+  replicas: {{ .Values.agentProxy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "wslvault.componentSelectorLabels" (dict "component" "agent-proxy" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "wslvault.componentLabels" (dict "component" "agent-proxy" "componentType" "integration" "context" $) | nindent 8 }}
+      annotations:
+        # Roll the pods when routes change.
+        checksum/routes: {{ .Values.agentProxy.routes | toJson | sha256sum }}
+        {{- with .Values.agentProxy.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "wslvault.componentFullname" (dict "component" "agent-proxy" "context" $) }}
+      {{- include "wslvault.podSecurityContext" . | nindent 6 }}
+      containers:
+        - name: agent-proxy
+          image: {{ include "wslvault.image" (dict "image" .Values.agentProxy.image "context" $) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          {{- include "wslvault.containerSecurityContext" . | nindent 10 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.agentProxy.httpPort }}
+              protocol: TCP
+          env:
+            - name: VAULT_LISTEN_ADDR
+              value: "0.0.0.0:{{ .Values.agentProxy.httpPort }}"
+            - name: VAULT_AGENT_PROXY_ROUTES_FILE
+              value: /etc/agent-proxy/routes.json
+            - name: VAULT_AGENT_PROXY_K8S_ROLE
+              value: {{ .Values.agentProxy.k8sRole | quote }}
+            - name: VAULT_AGENT_PROXY_SA_TOKEN_PATH
+              value: /var/run/secrets/wslvault/token
+            - name: VAULT_AGENT_PROXY_SECRET_TTL_SECS
+              value: {{ .Values.agentProxy.secretTtlSeconds | quote }}
+            - name: VAULT_SECRET_ENGINE_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "secret-engine" "context" $))
+                          (.Values.secretEngine.httpPort | toString) }}
+            - name: VAULT_IDENTITY_SERVICE_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "identity-service" "context" $))
+                          (.Values.identityService.httpPort | toString) }}
+            - name: VAULT_AUDIT_SERVICE_ADDR
+              value: {{ printf "http://%s:%s"
+                          (include "wslvault.componentFullname" (dict "component" "audit-service" "context" $))
+                          (.Values.auditService.grpcPort | toString) }}
+            # Session-token verification — same material secret-engine uses.
+            - name: VAULT_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "wslvault.jwtSecretName" . }}
+                  key: {{ include "wslvault.jwtSecretKey" . }}
+                  optional: false
+            - name: VAULT_JWKS_URL
+              value: "http://{{ include "wslvault.componentFullname" (dict "component" "identity-service" "context" $) }}:8082/v1/identity/.well-known/jwks.json"
+            {{- with .Values.agentProxy.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.agentProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: routes
+              mountPath: /etc/agent-proxy
+              readOnly: true
+            - name: sa-token
+              mountPath: /var/run/secrets/wslvault
+              readOnly: true
+      volumes:
+        - name: routes
+          configMap:
+            name: {{ include "wslvault.componentFullname" (dict "component" "agent-proxy" "context" $) }}-routes
+        # Short-lived, audience-bound projected token for Kubernetes auth;
+        # kubelet rotates it and the proxy re-reads it on every login.
+        - name: sa-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  {{- with .Values.agentProxy.k8sTokenAudience }}
+                  audience: {{ . | quote }}
+                  {{- end }}
+      {{- include "wslvault.podScheduling" (dict "service" .Values.agentProxy "context" $) | nindent 6 }}
+{{- end }}
