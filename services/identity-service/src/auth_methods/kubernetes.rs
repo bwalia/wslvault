@@ -752,6 +752,51 @@ fn validate_k8s_name(name: &str) -> Result<(), ()> {
 pub struct KubernetesState {
     pub manager: Arc<KubernetesManager>,
     pub token_manager: TokenManager,
+    /// Per-tenant Ed25519 signing keys. When present, issued tokens are signed
+    /// with the tenant's own key, exactly as API-key logins are; the shared
+    /// HS256 secret is only a fallback for deployments without them.
+    pub signing_keys: Option<crate::signing_keys::SigningKeys>,
+}
+
+/// Mint the session token for an authenticated service account.
+///
+/// Mirrors `api_keys::issue_for_tenant`: sign with the tenant's own key when
+/// per-tenant keys are configured, and fail closed if that key cannot be
+/// loaded rather than quietly downgrading. The HS256 fallback exists only for
+/// deployments without per-tenant keys, and warns, because any service that
+/// holds the shared secret can forge such a token.
+async fn issue_k8s_token(
+    state: &KubernetesState,
+    subject: &str,
+    tenant_id: &str,
+    policies: Vec<String>,
+) -> Result<(String, chrono::DateTime<chrono::Utc>), String> {
+    let Some(signing_keys) = state.signing_keys.as_ref() else {
+        warn!(
+            "issuing a legacy HS256 token for Kubernetes auth: per-tenant signing keys \
+             are not configured, so any service holding VAULT_JWT_SECRET can forge it"
+        );
+        return state
+            .token_manager
+            .issue_token(subject, tenant_id, policies, K8S_JWT_TTL_SECONDS)
+            .map_err(|e| e.to_string());
+    };
+    let tenant = uuid::Uuid::parse_str(tenant_id)
+        .map_err(|e| format!("role tenant_id is not a UUID: {e}"))?;
+    let signer = signing_keys.signer_for(Some(&tenant)).await?;
+    state
+        .token_manager
+        .issue_token_with_key(
+            subject,
+            tenant_id,
+            policies,
+            K8S_JWT_TTL_SECONDS,
+            &signer.encoding,
+            crate::signing_keys::SigningKeys::header(&signer.kid),
+            // Never a superuser: a role grants one tenant's policies.
+            false,
+        )
+        .map_err(|e| e.to_string())
 }
 
 /// Request body for `POST /v1/auth/kubernetes/login`.
@@ -832,7 +877,7 @@ impl VaultLoginAuth {
     }
 }
 
-/// `POST /v1/auth/kubernetes/login` — authenticate a Kubernetes SA token.
+/// `POST|PUT /v1/auth/kubernetes/login` — authenticate a Kubernetes SA token.
 pub async fn handle_kubernetes_login(
     State(state): State<KubernetesState>,
     Json(payload): Json<KubernetesLoginRequest>,
@@ -844,12 +889,9 @@ pub async fn handle_kubernetes_login(
     {
         Ok(result) => {
             let subject = format!("{}:{}", result.namespace, result.service_account_name);
-            match state.token_manager.issue_token(
-                &subject,
-                &result.tenant_id,
-                result.policies.clone(),
-                K8S_JWT_TTL_SECONDS,
-            ) {
+            match issue_k8s_token(&state, &subject, &result.tenant_id, result.policies.clone())
+                .await
+            {
                 Ok((token, expires_at)) => {
                     let lease_id = crate::lease_client::try_create_token_lease(
                         &result.tenant_id,
@@ -898,7 +940,13 @@ pub async fn handle_kubernetes_login(
 /// Builds the axum [`Router`] for Kubernetes auth routes.
 pub fn router(state: KubernetesState) -> Router {
     Router::new()
-        .route("/v1/auth/kubernetes/login", post(handle_kubernetes_login))
+        // Vault accepts POST and PUT for auth-method logins; the HashiCorp Go
+        // client — and so the External Secrets Operator — sends PUT
+        // (`Logical().Write`). POST alone answered ESO with 405.
+        .route(
+            "/v1/auth/kubernetes/login",
+            post(handle_kubernetes_login).put(handle_kubernetes_login),
+        )
         .with_state(state)
 }
 
@@ -1241,6 +1289,62 @@ mod tests {
         assert!((3590..=3600).contains(&lease), "lease_duration {lease}");
         // Native callers keep their top-level token.
         assert_eq!(body["token"], "jwt-value");
+    }
+
+    // ── HTTP routing and token signing ──────────────────────────────────────
+
+    fn test_state(signing_keys: Option<crate::signing_keys::SigningKeys>) -> KubernetesState {
+        KubernetesState {
+            manager: Arc::new(make_manager(HashMap::new())),
+            token_manager: TokenManager::new(b"test-secret-that-is-at-least-32-bytes!!"),
+            signing_keys,
+        }
+    }
+
+    async fn login_status(method: &str) -> StatusCode {
+        use tower::ServiceExt;
+        let req = axum::http::Request::builder()
+            .method(method)
+            .uri("/v1/auth/kubernetes/login")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"role":"no-such-role","jwt":"not-a-real-token"}"#,
+            ))
+            .unwrap();
+        router(test_state(None))
+            .oneshot(req)
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// The HashiCorp Vault Go client — and so the External Secrets Operator —
+    /// logs in with PUT (`Logical().Write`). A POST-only route answered 405.
+    #[tokio::test]
+    async fn login_accepts_put_and_post() {
+        // Both reach the handler, which rejects the unknown role before any
+        // network call.
+        assert_eq!(login_status("PUT").await, StatusCode::NOT_FOUND);
+        assert_eq!(login_status("POST").await, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn login_rejects_get() {
+        assert_eq!(login_status("GET").await, StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn without_signing_keys_falls_back_to_hs256() {
+        let state = test_state(None);
+        let tenant = "01a1d5fc-3bf9-7d73-a62d-b56cf842bf48";
+        let (token, _) = issue_k8s_token(&state, "prod:sa", tenant, vec!["p".into()])
+            .await
+            .unwrap();
+        assert_eq!(decode_header(&token).unwrap().alg, Algorithm::HS256);
+        let claims = state.token_manager.validate_token(&token).unwrap();
+        assert_eq!(claims.tenant_id, tenant);
+        assert_eq!(claims.sub, "prod:sa");
+        assert!(!claims.superuser);
     }
 
     /// External-network test: calls the real Kubernetes TokenReview API.

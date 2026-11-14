@@ -2320,4 +2320,43 @@ mod auth_tests {
             "with the flag on, the gateway header contract must still authenticate"
         );
     }
+
+    /// An authenticated request to `revoke-self`: the trusted-gateway contract
+    /// gets it past `require_authenticated`, so the status reflects routing
+    /// and the handler rather than the auth layer (which answers 401 to any
+    /// method, and so cannot tell a missing route from a missing credential).
+    async fn revoke_self_status(method: &str) -> StatusCode {
+        std::env::set_var("VAULT_TRUST_GATEWAY_HEADERS", "true");
+        let req = Request::builder()
+            .uri("/v1/auth/token/revoke-self")
+            .method(method)
+            .header("x-tenant-id", "acme")
+            .header("x-policies", "reader")
+            .body(Body::empty())
+            .unwrap();
+        let status = status_for(req).await;
+        std::env::remove_var("VAULT_TRUST_GATEWAY_HEADERS");
+        status
+    }
+
+    /// The HashiCorp Vault Go client — and so the External Secrets Operator —
+    /// revokes with `PUT /v1/auth/token/revoke-self`. A POST-only route
+    /// answered it with 405 on every reconcile.
+    #[tokio::test]
+    async fn revoke_self_accepts_put_and_post() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Both reach the handler, which refuses because there is no client
+        // token to revoke (identity came from gateway headers).
+        assert_eq!(revoke_self_status("PUT").await, StatusCode::BAD_REQUEST);
+        assert_eq!(revoke_self_status("POST").await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn revoke_self_rejects_get() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(
+            revoke_self_status("GET").await,
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
 }

@@ -585,7 +585,7 @@ async fn lookup_self(headers: HeaderMap) -> Response {
     (StatusCode::OK, Json(Value::Object(body))).into_response()
 }
 
-/// `POST /v1/auth/token/revoke-self` — revoke the calling token.
+/// `POST|PUT /v1/auth/token/revoke-self` — revoke the calling token.
 ///
 /// Vault clients that log in through an auth method (Kubernetes, AppRole …)
 /// revoke the token they were issued once they are done with it; the External
@@ -661,7 +661,12 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/kv/data/*path", get(read).post(write))
         .route("/v1/auth/token/lookup-self", get(lookup_self))
-        .route("/v1/auth/token/revoke-self", post(revoke_self))
+        // Vault accepts POST and PUT here; the HashiCorp Go client — and so
+        // the External Secrets Operator — sends PUT (`RevokeSelfWithContext`).
+        .route(
+            "/v1/auth/token/revoke-self",
+            post(revoke_self).put(revoke_self),
+        )
         .route("/v1/sys/health", get(sys_health))
 }
 
