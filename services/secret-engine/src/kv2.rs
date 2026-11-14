@@ -55,7 +55,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use base64::Engine as _;
@@ -585,6 +585,64 @@ async fn lookup_self(headers: HeaderMap) -> Response {
     (StatusCode::OK, Json(Value::Object(body))).into_response()
 }
 
+/// `POST /v1/auth/token/revoke-self` — revoke the calling token.
+///
+/// Vault clients that log in through an auth method (Kubernetes, AppRole …)
+/// revoke the token they were issued once they are done with it; the External
+/// Secrets Operator does this after every reconcile. Without the route each
+/// of those calls 404s and is logged as a failure.
+///
+/// The revocation lands in `system.revoked_tokens`, the same table every
+/// service's `resolve_identity` consults, so it is effective cluster-wide and
+/// across restarts. Like Vault, success is `204 No Content`.
+async fn revoke_self(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    // Verify first: only a currently valid token may revoke itself, so this
+    // cannot be used to plant arbitrary hashes in the revocation table.
+    let identity = match resolve_identity(&headers).await {
+        Ok(i) => i,
+        Err(r) => return r,
+    };
+    let Some(token) = wslvault_core::auth::extract_token(&headers) else {
+        return vault_error(StatusCode::BAD_REQUEST, "missing client token");
+    };
+    let Some(pool) = state.tenant_pool.as_ref() else {
+        // In-memory/dev mode has no revocation store. Say so rather than
+        // returning 204 for a revocation that did not happen.
+        return vault_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "token revocation requires a database-backed deployment",
+        );
+    };
+    let exp = identity
+        .expires_at
+        .unwrap_or_else(|| chrono::Utc::now().timestamp() + 3600);
+    match wslvault_storage::revocation_store::revoke(
+        pool,
+        &token,
+        &identity.tenant_id,
+        &identity.principal_id,
+        exp,
+    )
+    .await
+    {
+        Ok(()) => {
+            info!(
+                tenant_id = %identity.tenant_id,
+                principal_id = %identity.principal_id,
+                "token revoked via revoke-self"
+            );
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "revoke-self: failed to persist revocation");
+            vault_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not persist revocation",
+            )
+        }
+    }
+}
+
 /// `GET /v1/sys/health` — Vault-shaped health, unauthenticated like Vault's.
 async fn sys_health() -> Response {
     let mut body = Map::new();
@@ -603,6 +661,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v1/kv/data/*path", get(read).post(write))
         .route("/v1/auth/token/lookup-self", get(lookup_self))
+        .route("/v1/auth/token/revoke-self", post(revoke_self))
         .route("/v1/sys/health", get(sys_health))
 }
 

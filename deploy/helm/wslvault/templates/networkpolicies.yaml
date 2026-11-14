@@ -446,6 +446,24 @@ spec:
       ports:
         - port: {{ .Values.leaseManager.grpcPort }}
           protocol: TCP
+    {{- with .Values.identityService.kubernetesAuth }}
+    {{- if .enabled }}
+    {{- if not .apiServer.cidrs }}
+    {{- fail "identityService.kubernetesAuth.enabled requires identityService.kubernetesAuth.apiServer.cidrs (the kubernetes Service ClusterIP and API server endpoint IPs)" }}
+    {{- end }}
+    # Kubernetes auth: TokenReview against the API server.
+    - to:
+        {{- range .apiServer.cidrs }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        {{- range .apiServer.ports }}
+        - port: {{ . }}
+          protocol: TCP
+        {{- end }}
+    {{- end }}
+    {{- end }}
 {{- end }}
 
 {{/*

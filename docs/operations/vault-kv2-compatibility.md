@@ -47,6 +47,8 @@ the `kv` mount so it is stored as a JSON object.
 | `GET` | `/v1/kv/data/<path>` | Read current version (`?version=N` for a specific one) |
 | `POST` | `/v1/kv/data/<path>` | Write a new version (`options.cas` for check-and-set) |
 | `GET` | `/v1/auth/token/lookup-self` | Token self-lookup; Vault clients probe this |
+| `POST` | `/v1/auth/token/revoke-self` | Revoke the calling token (`204`); ESO calls it after each reconcile when it logged in via an auth method |
+| `POST` | `/v1/auth/kubernetes/login` | Kubernetes service-account login (identity-service); returns Vault's `auth.client_token` shape |
 | `GET` | `/v1/sys/health` | Vault-shaped health |
 
 Errors use Vault's `{"errors": ["…"]}` body, not wslvault's native
@@ -122,6 +124,54 @@ spec:
 
 Because the request/response shapes match Vault's, an existing ExternalSecret
 needs no changes beyond repointing `secretStoreRef` at this store.
+
+## Kubernetes auth for ESO (per-tenant stores)
+
+A static token in `tokenSecretRef` belongs to exactly one tenant, and secret
+reads are tenant-scoped: a store whose token is in tenant A gets
+`Secret does not exist` for a path that exists in tenant B. Production secrets
+live in their own tenant by design (project tenants refuse PROD writes), so a
+production store needs a credential in the production tenant.
+
+Kubernetes auth gives each store one without a long-lived token: ESO mints a
+short-lived token for a service account, identity-service checks it with the
+TokenReview API and maps the role to a tenant and policies.
+
+1. Enable it in the chart (`identityService.kubernetesAuth`, see values.yaml)
+   with a role per store, e.g.
+
+   ```yaml
+   identityService:
+     kubernetesAuth:
+       enabled: true
+       apiServer:
+         cidrs: [10.43.0.1/32, <api-server endpoint IPs>/32]
+       roles:
+         closeknitty-prod:
+           bound_service_account_namespaces: [external-secrets]
+           bound_service_account_names: [closeknitty-prod-eso]
+           tenant_id: <production tenant id>
+           policies: [closeknitty-prod-read]
+           audience: wslvault
+   ```
+
+2. In that tenant, create the policy the role names (read on the store's paths).
+
+3. Point the store at it:
+
+   ```yaml
+   auth:
+     kubernetes:
+       mountPath: kubernetes
+       role: closeknitty-prod
+       serviceAccountRef:
+         name: closeknitty-prod-eso
+         namespace: external-secrets
+         audiences: [wslvault]   # must equal the role's audience
+   ```
+
+Each reconcile logs in (one TokenReview), reads, and revokes its token via
+`revoke-self`. Tokens are not renewable; ESO simply logs in again.
 
 ## Verifying by hand
 
