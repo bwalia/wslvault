@@ -481,8 +481,8 @@ identityService:
     #              serviceAccountRef.audiences)
     # e.g.
     #   closeknitty-prod:
-    #     bound_service_account_namespaces: [external-secrets]
-    #     bound_service_account_names: [closeknitty-prod-eso]
+    #     bound_service_account_namespaces: [prod]
+    #     bound_service_account_names: [closeknitty-vault]
     #     tenant_id: 01a1d5fc-3bf9-7d73-a62d-b56cf842bf48
     #     policies: [closeknitty-prod-read]
     #     audience: wslvault

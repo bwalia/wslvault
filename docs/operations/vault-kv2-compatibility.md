@@ -148,8 +148,8 @@ TokenReview API and maps the role to a tenant and policies.
          cidrs: [10.43.0.1/32, <api-server endpoint IPs>/32]
        roles:
          closeknitty-prod:
-           bound_service_account_namespaces: [external-secrets]
-           bound_service_account_names: [closeknitty-prod-eso]
+           bound_service_account_namespaces: [prod]
+           bound_service_account_names: [closeknitty-vault]
            tenant_id: <production tenant id>
            policies: [closeknitty-prod-read]
            audience: wslvault
@@ -157,7 +157,8 @@ TokenReview API and maps the role to a tenant and policies.
 
 2. In that tenant, create the policy the role names (read on the store's paths).
 
-3. Point the store at it:
+3. Point a namespaced `SecretStore` in the bound namespace at it (a
+   namespaced store keeps other namespaces from reading the tenant):
 
    ```yaml
    auth:
@@ -165,8 +166,7 @@ TokenReview API and maps the role to a tenant and policies.
        mountPath: kubernetes
        role: closeknitty-prod
        serviceAccountRef:
-         name: closeknitty-prod-eso
-         namespace: external-secrets
+         name: closeknitty-vault
          audiences: [wslvault]   # must equal the role's audience
    ```
 
