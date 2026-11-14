@@ -650,6 +650,7 @@ async fn main() -> Result<(), anyhow::Error> {
                             let state = auth_methods::kubernetes::KubernetesState {
                                 manager: std::sync::Arc::new(manager),
                                 token_manager: token_manager_for_auth_methods.clone(),
+                                signing_keys: signing_keys.clone(),
                             };
                             info!("Kubernetes service-account authentication enabled");
                             Some(auth_methods::kubernetes::router(state))
