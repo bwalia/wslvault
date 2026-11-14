@@ -155,6 +155,17 @@ spec:
               value: {{ printf "http://%s:%s"
                           (include "wslvault.componentFullname" (dict "component" "lease-manager" "context" $))
                           (.Values.leaseManager.grpcPort | toString) }}
+            {{- if .Values.identityService.kubernetesAuth.enabled }}
+            {{- $ka := .Values.identityService.kubernetesAuth }}
+            {{- if not $ka.roles }}
+            {{- fail "identityService.kubernetesAuth.enabled requires at least one role in identityService.kubernetesAuth.roles" }}
+            {{- end }}
+            # Kubernetes service-account login (POST /v1/auth/kubernetes/login).
+            # Reviewer token and cluster CA come from the projected volume
+            # below, at the in-cluster default paths the service reads.
+            - name: VAULT_K8S_CONFIG
+              value: {{ dict "kubernetes_host" $ka.kubernetesHost "roles" $ka.roles | toJson | quote }}
+            {{- end }}
             {{- with .Values.identityService.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -177,8 +188,29 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- if .Values.identityService.kubernetesAuth.enabled }}
+            - name: k8s-auth
+              mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
+        {{- if .Values.identityService.kubernetesAuth.enabled }}
+        # The ServiceAccount sets automountServiceAccountToken: false for every
+        # wslvault pod; only identity-service needs a token, for TokenReview.
+        # The kubelet rotates it in place and the service re-reads it per call.
+        - name: k8s-auth
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+        {{- end }}
       {{- include "wslvault.podScheduling" (dict "service" .Values.identityService "context" $) | nindent 6 }}
 {{- end }}

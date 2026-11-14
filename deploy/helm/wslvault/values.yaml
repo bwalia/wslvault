@@ -444,6 +444,49 @@ identityService:
   # links that reach nobody. Empty falls back to a localhost default that is
   # only correct for local development.
   publicUrl: ""
+  # -- Kubernetes service-account login at POST /v1/auth/kubernetes/login,
+  # the HashiCorp Vault `kubernetes` auth method. Lets the External Secrets
+  # Operator authenticate with its own short-lived service-account token
+  # instead of a long-lived JWT stored in a Secret, and is the only way for a
+  # ClusterSecretStore to read a tenant other than the one its static token
+  # belongs to.
+  #
+  # Enabling it:
+  #   - mounts a projected token for this release's ServiceAccount and the
+  #     cluster CA (kube-root-ca.crt) into identity-service at the standard
+  #     in-cluster path, used to call TokenReview and verify the API server;
+  #   - binds that ServiceAccount to `system:auth-delegator`
+  #     (ClusterRoleBinding, named per namespace so both regions coexist);
+  #   - opens identity-service egress to the API server (networkPolicies).
+  kubernetesAuth:
+    enabled: false
+    # -- API server URL as seen from the pod.
+    kubernetesHost: https://kubernetes.default.svc
+    # -- Egress the NetworkPolicy allows for TokenReview. List the
+    # `kubernetes` Service ClusterIP AND every API server endpoint
+    # (`kubectl get endpointslice -n default -l kubernetes.io/service-name=kubernetes`):
+    # depending on the CNI the policy is evaluated before or after the
+    # Service DNAT, so both must be allowed.
+    apiServer:
+      cidrs: []
+      ports: [443, 6443]
+    # -- Role name -> binding. Keys are passed through to identity-service
+    # verbatim, so they use its snake_case field names:
+    #   bound_service_account_namespaces / bound_service_account_names:
+    #     exact names (or ["*"]) allowed to log in under this role
+    #   tenant_id: the tenant the issued token belongs to
+    #   policies:  policy names in that tenant granted to the token
+    #   audience:  optional; the SA token must be minted for this audience
+    #              (set the same value in the SecretStore's
+    #              serviceAccountRef.audiences)
+    # e.g.
+    #   closeknitty-prod:
+    #     bound_service_account_namespaces: [prod]
+    #     bound_service_account_names: [closeknitty-vault]
+    #     tenant_id: 01a1d5fc-3bf9-7d73-a62d-b56cf842bf48
+    #     policies: [closeknitty-prod-read]
+    #     audience: wslvault
+    roles: {}
   # -- Outbound email for tenant invitations. Leave host empty to disable
   # sending: invitations are still created and their link returned to the
   # operator to deliver by hand. The password is NOT set here — it comes from

@@ -1,0 +1,27 @@
+{{/*
+Kubernetes auth (identityService.kubernetesAuth): identity-service validates
+service-account tokens with the TokenReview API, which needs
+system:auth-delegator. Cluster-scoped, so the name carries the namespace —
+region A (wslvault) and region B (wslvault-b) install the same release name
+into one cluster.
+
+The ServiceAccount is the chart's shared one, but it is not automounted into
+any pod; identity-service is the only pod that mounts its token (see the
+projected volume in deployment.yaml), so only it can exercise this binding.
+*/}}
+{{- if and .Values.identityService.enabled .Values.identityService.kubernetesAuth.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ printf "%s-%s-auth-delegator" (include "wslvault.fullname" .) .Release.Namespace | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "wslvault.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "wslvault.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

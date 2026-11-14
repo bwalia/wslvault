@@ -61,6 +61,12 @@ use crate::token::TokenManager;
 /// JWT TTL for tokens issued upon successful Kubernetes auth.
 const K8S_JWT_TTL_SECONDS: i64 = 3600;
 
+/// Where the kubelet mounts a pod's service-account token.
+pub const IN_CLUSTER_TOKEN_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+
+/// Where the kubelet mounts the cluster CA bundle.
+pub const IN_CLUSTER_CA_PATH: &str = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+
 /// Maximum length for role names to prevent abuse.
 const MAX_ROLE_NAME_LEN: usize = 253;
 
@@ -157,16 +163,34 @@ pub struct KubernetesConfig {
     pub kubernetes_host: String,
 
     /// Service-account token with `system:auth-delegator` permissions.
-    /// Used only in `TokenReview` mode.
+    /// Used only in `TokenReview` mode. Prefer `reviewer_token_path`: an
+    /// inline token is a long-lived credential sitting in an env var.
+    #[serde(default)]
     pub reviewer_token: Option<String>,
+
+    /// File holding the reviewer token, re-read on every TokenReview because
+    /// projected service-account tokens are rotated by the kubelet. When
+    /// neither this nor `reviewer_token` is set, the in-cluster path
+    /// [`IN_CLUSTER_TOKEN_PATH`] is used if it exists.
+    #[serde(default)]
+    pub reviewer_token_path: Option<String>,
+
+    /// PEM bundle trusted for the API server's certificate, in addition to
+    /// the public roots. Cluster API servers are signed by a private cluster
+    /// CA, so TokenReview cannot work without it. When unset, the in-cluster
+    /// bundle [`IN_CLUSTER_CA_PATH`] is used if it exists.
+    #[serde(default)]
+    pub ca_cert_path: Option<String>,
 
     /// OIDC issuer URL for the cluster (e.g.
     /// `"https://kubernetes.default.svc.cluster.local"`).
     /// Used only in `Jwks` mode for discovery.
+    #[serde(default)]
     pub issuer: Option<String>,
 
     /// Whether to skip TLS verification when contacting the API server.
     /// **Only for development / testing — never enable in production.**
+    #[serde(default)]
     pub tls_skip_verify: bool,
 
     /// Validation mode.  Defaults to `TokenReview`.
@@ -191,6 +215,14 @@ pub struct KubernetesRoleConfig {
 
     /// wslvault policy names granted to principals authenticated via this role.
     pub policies: Vec<String>,
+
+    /// Audience the service-account JWT must carry (HashiCorp Vault's role
+    /// `audience`). When set, TokenReview is asked to validate against it and
+    /// JWKS mode checks `aud`, so a token minted for the API server — or for
+    /// any other consumer — is not accepted here. Unset keeps the previous
+    /// behaviour: the API server's default audiences.
+    #[serde(default)]
+    pub audience: Option<String>,
 }
 
 // ── Kubernetes API wire types ─────────────────────────────────────────────────
@@ -207,6 +239,9 @@ struct TokenReviewRequest {
 #[derive(Debug, Serialize)]
 struct TokenReviewSpec {
     token: String,
+    /// Empty means "the API server's default audiences".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    audiences: Vec<String>,
 }
 
 /// Subset of the Kubernetes `TokenReview` response that we care about.
@@ -219,6 +254,9 @@ struct TokenReviewResponse {
 struct TokenReviewStatus {
     authenticated: Option<bool>,
     user: Option<TokenReviewUser>,
+    /// Audiences the token was validated against, from the requested set.
+    #[serde(default)]
+    audiences: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,7 +320,26 @@ impl KubernetesManager {
             warn!("Kubernetes auth: TLS verification disabled — not safe for production");
             client_builder.danger_accept_invalid_certs(true)
         } else {
-            client_builder
+            match resolve_ca_path(config.ca_cert_path.as_deref()) {
+                Some(path) => {
+                    let pem = std::fs::read(&path).map_err(|e| {
+                        KubernetesError::TokenReviewFailed(format!("read CA bundle {path}: {e}"))
+                    })?;
+                    let certs = reqwest::Certificate::from_pem_bundle(&pem).map_err(|e| {
+                        KubernetesError::TokenReviewFailed(format!("parse CA bundle {path}: {e}"))
+                    })?;
+                    if certs.is_empty() {
+                        return Err(KubernetesError::TokenReviewFailed(format!(
+                            "CA bundle {path} holds no certificates"
+                        )));
+                    }
+                    info!(path = %path, certs = certs.len(), "Kubernetes auth: trusting cluster CA");
+                    certs
+                        .into_iter()
+                        .fold(client_builder, |b, c| b.add_root_certificate(c))
+                }
+                None => client_builder,
+            }
         };
 
         let http_client = client_builder
@@ -323,8 +380,14 @@ impl KubernetesManager {
             .as_ref()
             .unwrap_or(&ValidationMode::TokenReview)
         {
-            ValidationMode::TokenReview => self.validate_via_token_review(sa_jwt).await?,
-            ValidationMode::Jwks => self.validate_via_jwks(sa_jwt).await?,
+            ValidationMode::TokenReview => {
+                self.validate_via_token_review(sa_jwt, role.audience.as_deref())
+                    .await?
+            }
+            ValidationMode::Jwks => {
+                self.validate_via_jwks(sa_jwt, role.audience.as_deref())
+                    .await?
+            }
         };
 
         // Check role bindings.
@@ -352,12 +415,9 @@ impl KubernetesManager {
     async fn validate_via_token_review(
         &self,
         sa_jwt: &str,
+        audience: Option<&str>,
     ) -> Result<ServiceAccountIdentity, KubernetesError> {
-        let reviewer_token = self.config.reviewer_token.as_deref().ok_or_else(|| {
-            KubernetesError::TokenReviewFailed(
-                "reviewer_token is required for TokenReview mode".to_string(),
-            )
-        })?;
+        let reviewer_token = self.reviewer_token().await?;
 
         let url = format!(
             "{}/apis/authentication.k8s.io/v1/tokenreviews",
@@ -369,13 +429,14 @@ impl KubernetesManager {
             kind: "TokenReview",
             spec: TokenReviewSpec {
                 token: sa_jwt.to_string(),
+                audiences: audience.map(|a| vec![a.to_string()]).unwrap_or_default(),
             },
         };
 
         let response = self
             .http_client
             .post(&url)
-            .bearer_auth(reviewer_token)
+            .bearer_auth(&reviewer_token)
             .json(&body)
             .send()
             .await
@@ -399,6 +460,11 @@ impl KubernetesManager {
             ));
         }
 
+        // An authenticator that is not audience-aware can authenticate a token
+        // without checking the requested audiences; the API docs make the
+        // caller responsible for confirming the intersection is non-empty.
+        check_review_audience(audience, &review.status.audiences)?;
+
         // The `username` field contains `system:serviceaccount:<ns>:<sa>`.
         let username = review.status.user.and_then(|u| u.username).ok_or_else(|| {
             KubernetesError::TokenReviewFailed("no username in token review response".to_string())
@@ -407,12 +473,45 @@ impl KubernetesManager {
         parse_sa_username(&username)
     }
 
+    /// The reviewer bearer token: inline config, else the configured file,
+    /// else the in-cluster mount. The file is re-read on every call because
+    /// the kubelet rotates projected tokens in place.
+    async fn reviewer_token(&self) -> Result<String, KubernetesError> {
+        if let Some(t) = self
+            .config
+            .reviewer_token
+            .as_deref()
+            .filter(|t| !t.is_empty())
+        {
+            return Ok(t.to_string());
+        }
+        let path = self
+            .config
+            .reviewer_token_path
+            .clone()
+            .unwrap_or_else(|| IN_CLUSTER_TOKEN_PATH.to_string());
+        let token = tokio::fs::read_to_string(&path).await.map_err(|e| {
+            KubernetesError::TokenReviewFailed(format!(
+                "reviewer token unavailable: set reviewer_token or reviewer_token_path \
+                 (read {path}: {e})"
+            ))
+        })?;
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Err(KubernetesError::TokenReviewFailed(format!(
+                "reviewer token file {path} is empty"
+            )));
+        }
+        Ok(token)
+    }
+
     // ── JWKS / offline validation ─────────────────────────────────────────────
 
     /// Validates the SA JWT offline using the cluster's OIDC JWKS.
     async fn validate_via_jwks(
         &self,
         sa_jwt: &str,
+        audience: Option<&str>,
     ) -> Result<ServiceAccountIdentity, KubernetesError> {
         let issuer = self.config.issuer.as_deref().ok_or_else(|| {
             KubernetesError::JwksFetch("issuer is required for JWKS validation mode".to_string())
@@ -449,8 +548,12 @@ impl KubernetesManager {
         validation.set_issuer(&[issuer]);
         validation.validate_exp = true;
         validation.leeway = 0;
-        // SA tokens may not carry an audience — allow missing aud.
-        validation.validate_aud = false;
+        match audience {
+            // The role pins an audience: the token must carry it.
+            Some(aud) => validation.set_audience(&[aud]),
+            // SA tokens may not carry an audience — allow missing aud.
+            None => validation.validate_aud = false,
+        }
 
         let token_data = decode::<SaJwtClaims>(sa_jwt, &decoding_key, &validation)
             .map_err(|e| KubernetesError::JwtValidation(format!("validate token: {e}")))?;
@@ -574,6 +677,31 @@ impl KubernetesManager {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// The CA bundle to trust for the API server: the configured path, else the
+/// in-cluster mount when present, else none (public roots only).
+fn resolve_ca_path(configured: Option<&str>) -> Option<String> {
+    match configured.filter(|p| !p.is_empty()) {
+        Some(p) => Some(p.to_string()),
+        None => std::path::Path::new(IN_CLUSTER_CA_PATH)
+            .exists()
+            .then(|| IN_CLUSTER_CA_PATH.to_string()),
+    }
+}
+
+/// When a role pins an audience, the TokenReview must report it back in
+/// `status.audiences`; otherwise the token was not validated against it.
+fn check_review_audience(
+    requested: Option<&str>,
+    returned: &[String],
+) -> Result<(), KubernetesError> {
+    match requested {
+        Some(aud) if !returned.iter().any(|r| r == aud) => Err(KubernetesError::JwtValidation(
+            format!("token review: token is not valid for audience '{aud}'"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Parses a Kubernetes SA username of the form
 /// `system:serviceaccount:<namespace>:<name>`.
 pub fn parse_sa_username(username: &str) -> Result<ServiceAccountIdentity, KubernetesError> {
@@ -646,6 +774,62 @@ pub struct KubernetesLoginResponse {
     pub service_account_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_id: Option<String>,
+    /// HashiCorp Vault's login shape. Vault clients — the External Secrets
+    /// Operator among them — read the token from `auth.client_token` and fail
+    /// with "did not return client token" without it. The top-level fields
+    /// above stay for existing native callers.
+    pub auth: VaultLoginAuth,
+}
+
+/// The `auth` block of a HashiCorp Vault login response (`api.SecretAuth`).
+#[derive(Debug, Serialize)]
+pub struct VaultLoginAuth {
+    pub client_token: String,
+    /// wslvault tokens have no accessor; Vault clients accept an empty one.
+    pub accessor: String,
+    pub policies: Vec<String>,
+    pub token_policies: Vec<String>,
+    pub metadata: HashMap<String, String>,
+    /// Seconds until the token expires.
+    pub lease_duration: i64,
+    /// Not renewable: clients log in again, which is what ESO does.
+    pub renewable: bool,
+    pub entity_id: String,
+}
+
+impl VaultLoginAuth {
+    fn new(
+        token: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+        tenant_id: &str,
+        policies: &[String],
+        namespace: &str,
+        service_account_name: &str,
+        role: &str,
+    ) -> Self {
+        let metadata = HashMap::from([
+            ("tenant_id".to_string(), tenant_id.to_string()),
+            ("role".to_string(), role.to_string()),
+            (
+                "service_account_namespace".to_string(),
+                namespace.to_string(),
+            ),
+            (
+                "service_account_name".to_string(),
+                service_account_name.to_string(),
+            ),
+        ]);
+        Self {
+            client_token: token.to_string(),
+            accessor: String::new(),
+            policies: policies.to_vec(),
+            token_policies: policies.to_vec(),
+            metadata,
+            lease_duration: (expires_at - chrono::Utc::now()).num_seconds().max(0),
+            renewable: false,
+            entity_id: String::new(),
+        }
+    }
 }
 
 /// `POST /v1/auth/kubernetes/login` — authenticate a Kubernetes SA token.
@@ -674,9 +858,19 @@ pub async fn handle_kubernetes_login(
                         K8S_JWT_TTL_SECONDS,
                     )
                     .await;
+                    let auth = VaultLoginAuth::new(
+                        &token,
+                        expires_at,
+                        &result.tenant_id,
+                        &result.policies,
+                        &result.namespace,
+                        &result.service_account_name,
+                        &payload.role,
+                    );
                     (
                         StatusCode::OK,
                         Json(KubernetesLoginResponse {
+                            auth,
                             token,
                             expires_at,
                             tenant_id: result.tenant_id,
@@ -718,6 +912,8 @@ mod tests {
         KubernetesManager::new(KubernetesConfig {
             kubernetes_host: "https://kubernetes.default.svc".to_string(),
             reviewer_token: Some("test-reviewer-token".to_string()),
+            reviewer_token_path: None,
+            ca_cert_path: None,
             issuer: None,
             tls_skip_verify: false,
             validation_mode: None,
@@ -736,6 +932,7 @@ mod tests {
             bound_service_account_names: sa_names.into_iter().map(str::to_owned).collect(),
             tenant_id: tenant_id.to_string(),
             policies: vec!["read".to_string()],
+            audience: None,
         }
     }
 
@@ -888,6 +1085,164 @@ mod tests {
         assert!(validate_k8s_name("").is_err());
     }
 
+    // ── Config, CA trust, reviewer token, audience ───────────────────────────
+
+    fn temp_file(name: &str, contents: &str) -> String {
+        let path = std::env::temp_dir().join(format!(
+            "wslv-k8s-{}-{}-{name}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn config_parses_with_only_host_and_roles() {
+        // VAULT_K8S_CONFIG written by the chart sets only what it needs;
+        // tls_skip_verify, reviewer_token and the paths must all default.
+        let cfg: KubernetesConfig = serde_json::from_str(
+            r#"{"kubernetes_host":"https://kubernetes.default.svc",
+                "roles":{"r":{"bound_service_account_namespaces":["ns"],
+                              "bound_service_account_names":["sa"],
+                              "tenant_id":"t","policies":["p"],"audience":"wslvault"}}}"#,
+        )
+        .unwrap();
+        assert!(!cfg.tls_skip_verify);
+        assert!(cfg.reviewer_token.is_none());
+        assert!(cfg.reviewer_token_path.is_none());
+        assert_eq!(cfg.roles["r"].audience.as_deref(), Some("wslvault"));
+    }
+
+    #[test]
+    fn role_audience_defaults_to_none() {
+        let role: KubernetesRoleConfig = serde_json::from_str(
+            r#"{"bound_service_account_namespaces":["ns"],"bound_service_account_names":["sa"],
+                "tenant_id":"t","policies":[]}"#,
+        )
+        .unwrap();
+        assert!(role.audience.is_none());
+    }
+
+    #[test]
+    fn resolve_ca_path_prefers_configured_path() {
+        assert_eq!(
+            resolve_ca_path(Some("/etc/custom/ca.pem")).as_deref(),
+            Some("/etc/custom/ca.pem")
+        );
+    }
+
+    #[test]
+    fn new_fails_closed_on_unreadable_ca_bundle() {
+        let mut cfg = make_manager(HashMap::new()).config;
+        cfg.ca_cert_path = Some("/nonexistent/wslvault/ca.crt".to_string());
+        let err = KubernetesManager::new(cfg).err().expect("must fail");
+        assert!(err.to_string().contains("read CA bundle"), "{err}");
+    }
+
+    #[test]
+    fn new_fails_closed_on_empty_ca_bundle() {
+        let mut cfg = make_manager(HashMap::new()).config;
+        cfg.ca_cert_path = Some(temp_file("empty-ca.crt", "not a certificate\n"));
+        assert!(KubernetesManager::new(cfg).is_err());
+    }
+
+    #[tokio::test]
+    async fn reviewer_token_inline_wins() {
+        let mgr = make_manager(HashMap::new());
+        assert_eq!(mgr.reviewer_token().await.unwrap(), "test-reviewer-token");
+    }
+
+    #[tokio::test]
+    async fn reviewer_token_is_read_from_file_each_time() {
+        let path = temp_file("reviewer-token", "first\n");
+        let mut cfg = make_manager(HashMap::new()).config;
+        cfg.reviewer_token = None;
+        cfg.reviewer_token_path = Some(path.clone());
+        let mgr = KubernetesManager::new(cfg).unwrap();
+        assert_eq!(mgr.reviewer_token().await.unwrap(), "first");
+        // The kubelet rotates the projected token in place.
+        std::fs::write(&path, "second").unwrap();
+        assert_eq!(mgr.reviewer_token().await.unwrap(), "second");
+    }
+
+    #[tokio::test]
+    async fn reviewer_token_missing_file_is_an_error() {
+        let mut cfg = make_manager(HashMap::new()).config;
+        cfg.reviewer_token = None;
+        cfg.reviewer_token_path = Some("/nonexistent/wslvault/token".to_string());
+        let mgr = KubernetesManager::new(cfg).unwrap();
+        assert!(mgr.reviewer_token().await.is_err());
+    }
+
+    #[test]
+    fn review_audience_unpinned_accepts_anything() {
+        assert!(check_review_audience(None, &[]).is_ok());
+    }
+
+    #[test]
+    fn review_audience_pinned_requires_echo() {
+        assert!(check_review_audience(Some("wslvault"), &["wslvault".to_string()]).is_ok());
+        assert!(check_review_audience(Some("wslvault"), &[]).is_err());
+        assert!(check_review_audience(
+            Some("wslvault"),
+            &["https://kubernetes.default.svc.cluster.local".to_string()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn token_review_spec_omits_empty_audiences() {
+        let unpinned = serde_json::to_value(TokenReviewSpec {
+            token: "t".into(),
+            audiences: vec![],
+        })
+        .unwrap();
+        assert!(unpinned.get("audiences").is_none());
+        let pinned = serde_json::to_value(TokenReviewSpec {
+            token: "t".into(),
+            audiences: vec!["wslvault".into()],
+        })
+        .unwrap();
+        assert_eq!(pinned["audiences"], serde_json::json!(["wslvault"]));
+    }
+
+    #[test]
+    fn login_response_has_vault_auth_block() {
+        // Shape the HashiCorp Vault Go client (and so ESO) decodes:
+        // secret.Auth.ClientToken must be present and non-empty.
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(3600);
+        let policies = vec!["closeknitty-prod-read".to_string()];
+        let auth = VaultLoginAuth::new(
+            "jwt-value",
+            expires_at,
+            "tenant-1",
+            &policies,
+            "external-secrets",
+            "closeknitty-prod",
+            "closeknitty-prod",
+        );
+        let body = serde_json::to_value(KubernetesLoginResponse {
+            token: "jwt-value".into(),
+            expires_at,
+            tenant_id: "tenant-1".into(),
+            policies: policies.clone(),
+            namespace: "external-secrets".into(),
+            service_account_name: "closeknitty-prod".into(),
+            lease_id: None,
+            auth,
+        })
+        .unwrap();
+        assert_eq!(body["auth"]["client_token"], "jwt-value");
+        assert_eq!(body["auth"]["policies"], serde_json::json!(policies));
+        assert_eq!(body["auth"]["renewable"], false);
+        assert_eq!(body["auth"]["metadata"]["tenant_id"], "tenant-1");
+        let lease = body["auth"]["lease_duration"].as_i64().unwrap();
+        assert!((3590..=3600).contains(&lease), "lease_duration {lease}");
+        // Native callers keep their top-level token.
+        assert_eq!(body["token"], "jwt-value");
+    }
+
     /// External-network test: calls the real Kubernetes TokenReview API.
     /// Skipped by default; run with `cargo test -- --ignored` in a cluster env.
     #[tokio::test]
@@ -901,6 +1256,7 @@ mod tests {
                 bound_service_account_names: vec!["*".to_string()],
                 tenant_id: "tenant-integration".to_string(),
                 policies: vec!["read".to_string()],
+                audience: None,
             },
         );
 
@@ -908,6 +1264,8 @@ mod tests {
             kubernetes_host: std::env::var("KUBE_HOST")
                 .unwrap_or_else(|_| "https://kubernetes.default.svc".to_string()),
             reviewer_token: std::env::var("KUBE_REVIEWER_TOKEN").ok(),
+            reviewer_token_path: None,
+            ca_cert_path: None,
             issuer: None,
             tls_skip_verify: true,
             validation_mode: Some(ValidationMode::TokenReview),
