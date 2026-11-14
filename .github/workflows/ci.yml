@@ -5,6 +5,11 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  # Manual run, e.g. a build-only release while the repo is otherwise frozen
+  # (see products/vault10x/CUTOVER.md in bwalia/tenthmatrix). Everything that
+  # leaves the registry — the Ring Promoter seed and the www publish — is
+  # gated on repository variables below and stays off unless set.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -383,13 +388,35 @@ jobs:
           name: Release ${{ needs.compute-version.outputs.next_version }}
           generate_release_notes: true
 
+      # Say in the run summary whether this release will deploy or publish.
+      # Values come in through env, never interpolated into the script.
+      - name: Report deployment gates
+        env:
+          VERSION: ${{ needs.compute-version.outputs.next_version }}
+          SEED: ${{ vars.CI_SEED_RING_PROMOTER }}
+          WWW: ${{ vars.CI_PUBLISH_WWW }}
+        run: |
+          # Case-insensitive, matching how the job `if:` compares.
+          state() { [ "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" = "true" ] && echo "ENABLED" || echo "off (variable is '${1:-unset}')"; }
+          {
+            echo "### Release ${VERSION}"
+            echo "| Gate | Repository variable | State |"
+            echo "|---|---|---|"
+            echo "| Seed Ring Promoter (deploys region-a, then region-b) | CI_SEED_RING_PROMOTER | $(state "$SEED") |"
+            echo "| Publish www | CI_PUBLISH_WWW | $(state "$WWW") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   # ─── refresh www.wslvault.org footer with the new release tag ───────
   # pages.yml already runs on every main push (short SHA / describe). After
   # auto-tag claims vX.Y.Z, re-dispatch so the live footer shows that tag.
+  #
+  # GATED: runs only when repository variable CI_PUBLISH_WWW is "true"
+  # (Actions compares strings case-insensitively). Unset or any other value
+  # skips it, so a release is build-only by default.
   publish-www:
     name: Publish www (GitHub Pages)
     needs: [compute-version, auto-tag]
-    if: needs.auto-tag.outputs.tag_ready == 'true'
+    if: needs.auto-tag.outputs.tag_ready == 'true' && vars.CI_PUBLISH_WWW == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -413,10 +440,18 @@ jobs:
   # https://rp.workstation.co.uk. RP's k8sjob clones this repo at the tag and
   # helm-upgrades region-a; auto_promote carries the version to region-b.
   # The seed carries vX.Y.Z, never a commit SHA — `git clone --branch` needs a tag.
+  #
+  # GATED: this job DEPLOYS PRODUCTION — the seed helm-upgrades region-a and
+  # auto_promote carries the version on to region-b. It runs only when
+  # repository variable CI_SEED_RING_PROMOTER is "true" (case-insensitive,
+  # like every Actions string comparison). Unset or any other value skips
+  # it: the release is built, published to the registries and tagged, and
+  # nothing is deployed. Roll out by hand (Ring Promoter UI or
+  # helm) once the release has been checked.
   seed-ring-promoter:
     name: Seed Ring Promoter (int → region-a)
     needs: [compute-version, auto-tag]
-    if: needs.auto-tag.outputs.tag_ready == 'true'
+    if: needs.auto-tag.outputs.tag_ready == 'true' && vars.CI_SEED_RING_PROMOTER == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
