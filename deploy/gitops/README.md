@@ -1,53 +1,115 @@
-# GitOps: the wslvault region mesh
+# deploy/gitops: region configuration for the wslvault mesh
 
-Argo CD owns both regions from this directory. Cluster state is a function of
-`main`; `selfHeal: true` reverts anything changed by hand.
+This directory holds the **per-region Helm values** for the two production
+regions, plus validation for them. The regions are deployed by
+**Ring Promoter**, not by Argo CD. See
+[`deploy/ring-promoter/README.md`](../ring-promoter/README.md) for the release
+pipeline.
 
 ```
 deploy/gitops/
-├── bootstrap/root-app.yaml   applied ONCE by hand; watches this directory
-├── appproject.yaml           AppProject scoping regions to wslvault* namespaces
-├── applicationset.yaml       ← the region roster lives here
-└── regions/
-    ├── region-a.values.yaml  cloud001 / wslvault      (the original deployment)
-    └── region-b.values.yaml  vps002   / wslvault-b
+├── regions/
+│   ├── region-a.values.yaml  k3s1 / ns wslvault    (Ring Promoter ring int)
+│   └── region-b.values.yaml  k3s1 / ns wslvault-b  (Ring Promoter ring test)
+├── applicationset.yaml       Argo CD manifests: NOT applied, see below
+├── appproject.yaml           〃
+└── bootstrap/root-app.yaml   〃
 ```
 
-## Bootstrap
+## How a region is actually deployed
+
+Both regions are plain Helm releases named `wslvault`. Ring Promoter rolls them
+out:
+
+1. A release tag `vX.Y.Z` is seeded into the `int` ring. The CI `auto-tag` job
+   does this, or you can seed manually, as `deploy/ring-promoter/README.md`
+   shows.
+2. A Ring Promoter Job clones `bwalia/wslvault` **at that tag** and runs
+   `helm upgrade --install` against `deploy/helm/wslvault` with
+   `-f deploy/gitops/regions/<region>.values.yaml`. It overrides every image
+   tag with the release version.
+3. `int` deploys region-a and auto-promotes to `test`, which deploys region-b.
+
+Consequences worth knowing:
+
+- **A values change reaches production only with the next release tag.**
+  Merging to `main` changes nothing on the cluster, because the Job clones the
+  tag, not `main`.
+- **Nothing reverts manual changes.** There is no Argo `selfHeal`. A
+  `kubectl edit` or an out-of-band `helm upgrade` stays until the next Ring
+  Promoter deploy overwrites it.
+- **Image tags in the values files are overridden** by the release version at
+  deploy time. Bumping them by hand does not pin anything.
+
+Check what is running:
 
 ```bash
 export KUBECONFIG=~/.kube/k3s1.yaml
-./scripts/wslvault-mesh-keys.sh adopt wslvault   # see docs/ha-two-region.md §3
-kubectl apply -f deploy/gitops/bootstrap/root-app.yaml
+helm -n wslvault   list
+helm -n wslvault-b list
+kubectl -n wslvault get deploy \
+  -o 'custom-columns=NAME:.metadata.name,IMAGE:.spec.template.spec.containers[0].image'
 ```
-
-That is the only imperative step. Everything afterwards is a pull request.
 
 ## Changing a region
 
-Edit its values file and open a PR. `.github/workflows/gitops-validate.yml`
-renders every region, schema-validates the output, and checks the invariants
-that are silent when broken:
-
-- every region in the ApplicationSet has a values file and vice versa
-- regions do not share a namespace
-- all regions carry an **identical** peer roster (a half-updated roster gives
-  one-directional replication with no error anywhere)
-- all regions read key material from the **same** Secret (different keys means
-  replicated ciphertext never decrypts)
-- the chart's vendored SQL still matches `storage/postgres/init/`
-- no region renders placeholder key material
-
-Run the same checks locally:
+Edit its values file, run the validation, and open a PR. The change ships with
+the next release tag.
 
 ```bash
 ./scripts/validate-gitops.sh
 ```
 
+This needs `helm` and `python3` **with PyYAML**. Without PyYAML, several checks
+die with `ModuleNotFoundError` and the script reports "GitOps validation
+failed" even though nothing is wrong. `kubeconform` is used when installed. A
+throwaway venv works:
+
+```bash
+python3 -m venv /tmp/gitops-venv && /tmp/gitops-venv/bin/pip install -q pyyaml
+PATH=/tmp/gitops-venv/bin:$PATH ./scripts/validate-gitops.sh
+```
+
+The script checks the invariants that fail silently when broken:
+
+- every region in `applicationset.yaml` has a values file and vice versa
+  (the ApplicationSet is still used as the region roster)
+- regions do not share a namespace
+- all regions carry an **identical** peer roster. A half-updated roster gives
+  one-directional replication with no error anywhere.
+- all regions read key material from the **same** Secret. Different keys mean
+  replicated ciphertext never decrypts.
+- the chart's vendored SQL still matches `storage/postgres/init/`
+- no region renders placeholder key material
+- every region renders and lints, and pins the same images
+
+`.github/workflows/gitops-validate.yml` runs the same script on PRs, but GitHub
+Actions is currently disabled on this repository. Run it locally until the
+workflows are re-enabled.
+
 ## Adding a region
 
-See `docs/ha-two-region.md` §6. Short version: one list element here, one
-values file, and append the region to the roster in *every* region's file.
+See `docs/ha-two-region.md` §6, but note that its Argo steps do not apply. You
+need:
+
+- a new values file,
+- a matching element in `applicationset.yaml` (for the validation roster),
+- the new peer appended to the roster in **every** region's values file,
+- a new `case` branch and namespace in `deploy/ring-promoter/wslvault.yaml`,
+- a ring for the region in Ring Promoter.
+
+## About the Argo CD manifests
+
+`bootstrap/root-app.yaml`, `appproject.yaml` and `applicationset.yaml`
+describe a GitOps setup that was designed but **never applied**. k3s1 has no
+`wslvault*` Application, ApplicationSet or AppProject.
+
+**Do not apply `root-app.yaml` while Ring Promoter deploys these regions.**
+Argo would track `main` with `selfHeal: true`, while Ring Promoter deploys
+release tags. The two controllers would fight over the same objects: Argo
+would revert every Ring Promoter rollout, and Ring Promoter would overwrite
+Argo's sync. Moving to Argo means removing the Ring Promoter app (and its
+`ring-deploy-job` RoleBindings) in the same change.
 
 ## What is deliberately not in Git
 
