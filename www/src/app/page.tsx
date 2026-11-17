@@ -289,6 +289,12 @@ password = `}<span className="c-str">s3cr3t</span>{`   `}<span className="c-ok">
           </nav>
           <div className="foot-meta">
             <div className="foot-note">© {new Date().getFullYear()} WSLVault · Open source</div>
+            <div className="foot-note">
+              Sponsored by{" "}
+              <a className="foot-sponsor" href="https://www.workstation.co.uk/en" rel="sponsored noopener">
+                workstation.co.uk
+              </a>
+            </div>
             <a
               className="foot-version"
               href={SITE_SHA ? `${GITHUB}/commit/${SITE_SHA}` : `${GITHUB}/tree/main`}
