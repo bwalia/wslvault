@@ -37,8 +37,18 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <PageTransition>{children}</PageTransition>
           </div>
         </main>
-        <footer className="border-t border-line px-6 py-2.5">
+        <footer className="border-t border-line px-6 py-2.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <BuildStamp className="text-xs text-ink-faint" />
+          <p className="text-xs text-ink-faint">
+            Sponsored by{' '}
+            <a
+              href="https://www.workstation.co.uk/en"
+              rel="sponsored noopener"
+              className="underline underline-offset-2 hover:text-ink"
+            >
+              workstation.co.uk
+            </a>
+          </p>
         </footer>
       </div>
     </div>

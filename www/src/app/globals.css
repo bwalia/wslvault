@@ -515,6 +515,8 @@ footer {
   text-align: right;
 }
 .foot-note { font-size: 13px; }
+.foot-sponsor { color: var(--on-steel-muted); text-decoration: underline; text-underline-offset: 2px; }
+.foot-sponsor:hover { color: var(--brass); }
 .foot-version {
   font-family: var(--font-plex-mono), "JetBrains Mono", ui-monospace, monospace;
   font-size: 12px;
